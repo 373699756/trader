@@ -26,9 +26,11 @@ from tests.helpers.recommendation.market_data import (
     FeatureBuilder,
     LoadRuntimeSettings,
     MarketDataGateway,
+    MarketDataUnavailableError,
     MarketQuote,
     MutableMonotonic,
     Path,
+    SequenceMarketClient,
     StaticGateway,
     StaticGatewayWithSeparateQuotes,
     StaticHistoryClient,
@@ -55,9 +57,51 @@ from trader.recommendation.application.pipeline.freeze_publish.read_only_queries
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.ports.market_data import MarketDataPendingError
 from trader.infra.settings.models import HistoryPreloadSettings
+from trader.recommendation.infra.market_data.company_eligibility import CompanyEligibility
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
 from trader.web import CreateApp
+
+
+def test_status_exposes_cold_market_source_failures_safely_and_clears_on_success() -> None:
+    private_error = "http_429 private-supplier-response"
+    primary = SequenceMarketClient((RuntimeError(private_error), RuntimeError(private_error), (_quote(),)))
+    backup = SequenceMarketClient(((), (_quote(),)))
+    gateway = MarketDataGateway(
+        primary, backup, StaticTencentClient(()), minimum_market_rows=1, circuit_breaker_failures=3,
+        circuit_breaker_seconds=60, wall_clock=lambda: NOW,
+    )
+    service = _service(
+        gateway, StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        eligibility=CompanyEligibility(Mock(read=Mock(return_value=())), read_only=True),
+    )
+    clock = Mock()
+    clock.now.return_value = NOW
+    queries = UnifiedFreezeQueries(UnifiedFreezeIndex(), UnifiedFreezeDraftIndex(), Mock(), clock)
+    client = CreateApp(services=UnifiedWebServices(
+        queries, UnifiedFreezeEventStream(), lambda: {"market_data": service.health()},
+    )).test_client()
+
+    with pytest.raises(MarketDataUnavailableError):
+        gateway.fetch_market(force=True)
+    response = client.get("/api/status")
+    market = response.get_json()["market_data"]
+    assert market["canonical_snapshot"]["status"] == "missing"
+    assert market["sources"]["tencent_market"]["last_error_code"] == "rate_limited"
+    assert market["sources"]["sina"]["last_error_code"] == "no_data"
+    assert "private-supplier-response" not in response.get_data(as_text=True)
+
+    gateway.fetch_market(force=True)
+    sources = client.get("/api/status").get_json()["market_data"]["sources"]
+    assert sources["tencent_market"]["last_error_code"] == "rate_limited"
+    assert "last_error_code" not in sources["sina"]
+
+    gateway.fetch_market(force=True)
+    sources = client.get("/api/status").get_json()["market_data"]["sources"]
+    assert "last_error_code" not in sources["tencent_market"]
+    assert "last_error_code" not in sources["sina"]
+    assert primary.calls == 3 and backup.calls == 2
 
 
 def test_market_service_components_own_distinct_locks_and_facade_has_no_shared_lock() -> None:

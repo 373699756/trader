@@ -297,12 +297,17 @@ class ScoredFreeze:
         score_scale = model_versions.get("score_scale")
         model_rank = score_scale in MODEL_RANK_SCORE_SCALES
         if model_rank:
-            score_model_id = dict(versions).get("score_model_id")
+            score_model_id = model_versions.get("score_model_id")
+            is_learned_rank_model = score_model_id == "learned_rank" or (
+                self.strategy is Strategy.D25
+                and target is not None
+                and score_model_id == "learned_rank_and_lambdarank"
+            )
             if (
                 (dict(versions).get("execution_mode"), dict(versions).get("production_authority"))
                 not in {("shadow", "false"), ("production", "true")}
                 or not score_model_id
-                or (score_scale == LEARNED_RANK_SCORE_SCALE and score_model_id != "learned_rank")
+                or (score_scale == LEARNED_RANK_SCORE_SCALE and not is_learned_rank_model)
                 or not all(
                     dict(versions).get(name) for name in ("score_model", "score_contract_hash", "rank_population")
                 )

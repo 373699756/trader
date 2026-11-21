@@ -24,6 +24,10 @@ from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFIL
 from trader.recommendation.application.history_quotes import HistoryQuoteMonth
 
 RouteResponse = Response | tuple[Response, int]
+_MARKET_SOURCE_FAILURE_CODES = frozenset({
+    "timeout", "deadline", "late", "circuit_open", "negative_cache", "cancelled", "superseded",
+    "no_data", "resource_rejected", "rate_limited", "schema_invalid", "source_failed",
+})
 _DEEPSEEK_ZERO_CALL_REASONS = frozenset(
     {
         "disabled",
@@ -586,6 +590,11 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
             projected_source = {
                 field: value[field] for field in source_fields if field in value and _json_scalar(value[field])
             }
+            if (
+                name in ("tencent_market", "sina")
+                and projected_source.get("last_error_code") not in _MARKET_SOURCE_FAILURE_CODES
+            ):
+                projected_source.pop("last_error_code", None)
             if name == "company_evidence":
                 projected_source.update(_observation_failure(value, "publication_observation_failure", "company"))
             safe_sources[str(name)[:32]] = projected_source

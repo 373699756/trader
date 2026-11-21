@@ -35,7 +35,7 @@ class MarketCircuitState:
     success_count: int = 0
     error_count: int = 0
     last_latency_ms: float = 0.0
-    last_error: str = ""
+    last_error_code: str | None = None
     planned_count: int = 0
     timeout_count: int = 0
     physical_failure_count: int = 0

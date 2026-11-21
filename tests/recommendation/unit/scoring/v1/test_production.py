@@ -15,6 +15,7 @@ from trader.recommendation.application.pipeline.freeze_publish.draft_index impor
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedFreezeEventStream
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedFreezeQueries
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.publication.freeze_identity import FormalScoredFreeze, ScoredFreeze
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.publication.preview import PreviewContext
@@ -148,3 +149,47 @@ def test_production_rank_requires_complete_authority_and_model_identity(missing:
     source = _production(Strategy.TOMORROW)
     with pytest.raises(ValueError, match="execution and model identity"):
         replace(source, input_versions=tuple((key, value) for key, value in source.input_versions if key != missing))
+
+
+def _rank_target_versions(
+    source: ScoredFreeze, model_id: str, target: PredictionTarget | None,
+) -> tuple[tuple[str, str], ...]:
+    versions = dict(source.input_versions)
+    versions["score_model_id"] = model_id
+    versions["score_model"] = model_id + ":" + "a" * 64
+    if target is not None:
+        versions["prediction_target"] = target.identity
+    return tuple(versions.items())
+
+
+def test_v1_d25_target_preview_keeps_combined_model_identity() -> None:
+    source = _production(Strategy.D25)
+    market_date = source.trade_date - timedelta(days=1)
+    item = source.items[0]
+    assert item.quote is not None
+    model_id = "learned_rank_and_lambdarank"
+    target = PredictionTarget(Strategy.D25, 100)
+    preview = replace(
+        source,
+        input_versions=_rank_target_versions(source, model_id, target),
+        preview_context=PreviewContext("v1-d25-preview", market_date, _at(10, 0)),
+        items=(replace(item, quote=replace(item.quote, source_time=_at(15, 5) - timedelta(days=1))),),
+    )
+    versions = dict(preview.input_versions)
+    assert versions["score_model_id"] == model_id
+    assert versions["score_model"] == model_id + ":" + "a" * 64
+    assert versions["prediction_target"] == target.identity
+    assert preview.version.endswith(f":target:{target.identity}:preview:v1-d25-preview")
+    with pytest.raises(ValueError, match="preview"):
+        FormalScoredFreeze(preview)
+
+
+@pytest.mark.parametrize(("strategy", "target", "model_id"), (
+    (Strategy.D25, None, "learned_rank_and_lambdarank"),
+    (Strategy.TOMORROW, PredictionTarget(Strategy.TOMORROW, 500), "learned_rank_and_lambdarank"),
+    (Strategy.D25, PredictionTarget(Strategy.D25, 100), "other_ranker"),
+))
+def test_v1_combined_rank_identity_is_scoped_to_current_d25_target(strategy, target, model_id) -> None:
+    source = _production(strategy)
+    with pytest.raises(ValueError, match="execution and model identity"):
+        replace(source, input_versions=_rank_target_versions(source, model_id, target))

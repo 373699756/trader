@@ -8,7 +8,7 @@ from concurrent.futures import Future, wait
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 from trader.infra.cache_contracts import (
     BoundedCache,
@@ -116,7 +116,7 @@ class MarketSourceTelemetry(Protocol):
         cancellation: threading.Event | None = None,
     ) -> tuple[Sequence[MarketQuote], float]: ...
 
-    def record_fetch_result(self, source: str, success: bool, started: float, error: str) -> None: ...
+    def record_fetch_result(self, source: str, success: bool, started: float, error: Literal["", "deadline"]) -> None: ...
 
     def record_deadline(self, source: str) -> None: ...
 

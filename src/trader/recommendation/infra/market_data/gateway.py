@@ -11,7 +11,7 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from concurrent.futures import wait
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 from polars.exceptions import PolarsError
 from typing_extensions import Unpack
@@ -976,7 +976,7 @@ class MarketDataGateway:
                         last_latency_ms=round(state.last_latency_ms, 2),
                         p50_latency_ms=CalculateMarketLatencyPercentile(state.latencies_ms, 0.50),
                         p95_latency_ms=CalculateMarketLatencyPercentile(state.latencies_ms, 0.95),
-                        last_error=state.last_error,
+                        last_error_code=state.last_error_code,
                         data_age_seconds=(
                             max(0.0, (measured_at - state.last_source_time).total_seconds())
                             if state.last_source_time is not None
@@ -1020,22 +1020,22 @@ class MarketDataGateway:
         except MarketDataNoDataError as exc:
             _require_current_round(cancellation.is_set if cancellation is not None else None)
             self.record_local_latency("external_source", ElapsedMilliseconds(started, self._monotonic()))
-            self._record(source, False, started, str(exc))
+            self._record(source, False, started, exc)
             raise
         except Exception as exc:
             _require_current_round(cancellation.is_set if cancellation is not None else None)
             self.record_local_latency("external_source", ElapsedMilliseconds(started, self._monotonic()))
-            self._record(source, False, started, str(exc))
+            self._record(source, False, started, exc)
             raise MarketDataFailedError(source, str(exc)) from exc
         _require_current_round(cancellation.is_set if cancellation is not None else None)
         self.record_local_latency("external_source", ElapsedMilliseconds(started, self._monotonic()))
         if len(quotes) < minimum_rows:
             error = MarketDataNoDataError(f"{source}: only {len(quotes)} market rows")
-            self._record(source, False, started, str(error))
+            self._record(source, False, started, error)
             raise error
         return quotes, started
 
-    def record_fetch_result(self, source: str, success: bool, started: float, error: str) -> None:
+    def record_fetch_result(self, source: str, success: bool, started: float, error: Literal["", "deadline"]) -> None:
         self._record(source, success, started, error)
 
     def record_deadline(self, source: str) -> None:
@@ -1050,7 +1050,7 @@ class MarketDataGateway:
         source: str,
         success: bool,
         started: float,
-        error: str,
+        error: Exception | Literal["", "deadline"],
         *,
         physical: bool = True,
     ) -> None:
@@ -1062,13 +1062,14 @@ class MarketDataGateway:
             if success:
                 state.failures = 0
                 state.success_count += 1
-                state.last_error = ""
+                state.last_error_code = None
                 state.open_until = 0.0
                 return
             state.error_count += 1
-            if any(marker in error.lower() for marker in ("timeout", "timed out", "deadline", "late")):
+            message = str(error).lower()
+            if any(marker in message for marker in ("timeout", "timed out", "deadline", "late")):
                 state.timeout_count += 1
-            state.last_error = error[:240]
+            state.last_error_code = ClassifyMarketCacheError(error) if isinstance(error, Exception) else error or None
             if not physical:
                 return
             state.failures += 1
@@ -1100,20 +1101,20 @@ class MarketDataGateway:
         try:
             probe()
         except Exception as exc:
-            self._record(source, False, started, f"recovery_probe:{exc}")
+            self._record(source, False, started, exc)
             raise MarketDataFailedError(source, "recovery_probe_failed") from exc
         with self._state_lock:
             state = self._states[source]
             state.recovery_probe_success_count += 1
             state.failures = 0
             state.open_until = 0.0
-            state.last_error = ""
+            state.last_error_code = None
 
     def _record_skipped_open(self, source: str) -> None:
         with self._state_lock:
             state = self._states[source]
             state.circuit_skipped_count += 1
-            state.last_error = "circuit_open"
+            state.last_error_code = "circuit_open"
 
 
 def _target_quote_timeout_seconds(

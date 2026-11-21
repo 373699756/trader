@@ -50,6 +50,22 @@ def test_status_exposes_actual_fetch_inflight_count_without_private_source_field
     assert "must-not-leak" not in response.get_data(as_text=True)
 
 
+def test_market_source_status_rejects_arbitrary_supplier_error_text() -> None:
+    _, queries, stream = _app()
+    app = CreateApp(services=UnifiedWebServices(queries, stream, lambda: {
+        "market_data": {"sources": {
+            "tencent_market": {"last_error_code": "timeout", "last_error": "private-source-text"},
+            "sina": {"last_error_code": "private-source-text"},
+        }},
+    }))
+    response = app.test_client().get("/api/status")
+    assert response.get_json()["market_data"]["sources"] == {
+        "tencent_market": {"last_error_code": "timeout"},
+        "sina": {},
+    }
+    assert "private-source-text" not in response.get_data(as_text=True)
+
+
 def test_current_and_sse_report_head_failures_without_replacing_the_previous_result():
     index = UnifiedFreezeIndex()
     stream = UnifiedFreezeEventStream()

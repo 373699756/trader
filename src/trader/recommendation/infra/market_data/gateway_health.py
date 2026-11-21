@@ -41,7 +41,7 @@ class MarketSourceHealthStatus:
     last_latency_ms: float
     p50_latency_ms: float | None
     p95_latency_ms: float | None
-    last_error: str
+    last_error_code: str | None
     data_age_seconds: float | None
     physical_fetch_inflight_count: int = 0
 

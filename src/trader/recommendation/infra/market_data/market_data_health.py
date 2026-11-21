@@ -80,7 +80,8 @@ class MarketDataHealth:
         reference_publication = self._references.status()
         gateway_health = _gateway_health_payload(gateway_status, reference_epoch=reference_epoch)
         sources = {
-            name: _market_source_payload(source_status) for name, source_status in gateway_status.sources.items()
+            name: _market_source_payload(source_status, include_failure=name in ("tencent_market", "sina"))
+            for name, source_status in gateway_status.sources.items()
         }
         latencies = research.latencies_ms
         latest_research = research.latest_source_time
@@ -457,7 +458,7 @@ def _company_error_code(reason: str) -> str | None:
     return reason if reason in _COMPANY_ERROR_CODES else "company_snapshot_unavailable"
 
 
-def _market_source_payload(status: MarketSourceHealthStatus) -> dict[str, JsonInput]:
+def _market_source_payload(status: MarketSourceHealthStatus, *, include_failure: bool) -> dict[str, JsonInput]:
     return {
         "planned_count": status.planned_count,
         "success_count": status.success_count,
@@ -474,7 +475,7 @@ def _market_source_payload(status: MarketSourceHealthStatus) -> dict[str, JsonIn
         "last_latency_ms": status.last_latency_ms,
         "p50_latency_ms": status.p50_latency_ms,
         "p95_latency_ms": status.p95_latency_ms,
-        "last_error": status.last_error,
+        **({"last_error_code": status.last_error_code} if include_failure and status.last_error_code else {}),
         "data_age_seconds": status.data_age_seconds,
     }
 

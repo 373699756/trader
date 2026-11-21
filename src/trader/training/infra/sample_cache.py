@@ -250,14 +250,14 @@ def _clear_temporary_sample_workspaces(profile_root: Path) -> None:
     for workspace in workspaces:
         if not _TEMPORARY_SAMPLE_NAME.fullmatch(workspace.name):
             raise ValueError("training sample directory contains existing data")
-        _validate_temporary_sample_workspace(workspace)
+        _validate_temporary_sample_workspace(workspace, profile=profile_root.name)
     # Validate every entry before removing any object. Interrupted removal leaves
     # a subset of this same layout, so the next locked run can repeat cleanup.
     for workspace in workspaces:
         shutil.rmtree(workspace)
 
 
-def _validate_temporary_sample_workspace(workspace: Path) -> None:
+def _validate_temporary_sample_workspace(workspace: Path, *, profile: str) -> None:
     if workspace.is_symlink() or not workspace.is_dir():
         raise ValueError("training sample directory contains existing data")
     for path in workspace.iterdir():
@@ -265,10 +265,16 @@ def _validate_temporary_sample_workspace(workspace: Path) -> None:
             raise ValueError("training sample directory contains existing data")
         if path.name in ("samples.sqlite3", "samples.sqlite3-journal") and path.is_file():
             continue
-        if path.name != "matrices" or not path.is_dir():
+        if not path.is_dir():
+            raise ValueError("training sample directory contains existing data")
+        if path.name == "matrices":
+            partition_names = tuple(map(str, range(8)))
+        elif profile == "v1" and path.name == "d25-probability":
+            partition_names = ("0", "1", "2")
+        else:
             raise ValueError("training sample directory contains existing data")
         for partition in path.iterdir():
-            if partition.name not in tuple(map(str, range(8))) or partition.is_symlink() or not partition.is_dir():
+            if partition.name not in partition_names or partition.is_symlink() or not partition.is_dir():
                 raise ValueError("training sample directory contains existing data")
             for matrix in partition.iterdir():
                 if matrix.name not in ("features.bin", "targets.bin") or matrix.is_symlink() or not matrix.is_file():
