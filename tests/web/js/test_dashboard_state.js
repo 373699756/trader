@@ -240,7 +240,8 @@ const rankItem = {
 };
 assert.match(sandbox.window.TraderRender.tableDefinition(rankSnapshot).head, /本地评分 \/ 模型排名/);
 const rankRow = sandbox.window.TraderRender.tableRows([rankItem], rankSnapshot);
-assert.match(rankRow, /aria-label="本地评分 \/ 模型排名百分位"[^>]*><b>本地\/模型：65\.00\/99\.50<\/b>/);
+assert.match(rankRow, /<b title="模型分是同轮排名百分位">模型 99\.50<\/b>/);
+assert.match(rankRow, /<b>本地 65\.00<\/b> · 加减分暂无/);
 assert.strictEqual((rankRow.match(/class="score-stack"[\s\S]*?<\/div>/)[0].match(/<span\b/g) || []).length, 2);
 assert.doesNotMatch(rankRow.match(/class="score-stack"[\s\S]*?<\/div>/)[0], /风险复核/);
 assert.match(rankRow, /class="reason-cell">[\s\S]*风险复核：已复核/);
@@ -292,7 +293,8 @@ assert.strictEqual(sandbox.window.TraderRender.scorePresentation(v5Snapshot).sha
 assert.strictEqual(sandbox.window.TraderRender.scorePresentation(v5Snapshot).learnedRank, true);
 assert.match(sandbox.window.TraderRender.tableDefinition(v5Snapshot).head, /本地评分 \/ 模型排名/);
 const v5Row = sandbox.window.TraderRender.tableRows([v5Item], v5Snapshot);
-assert.match(v5Row, /<b>本地\/模型：80\.00\/95\.00<\/b>/);
+assert.match(v5Row, /<b title="模型分是同轮排名百分位">模型 95\.00<\/b>/);
+assert.match(v5Row, /<b>本地 80\.00<\/b> · 加减分暂无/);
 assert.strictEqual((v5Row.match(/class="score-stack"[\s\S]*?<\/div>/)[0].match(/<span\b/g) || []).length, 2);
 const v5Drawer = state.drawer(v5Item, v5Snapshot);
 assert.match(v5Drawer, /模型排序分/);
@@ -321,20 +323,21 @@ const nextCloseRow = state.tableRows([targetItem], nextCloseSnapshot);
 const nextCloseScore = nextCloseRow.match(/class="score-stack"[\s\S]*?<\/div>/)[0];
 const nextCloseHeading = sandbox.window.TraderRender.tableDefinition(nextCloseSnapshot).head;
 assert.match(nextCloseHeading, /达标概率 \/ 本地评分/);
-assert.match(nextCloseScore, /<b>达标概率 64\.32%<\/b><\/span><span>本地评分 81\.00<\/span>/);
+assert.match(nextCloseScore, /<span><b>达标 64\.32%<\/b><\/span>/);
+assert.match(nextCloseScore, /<b>本地 81\.00<\/b> · 基础 83\.00 · \+2\.00 −4\.00<\/span>/);
 assert.strictEqual((nextCloseScore.match(/<span\b/g) || []).length, 2);
-assert.match(nextCloseScore, /title="基础 83\.00 · \+2\.00 · −4\.00"/);
+assert.match(nextCloseScore, /title="本地评分 81\.00 · 基础分 83\.00 · 加分 \+2\.00 · 扣分 −4\.00"/);
 assert.doesNotMatch(nextCloseHeading + nextCloseScore, /≥|实际涨幅/);
 const nextCloseDrawer = state.drawer(targetItem, nextCloseSnapshot);
 assert.match(nextCloseDrawer, /达标概率<\/span><strong>64\.32%/);
 assert.doesNotMatch(nextCloseDrawer, /涨幅目标|≥5%/);
 
 const d25Target = { strategy: "d25", threshold_bps: 125 };
-for (const [profile, scale, finalScore, scoreLabel] of [
-  ["v1", "learned_rank_percentile_0_100", 93.37, "模型排序分"],
-  ["v2", "weighted_evidence_quality_0_100", 81, "最终评分"],
-  ["v3", "weighted_evidence_quality_0_100", 81, "最终评分"],
-  ["v5", "model_prediction_percentile_0_100", 93.37, "模型排序分"],
+for (const [profile, scale, finalScore, scoreLabel, visibleLabel] of [
+  ["v1", "learned_rank_percentile_0_100", 93.37, "模型排序分", "模型"],
+  ["v2", "weighted_evidence_quality_0_100", 81, "最终评分", "最终"],
+  ["v3", "weighted_evidence_quality_0_100", 81, "最终评分", "最终"],
+  ["v5", "model_prediction_percentile_0_100", 93.37, "模型排序分", "模型"],
 ]) {
   const d25Snapshot = { strategy: "d25", scoring_profile: profile, prediction_target: d25Target,
     input_versions: { score_scale: scale } };
@@ -343,15 +346,19 @@ for (const [profile, scale, finalScore, scoreLabel] of [
   const score = row.match(/class="score-stack"[\s\S]*?<\/div>/)[0];
   const heading = sandbox.window.TraderRender.tableDefinition(d25Snapshot).head;
   assert(heading.includes(`<th>${scoreLabel} / 达标概率</th>`));
-  assert(score.includes(`<b>${scoreLabel} ${finalScore.toFixed(2)}</b>`));
-  assert.match(score, /<span>达标概率 64\.32%<\/span>/);
+  assert(score.includes(`>${visibleLabel} ${finalScore.toFixed(2)}</b> · <b>达标 64.32%</b></span>`));
+  assert.match(score, /<b>本地 81\.00<\/b> · 基础 83\.00 · \+2\.00 −4\.00<\/span>/);
   assert.strictEqual((score.match(/<span\b/g) || []).length, 2);
   assert.doesNotMatch(heading + score, /≥|实际涨幅|本地\/模型/);
 }
 
+const noAdjustment = { ...targetItem, scores: { ...targetItem.scores,
+  ledger: { weighted_base_score: 81, applied_bonus: 0, applied_risk_penalty: 0 } } };
+assert.match(state.tableRows([noAdjustment], nextCloseSnapshot), /基础 81\.00 · \+0\.00 −0\.00<\/span>/);
+
 const oldD25 = { ...v5Snapshot, strategy: "d25" };
 assert.match(sandbox.window.TraderRender.tableDefinition(oldD25).head, /本地评分 \/ 模型排名/);
-assert.match(state.tableRows([v5Item], oldD25), /<b>本地\/模型：80\.00\/95\.00<\/b>/);
+assert.match(state.tableRows([v5Item], oldD25), /<b title="模型分是同轮排名百分位">模型 95\.00<\/b>/);
 
 const settledItem = { ...targetItem, tomorrow_outcome: "hit", actual_return_pct: 5 };
 const settledSnapshot = { ...nextCloseSnapshot, historical: true, items: [settledItem], outcome_summaries: [

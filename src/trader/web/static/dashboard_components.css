@@ -481,17 +481,19 @@ tbody tr.is-unavailable td.negative {
   text-align: center;
 }
 
-.score-stack span {
+.score-stack > span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.score-stack b {
-  display: block;
-  color: var(--text);
+.score-stack > span:first-child {
   font-size: 13px;
+}
+
+.score-stack b {
+  color: var(--text);
   font-weight: 650;
 }
 

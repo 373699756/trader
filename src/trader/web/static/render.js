@@ -312,7 +312,7 @@
         '<col style="width:74px">',
         '<col style="width:84px">',
         '<col style="width:88px">',
-        '<col style="width:210px">',
+        '<col style="width:238px">',
         '<col style="width:210px">',
       ].join(""),
       head: `<tr><th>排名</th><th>状态</th><th>股票</th><th>板块行业</th><th>最新价</th><th>今日涨跌</th><th>换手率</th><th>成交额</th><th>总市值</th><th>${scoreLabel}</th><th class="reason-heading">原因 / 风险复核</th></tr>`,
@@ -383,28 +383,40 @@
     return `<span class="tier-tag" data-tier="${tier}">${label}</span>`;
   }
 
+  function scoreAdjustment(value, sign) {
+    const formatted = number(value, 2);
+    return formatted === "-" ? formatted : `${sign}${formatted}`;
+  }
+
+  function scoreStack(scores, snapshot) {
+    const presentation = scorePresentation(snapshot);
+    const rankTitle = presentation.learnedRank ? ' title="模型分是同轮排名百分位"' : "";
+    const d25Probability = presentation.d25Probability
+      || (snapshot && snapshot.strategy === "d25" && hasValue(scores.target_probability));
+    const d25Value = hasValue(scores.target_probability) ? valuePercent(scores.target_probability * 100) : "-";
+    const scoreLabel = presentation.learnedRank ? "模型" : "最终";
+    const score = `<b${rankTitle}>${scoreLabel} ${number(scores.final_score, 2)}</b>`;
+    const primary = presentation.tomorrowProbability
+      ? `<b>达标 ${valuePercent(scores.final_score) || "-"}</b>`
+      : `${score}${d25Probability ? ` · <b>达标 ${d25Value}</b>` : ""}`;
+    const local = `<b>本地 ${number(scores.local_score, 2)}</b>`;
+    const ledger = scores.ledger;
+    if (!ledger) {
+      return `<div class="score-stack"><span>${primary}</span><span>${local} · 加减分暂无</span></div>`;
+    }
+    const base = number(ledger.weighted_base_score, 2);
+    const bonus = scoreAdjustment(ledger.applied_bonus, "+");
+    const penalty = scoreAdjustment(ledger.applied_risk_penalty, "−");
+    const detail = `本地评分 ${number(scores.local_score, 2)} · 基础分 ${base} · 加分 ${bonus} · 扣分 ${penalty}`;
+    return `<div class="score-stack"><span>${primary}</span><span title="${escapeHtml(detail)}">${local} · 基础 ${base} · ${bonus} ${penalty}</span></div>`;
+  }
+
   function currentRow(item, snapshot) {
     const change = pct(item.pct_change);
     const scores = item.scores || {};
     const action = String(item.action || "unavailable");
     const rowClass = action === "unavailable" ? "is-unavailable" : "";
     const review = reviewStatus(item);
-    const presentation = scorePresentation(snapshot);
-    const primaryScore = presentation.learnedRank && !presentation.d25Probability
-      ? `<span aria-label="本地评分 / 模型排名百分位" title="模型分是同轮排名百分位，不是上涨概率；动作仍由本地分和风险条件决定"><b>本地/模型：${number(scores.local_score, 2)}/${number(scores.final_score, 2)}</b></span>`
-      : `<span aria-label="${presentation.finalLabel}"><b>${presentation.finalLabel} ${number(scores.final_score, 2)}${presentation.tomorrowProbability && hasValue(scores.final_score) ? "%" : ""}</b></span>`;
-    const ledger = scores.ledger;
-    const scoreDetail = ledger
-      ? `基础 ${number(ledger.weighted_base_score, 2)} · +${number(ledger.applied_bonus, 2)} · −${number(ledger.applied_risk_penalty, 2)}`
-      : "旧记录无加减分明细";
-    let secondaryScore = scoreDetail;
-    if (presentation.tomorrowProbability) {
-      secondaryScore = `本地评分 ${number(scores.local_score, 2)}`;
-    } else if (presentation.d25Probability || (snapshot && snapshot.strategy === "d25" && hasValue(scores.target_probability))) {
-      const probability = hasValue(scores.target_probability) ? valuePercent(scores.target_probability * 100) : "-";
-      secondaryScore = `达标概率 ${probability}`;
-    }
-    const detailTitle = ledger && secondaryScore !== scoreDetail ? ` title="${escapeHtml(scoreDetail)}"` : "";
     return `<tr class="${rowClass}" tabindex="0" data-code="${escapeHtml(item.code)}">
       <td>${number(item.rank, 0)}</td>
       <td>${tierTag(item)}</td>
@@ -415,7 +427,7 @@
       <td>${valuePercent(item.turnover_rate) || "-"}</td>
       <td>${compact(item.amount)}</td>
       <td>${compact(item.market_cap)}</td>
-      <td><div class="score-stack"${detailTitle}>${primaryScore}<span>${secondaryScore}</span></div></td>
+      <td>${scoreStack(scores, snapshot)}</td>
       <td class="reason-cell"><div class="reason-stack"><span class="reason-tag">${escapeHtml(actionReason(item.action_reason))}</span><span class="review-status" aria-label="风险复核">风险复核：${review}</span></div></td>
     </tr>`;
   }
