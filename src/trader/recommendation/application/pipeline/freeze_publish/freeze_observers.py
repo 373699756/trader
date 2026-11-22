@@ -173,6 +173,8 @@ class AsyncFreezeObserver(Generic[_ObservationT]):
                     with self._condition:
                         self._consumer_failure_count += 1
                         self._last_error_code = type(exc).__name__
+            # A completed observation must not remain reachable while the worker waits.
+            del event
             with self._condition:
                 if not consumer_failed:
                     self._last_error_code = ""

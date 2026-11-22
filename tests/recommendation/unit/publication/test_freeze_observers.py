@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import gc
 import threading
+import weakref
 
 from tests.helpers.recommendation.publication.freeze_identity import freeze
 from trader.infra.shutdown import ShutdownDeadline
@@ -67,3 +69,26 @@ def test_observer_shutdown_does_not_reset_the_shared_deadline() -> None:
     finally:
         release.set()
         observer.stop(deadline=ShutdownDeadline.start(1.0))
+
+
+def test_idle_observer_releases_the_processed_observation() -> None:
+    handled: list[str] = []
+
+    def consume(observation: FreezeObservation) -> None:
+        handled.append(observation.event.event_id)
+
+    observer = AsyncFreezeObserver((consume,), capacity=1)
+    observation = FreezeObservation(BuildFreezeCommitted(freeze()), None)
+    event_id = observation.event.event_id
+    reference = weakref.ref(observation)
+    observer.start()
+    try:
+        assert observer.offer(observation)
+        del observation
+        assert observer.wait_idle(1.0)
+        gc.collect()
+        assert handled == [event_id]
+        assert observer.status().thread_alive
+        assert reference() is None
+    finally:
+        assert observer.stop(deadline=ShutdownDeadline.start(1.0)).completed
