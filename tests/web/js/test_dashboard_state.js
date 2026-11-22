@@ -319,18 +319,22 @@ const targetItem = {
     ledger: { weighted_base_score: 83, applied_bonus: 2, applied_risk_penalty: 4 },
   },
 };
-const nextCloseRow = state.tableRows([targetItem], nextCloseSnapshot);
+const nextCloseItem = { ...targetItem, scores: { ...targetItem.scores,
+  model_signal_score: null, target_probability: undefined } };
+const nextCloseRow = state.tableRows([nextCloseItem], nextCloseSnapshot);
 const nextCloseScore = nextCloseRow.match(/class="score-stack"[\s\S]*?<\/div>/)[0];
 const nextCloseHeading = sandbox.window.TraderRender.tableDefinition(nextCloseSnapshot).head;
-assert.match(nextCloseHeading, /达标概率 \/ 本地评分/);
-assert.match(nextCloseScore, /<span><b>达标 64\.32%<\/b><\/span>/);
+assert.match(nextCloseHeading, /模型排序分 \/ 达标概率/);
+assert.match(nextCloseScore, /<span><b title="模型排序分为达标概率换算成0–100分">模型 64\.32<\/b> · <b>达标 64\.32%<\/b><\/span>/);
 assert.match(nextCloseScore, /<b>本地 81\.00<\/b> · 基础 83\.00 · \+2\.00 −4\.00<\/span>/);
 assert.strictEqual((nextCloseScore.match(/<span\b/g) || []).length, 2);
 assert.match(nextCloseScore, /title="本地评分 81\.00 · 基础分 83\.00 · 加分 \+2\.00 · 扣分 −4\.00"/);
 assert.doesNotMatch(nextCloseHeading + nextCloseScore, /≥|实际涨幅/);
-const nextCloseDrawer = state.drawer(targetItem, nextCloseSnapshot);
+const nextCloseDrawer = state.drawer(nextCloseItem, nextCloseSnapshot);
 assert.match(nextCloseDrawer, /达标概率<\/span><strong>64\.32%/);
 assert.doesNotMatch(nextCloseDrawer, /涨幅目标|≥5%/);
+const missingTomorrowScore = { ...nextCloseItem, scores: { ...nextCloseItem.scores, final_score: null } };
+assert.match(state.tableRows([missingTomorrowScore], nextCloseSnapshot), /模型 -<\/b> · <b>达标 -<\/b>/);
 
 const d25Target = { strategy: "d25", threshold_bps: 125 };
 for (const [profile, scale, finalScore, scoreLabel, visibleLabel] of [

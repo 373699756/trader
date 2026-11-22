@@ -298,7 +298,7 @@
   function currentTable(snapshot) {
     const presentation = scorePresentation(snapshot);
     const scoreLabel = presentation.tomorrowProbability
-      ? "达标概率 / 本地评分"
+      ? "模型排序分 / 达标概率"
       : presentation.d25Probability ? `${presentation.finalLabel} / 达标概率`
       : presentation.learnedRank ? "本地评分 / 模型排名" : "最终评分 / 加减分";
     return {
@@ -390,14 +390,16 @@
 
   function scoreStack(scores, snapshot) {
     const presentation = scorePresentation(snapshot);
-    const rankTitle = presentation.learnedRank ? ' title="模型分是同轮排名百分位"' : "";
+    const rankTitle = presentation.tomorrowProbability ? ' title="模型排序分为达标概率换算成0–100分"'
+      : presentation.learnedRank ? ' title="模型分是同轮排名百分位"' : "";
     const d25Probability = presentation.d25Probability
       || (snapshot && snapshot.strategy === "d25" && hasValue(scores.target_probability));
     const d25Value = hasValue(scores.target_probability) ? valuePercent(scores.target_probability * 100) : "-";
-    const scoreLabel = presentation.learnedRank ? "模型" : "最终";
-    const score = `<b${rankTitle}>${scoreLabel} ${number(scores.final_score, 2)}</b>`;
+    const finalScore = number(scores.final_score, 2);
+    const scoreLabel = presentation.learnedRank || presentation.tomorrowProbability ? "模型" : "最终";
+    const score = `<b${rankTitle}>${scoreLabel} ${finalScore}</b>`;
     const primary = presentation.tomorrowProbability
-      ? `<b>达标 ${valuePercent(scores.final_score) || "-"}</b>`
+      ? `${score} · <b>达标 ${finalScore}${finalScore === "-" ? "" : "%"}</b>`
       : `${score}${d25Probability ? ` · <b>达标 ${d25Value}</b>` : ""}`;
     const local = `<b>本地 ${number(scores.local_score, 2)}</b>`;
     const ledger = scores.ledger;
