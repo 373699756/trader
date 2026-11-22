@@ -24,6 +24,7 @@ from trader.recommendation.infra.performance.scoring_inputs_reuse import Scoring
 from tests.helpers.recommendation.publication.tomorrow_projection import _native_input
 from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import FilterFeatureCandidates
 from trader.recommendation.application.pipeline.final_selection.freeze_projection import BuildScoredLocal, ScoredProjectionInputs
+from trader.recommendation.application.ports.scoring import D25NativeInput, TomorrowNativeInput
 from trader.recommendation.domain.candidate.filters import QuoteFreshnessBasis
 from trader.recommendation.domain.evidence.review import RiskFact
 from trader.recommendation.domain.market.models import Evidence
@@ -162,11 +163,13 @@ def test_parallel_candidate_rejects_same_industry_groups_before_submitting():
         assert candidate.counts.completed == candidate.counts.peak_in_flight == 0
 
 
-@pytest.mark.parametrize("change", ("none_candidates", "empty_candidates", "quote", "value", "filter_value", "history"))
-def test_frozen_population_requires_exact_projection_and_independent_candidates(application_feature_factory, change):
+@pytest.mark.parametrize(
+    "change", ("none_candidates", "empty_candidates", "quote", "value", "filter_value", "history", "order", "evidence"),
+)
+def test_frozen_population_requires_exact_discovery_cut_and_independent_candidates(application_feature_factory, change):
     original = _features(application_feature_factory)
     policy = _runtime_policy()
-    features = tuple(PreselectionReplayFeature(item, hard_filter=policy.hard_filter) for item in original)
+    features = original
     identity = ScoredSelectionIdentity(EVALUATED_AT.date(), "batch", "epoch")
     qualifications = FilterFeatureCandidates(
         original,
@@ -188,6 +191,11 @@ def test_frozen_population_requires_exact_projection_and_independent_candidates(
         features = (replace(features[0], values={**features[0].values, "latest_disclosed_report_loss": 1.0}), *features[1:])
     elif change == "history":
         features = (replace(features[0], history_days=features[0].history_days + 1), *features[1:])
+    elif change == "order":
+        features = tuple(reversed(features))
+    elif change == "evidence":
+        evidence = Evidence("announcement", "announcement", "发现总体输入变化", "fixture", EVALUATED_AT)
+        features = (replace(features[0], evidence=(evidence,)), *features[1:])
     options = ScoredSelectionOptions(
         evaluated_at=EVALUATED_AT, max_age_seconds=30.0, candidate_features=candidates,
     )
@@ -197,7 +205,7 @@ def test_frozen_population_requires_exact_projection_and_independent_candidates(
         )
         assert not result.selection.scored_candidates
         return
-    with pytest.raises(ValueError, match="independently evaluated candidates|preselection projection"):
+    with pytest.raises(ValueError, match="independently evaluated candidates|discovery population qualifications"):
         RankingSelectionService().select(
             features, policy, options, identity, population_qualifications=qualifications,
         )
@@ -229,9 +237,8 @@ def test_frozen_population_replays_risk_inputs_and_preserves_qualified_denominat
         ),
         identity,
     )
-    projected = tuple(PreselectionReplayFeature(item, hard_filter=policy.hard_filter) for item in original)
     replayed = FilterFeatureCandidates(
-        projected,
+        original,
         policy,
         ScoredSelectionOptions(
             evaluated_at=EVALUATED_AT, max_age_seconds=30.0, candidate_features=original[:-1],
@@ -288,7 +295,7 @@ def test_frozen_population_keeps_candidate_supplement_and_review_risk_separate(a
     assert "news_sentiment" not in projection.values
     assert projection.values["latest_disclosed_report_loss"] == 1.0
     result = RankingSelectionService().select(
-        tuple(PreselectionReplayFeature(item, hard_filter=policy.hard_filter) for item in original),
+        original,
         policy,
         ScoredSelectionOptions(
             evaluated_at=EVALUATED_AT, max_age_seconds=30.0, candidate_features=(*original[:-1], supplemented),
@@ -311,6 +318,46 @@ def test_frozen_population_keeps_candidate_supplement_and_review_risk_separate(a
     )
     assert not local.selection.population_rejected_count
     assert not local.selection.population_filter_reason_counts
+
+
+@pytest.mark.parametrize("native_type", (TomorrowNativeInput, D25NativeInput))
+def test_local_projection_prepares_each_discovery_row_once(application_feature_factory, monkeypatch, native_type):
+    from trader.recommendation.application.pipeline.final_selection import freeze_projection
+    from trader.recommendation.domain.selection import scored_selection
+
+    features = _features(application_feature_factory)
+    policy = _runtime_policy()
+    native = _native_input(features, native_type)
+    qualifications = FilterFeatureCandidates(
+        features,
+        policy,
+        ScoredSelectionOptions(
+            evaluated_at=EVALUATED_AT,
+            max_age_seconds=native.preselect_max_age_seconds,
+            phase="candidate_discovery",
+            strategy=native.strategy,
+            population_quote_freshness_basis=QuoteFreshnessBasis.RECEIPT,
+        ),
+        ScoredSelectionIdentity(EVALUATED_AT.date(), "batch", "epoch"),
+    )
+    runtime = ScoredProjectionInputs(monotonic=lambda: 0.0)
+    expected = BuildScoredLocal(native, policy, sequence=1, runtime=runtime)
+    projected_codes = []
+
+    def observe_projection(feature, *, hard_filter):
+        projected_codes.append(feature.quote.code)
+        return PreselectionReplayFeature(feature, hard_filter=hard_filter)
+
+    monkeypatch.setattr(freeze_projection, "PreselectionReplayFeature", observe_projection)
+    monkeypatch.setattr(scored_selection, "PreselectionReplayFeature", observe_projection)
+    actual = BuildScoredLocal(
+        native, policy, sequence=1, runtime=replace(runtime, population_qualifications=qualifications),
+    )
+
+    assert projected_codes == [feature.quote.code for feature in features]
+    assert actual.selection == expected.selection
+    assert actual.local == expected.local
+    assert actual.stages == expected.stages
 
 
 def test_scoring_reuse_supports_local_projection_consumer(scoring_cache, application_feature_factory):
@@ -352,7 +399,7 @@ def test_frozen_population_cannot_revive_an_old_day_through_its_source_watermark
     )
 
     result = RankingSelectionService().select(
-        tuple(PreselectionReplayFeature(item, hard_filter=policy.hard_filter) for item in previous),
+        previous,
         policy,
         ScoredSelectionOptions(
             evaluated_at=EVALUATED_AT,
@@ -384,7 +431,7 @@ def test_scoring_reuse_binds_frozen_population_in_cache_and_fallback(
         for item in original
     )
     policy = _runtime_policy()
-    features = tuple(PreselectionReplayFeature(item, hard_filter=policy.hard_filter) for item in population)
+    features = population
     identity = ScoredSelectionIdentity(EVALUATED_AT.date(), "batch", "epoch")
     qualifications = FilterFeatureCandidates(
         population,
@@ -401,7 +448,9 @@ def test_scoring_reuse_binds_frozen_population_in_cache_and_fallback(
         evaluated_at=EVALUATED_AT, max_age_seconds=30.0, candidate_features=original[:2],
     )
     candidate = ScoringInputsReuse(scoring_cache)
-    unqualified = candidate.select(features, policy, options, identity)
+    unqualified = candidate.select(
+        tuple(PreselectionReplayFeature(item, hard_filter=policy.hard_filter) for item in features), policy, options, identity,
+    )
     if identity_failure:
         def reject_identity(_value):
             raise ValueError("unsupported_identity")

@@ -8,12 +8,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.helpers.recommendation.runtime.performance_fixtures import _budgets, _profile
-from tests.helpers.recommendation.scoring.performance_models import _Predictor as _UtilityFixturePredictor
+from tests.helpers.recommendation.runtime.performance_fixtures import _budgets
+from tests.helpers.recommendation.scoring.performance_models import _install_performance_models
 
 from trader.entrypoints import performance
 
-from trader.recommendation.application.ports.loaded_profile import ModelInput, ModelPrediction
 from trader.recommendation.infra.scoring.profile_factory import ScoringModelsMissingError
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -22,39 +21,9 @@ from tests.helpers.recommendation.runtime.performance import (
 )
 
 
-class _D25FixturePredictor(_UtilityFixturePredictor):
-    def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
-        return tuple(replace(item, target_probability=0.75) for item in super().predict(inputs))
-
-
-class _TomorrowFixturePredictor:
-    def __init__(self, profile: str) -> None:
-        self.identity = f"{int(profile[1:]):064x}"
-
-    def predict_probability(self, features: tuple[float, ...]) -> float:
-        return 0.75
-
-    def predict_probabilities(self, rows: tuple[tuple[float, ...], ...]) -> tuple[float, ...]:
-        return tuple(self.predict_probability(row) for row in rows)
-
-
 @pytest.fixture
 def performance_models(monkeypatch):
-    def load_utility(profile, **_settings):
-        loaded = _profile(profile)
-        return replace(loaded, heads={Strategy.D25: loaded.heads[Strategy.D25]})
-
-    def bind_d25(_root, loaded, target):
-        assert target.strategy is Strategy.D25
-        head = loaded.heads[Strategy.D25]
-        return replace(loaded, heads={Strategy.D25: replace(head, predictor=_D25FixturePredictor(head.predictor))})
-
-    monkeypatch.setattr(performance, "LoadD25UtilityProfile", load_utility)
-    monkeypatch.setattr("trader.training.infra.d25.artifact.LoadD25ScoringProfile", bind_d25)
-    monkeypatch.setattr(
-        "trader.training.infra.tomorrow.artifact.LoadTomorrowProbabilityModel",
-        lambda _root, profile, _target, **_settings: _TomorrowFixturePredictor(profile),
-    )
+    _install_performance_models(monkeypatch)
 
 
 def test_missing_model_produces_bounded_performance_report(tmp_path, monkeypatch, capsys) -> None:

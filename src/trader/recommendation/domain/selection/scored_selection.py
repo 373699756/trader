@@ -449,6 +449,8 @@ def FilterCandidateInputs(
     *,
     population_qualifications: FilteredCandidateInputs | None = None,
 ) -> FilteredCandidateInputs:
+    """Filter candidates separately from the complete population used for ranking references."""
+    population_features = request.features
     population_basis = request.population_quote_freshness_basis
     population_evaluated_at = request.population_evaluated_at
     if population_qualifications is not None:
@@ -457,7 +459,7 @@ def FilterCandidateInputs(
         source = population_qualifications.request
         ValidatePopulationQualifications(
             population_qualifications,
-            source.features,
+            population_features,
             evaluated_at=request.evaluated_at,
             hard_filter=request.policy.hard_filter,
             strategy=request.policy.strategy,
@@ -466,15 +468,13 @@ def FilterCandidateInputs(
                 if request.population_max_age_seconds is not None else request.policy.max_age_seconds
             ),
         )
-        projected = tuple(
-            PreselectionReplayFeature(feature, hard_filter=source.policy.hard_filter) for feature in source.features
+        population_features = tuple(
+            PreselectionReplayFeature(feature, hard_filter=request.policy.hard_filter) for feature in population_features
         )
-        if request.features != projected:
-            raise ValueError("frozen population references do not match the preselection projection")
         population_basis = QuoteFreshnessBasis.RECEIPT
         population_evaluated_at = source.evaluated_at
     population_filtered = _filter_features(
-        request.features,
+        population_features,
         request,
         evaluated_at=population_evaluated_at,
         max_age_seconds=request.population_max_age_seconds,

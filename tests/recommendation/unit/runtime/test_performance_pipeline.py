@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from tests.helpers.recommendation.runtime.performance_fixtures import _budgets, _history_sessions
-from tests.helpers.recommendation.scoring.performance_models import _workload
+from tests.helpers.recommendation.scoring.performance_models import _install_performance_models, _workload
 from trader.entrypoints import performance
 from trader.infra.cache import BoundedLruCache
 from trader.infra.settings import LoadRuntimeSettings
@@ -349,7 +349,7 @@ def test_replay_entrypoint_does_not_run_old_microbenchmarks_or_access_network(mo
 
     settings = LoadRuntimeSettings(Path("config/runtime.json"))
     monkeypatch.setattr(performance, "LoadRuntimeSettings", lambda _: replace(settings, performance_budgets=_budgets()))
-    monkeypatch.setattr(performance, "LoadD25UtilityProfile", lambda profile, **kwargs: _workload(profile).profile)
+    _install_performance_models(monkeypatch)
     monkeypatch.setattr(performance, "_operations", forbidden)
     monkeypatch.setattr(socket.socket, "connect", forbidden)
     report = performance.Run(Path("config/runtime.json"), scoring_profile="v3", replay_ticks=1, replay_rows=6)

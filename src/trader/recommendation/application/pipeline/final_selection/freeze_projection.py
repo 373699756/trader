@@ -213,9 +213,9 @@ def BuildScoredLocal(
     ranking_selection = (
         runtime.ranking_selection if runtime.ranking_selection is not None else RankingSelectionService(monotonic=runtime.monotonic)
     )
-    population = tuple(
-        PreselectionReplayFeature(feature, hard_filter=policy.hard_filter) for feature in native_input.market_features
-    )
+    population = native_input.market_features
+    if population_qualifications is None:
+        population = tuple(PreselectionReplayFeature(feature, hard_filter=policy.hard_filter) for feature in population)
     uses_model = (
         model_scoring is not None
         and (native_input.phase != "close_fallback" or model_rank or requires_close_event)
