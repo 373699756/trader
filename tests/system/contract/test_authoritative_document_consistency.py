@@ -19,7 +19,7 @@ STRATEGY = DOCS / "c_评分设计.md"
 DOWNLOAD = DOCS / "d_下载设计.md"
 TRAINING = DOCS / "e_训练设计.md"
 PRODUCT_CODE_ROOT = ROOT / "src" / "trader"
-AUTHORITIES = ("c_评分设计.md", "b_系统设计.md", "g_实施进度.md", "d_下载设计.md")
+AUTHORITIES = ("c_评分设计.md", "b_系统设计.md", "g_施工进度.md", "d_下载设计.md")
 
 
 def test_freeze_contract_has_one_boundary_for_each_strategy() -> None:
@@ -72,17 +72,14 @@ def test_scoring_contract_preserves_strict_qfq_equivalence_boundary() -> None:
 
 def test_documented_profiles_and_action_thresholds_match_current_contracts() -> None:
     strategy = source_text(STRATEGY)
-    review = source_text(DOCS / "f_人工审查.md")
     selection = json.loads(source_text(ROOT / "config/selection.json"))["selection"]
     profiles = {profile.lower() for profile in re.findall(r"^\| (?:全新)?(V\d+) \|", strategy, re.MULTILINE)}
     assert profiles == set(SCORING_PROFILE_IDS)
-    action_rows = re.findall(r"^\| (Tomorrow|D25) \| (\d+) \| (\d+) \| 回避 \|", strategy, re.MULTILINE)
-    assert len(action_rows) == 2
-    for name, execute, observe in action_rows:
-        threshold = selection["thresholds"][name.lower()]
-        assert float(execute) == threshold
-        assert float(observe) == threshold - selection["observation_margin"]
-        assert f"{name}{execute}/{observe}" in review.replace(" ", "")
+    margin = selection["observation_margin"]
+    thresholds = selection["thresholds"]
+    tomorrow = thresholds["tomorrow"]
+    d25 = thresholds["d25"]
+    assert f"Tomorrow 推荐/关注门{tomorrow:g}/{tomorrow - margin:g}、D25为{d25:g}/{d25 - margin:g}" in strategy
 
 
 def _compact(content: str) -> str:
@@ -134,7 +131,7 @@ def test_each_document_has_one_explicit_responsibility(name: str) -> None:
 def test_retired_blueprints_are_removed_without_forwarding_stubs() -> None:
     for name in (
         "项目重构大纲.md", "项目重构详细.md", "04_策略回溯.md", "1.md", "2.md", "todo.md",
-        "company.md", "score.md",
+        "company.md", "score.md", "f_人工审查.md", "g_实施进度.md",
     ):
         assert not (DOCS / name).exists()
 
@@ -156,7 +153,6 @@ def test_current_document_links_resolve() -> None:
     failures = []
     for path in paths:
         content = source_text(path)
-        # Old documents and their pre-rename links remain read-only evidence.
         for target in re.findall(r"\[[^\]]*\]\(([^)]+)\)", content):
             if target.startswith(("http:", "https:", "#", "mailto:")):
                 continue
