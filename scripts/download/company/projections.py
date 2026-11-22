@@ -4,6 +4,7 @@ from collections.abc import Mapping
 
 from scripts.core.contracts import DiagnosticResult
 from scripts.core.projection_values import ProjectMapping
+from scripts.download.company.company_source_qualification import ProjectCompanySourceQualification
 
 _CONSUMER_READ_FIELDS = (
     "checked", "http_checked", "stocks", "fields", "facts_equal", "fields_equal",
@@ -56,6 +57,9 @@ def ProjectCompanyResume(
         )
     }
     consumer_audit = ProjectMapping(summary.get("consumer_audit"))
+    qualification_audit = ProjectMapping(summary.get("source_qualification_audit"))
+    if qualification_audit:
+        selected["source_qualification_audit"] = ProjectCompanySourceQualification(qualification_audit)
     field_proof = ProjectMapping(summary.get("field_proof_audit"))
     recovery = ProjectMapping(summary.get("field_proof_recovery"))
     if recovery:

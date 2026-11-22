@@ -216,24 +216,27 @@ def test_typed_history_terminal_state_reaches_the_cli_without_downgrading_failur
     _assert_cli_summary(tmp_path, monkeypatch, capsys, result, status, state, exit_code)
 
 
-@pytest.mark.parametrize(("pending", "gaps", "failure", "cancelled", "paused", "reason"), (
-    (0, (), None, False, False, None),
-    (0, ("source_admission_pending",), None, False, False, "fields:source_admission_pending"),
-    (2, (), None, False, False, "fields:pending"),
-    (None, (), None, False, False, "fields:inventory_not_checked"),
-    (0, (), "timeout", False, False, "fields:timeout"),
-    (3, (), "company_raw_capacity_exhausted", False, False, "fields:company_raw_capacity_exhausted"),
-    (None, (), None, True, False, "task:cancelled"),
-    (None, (), None, False, True, "company_round_budget_exhausted"),
-    (None, ("supplier_input_rejected",), "company_round_page_number_mismatch", False, True, "company_round_budget_exhausted"),
+@pytest.mark.parametrize(("pending", "gaps", "failure", "cancelled", "paused", "reason", "terminal_state"), (
+    (0, (), None, False, False, None, "完成"),
+    (0, ("source_admission_pending",), None, False, False, "fields:source_admission_pending", "待补证"),
+    (2, (), None, False, False, "fields:pending", "待补证"),
+    (None, (), None, False, False, "fields:inventory_not_checked", "待继续"),
+    (0, (), "timeout", False, False, "fields:timeout", "待继续"),
+    (3, (), "company_raw_capacity_exhausted", False, False, "fields:company_raw_capacity_exhausted", "待继续"),
+    (None, (), None, True, False, "task:cancelled", "取消"),
+    (None, (), None, False, True, "company_round_budget_exhausted", "暂停"),
+    (None, ("supplier_input_rejected",), "company_round_page_number_mismatch", False, True, "company_round_budget_exhausted", "暂停"),
+    (None, (), "source_attempt_unconfirmed", False, False, "fields:source_attempt_unconfirmed", "阻塞"),
+    (0, ("news_metadata_does_not_verify_issuer_risk",), None, False, False, "news:news_metadata_does_not_verify_issuer_risk", "采集结束"),
 ))
 def test_company_terminal_reason_reaches_projection_and_cli(
-    tmp_path, monkeypatch, capsys, pending, gaps, failure, cancelled, paused, reason,
+    tmp_path, monkeypatch, capsys, pending, gaps, failure, cancelled, paused, reason, terminal_state,
 ):
+    tested_family = CompanySyncFamily.NEWS if terminal_state == "采集结束" else CompanySyncFamily.FIELDS
     company = CompanySyncRoundFixture(
         _NOW, families=tuple(CompanySyncFamilyFixture(
             family, pending_count=pending, gaps=gaps, failure=failure,
-        ) if family is CompanySyncFamily.FIELDS else CompanySyncFamilyFixture(family) for family in CompanySyncFamily),
+        ) if family is tested_family else CompanySyncFamilyFixture(family) for family in CompanySyncFamily),
         cancelled=cancelled, budget_exhausted=paused,
     )
     result = SyncData(
@@ -256,16 +259,19 @@ def test_company_terminal_reason_reaches_projection_and_cli(
     args = cli.BuildParser().parse_args(["--config", str(tmp_path / "runtime.json"), "sync", "company"])
     assert cli._run_sync(args, progress) == (130 if cancelled else int(reason is not None))
     terminal = messages[-1]
-    assert terminal.state == ("取消" if cancelled else "等待" if reason else "完成") and terminal.finished
+    assert terminal.state == terminal_state and terminal.finished
     fields = " | ".join(field.text for field in terminal.fields)
     assert f"原因 {reason or '无'}" in fields
+    if tested_family is CompanySyncFamily.NEWS:
+        assert "company 采集结束，新闻为辅助" in fields
     if failure is not None:
         assert f"company·fields 错误 {failure}" in fields
         assert f"公司失败记录 company/company_sync.sqlite3；轮次 {company.round_id}" in fields
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == status and payload["tasks"][0]["reason"] == reason
-    assert payload["tasks"][0]["families"][-1]["pending_count"] == pending
-    assert payload["tasks"][0]["families"][-1]["failure"] == failure
+    tested, = (item for item in payload["tasks"][0]["families"] if item["family"] == tested_family.value)
+    assert tested["pending_count"] == pending
+    assert tested["failure"] == failure
     assert payload["tasks"][0]["business_complete"] is (reason is None)
     assert payload["tasks"][0]["paused"] is (cancelled or paused)
 

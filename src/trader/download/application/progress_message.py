@@ -7,7 +7,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal
 
-ProgressState = Literal["开始", "处理中", "等待", "重试", "完成", "失败", "取消"]
+ProgressState = Literal[
+    "开始", "处理中", "等待", "重试", "完成", "失败", "取消", "待补证", "待继续", "暂停", "阻塞", "采集结束",
+]
 
 
 @dataclass(frozen=True)
@@ -63,6 +65,7 @@ class ProgressMessage:
     heartbeat: bool = True
     rows: tuple[ProgressRow, ...] = ()
     heartbeat_interval_seconds: float = 5.0
+    stage_elapsed_seconds: float | Literal["not_run"] | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -71,6 +74,11 @@ class ProgressMessage:
             or self.heartbeat_interval_seconds <= 0
         ):
             raise ValueError("sync_progress_heartbeat_interval_invalid")
+        seconds = self.stage_elapsed_seconds
+        if seconds is not None and seconds != "not_run" and (
+            type(seconds) not in (int, float) or not math.isfinite(seconds) or seconds < 0
+        ):
+            raise ValueError("sync_progress_stage_elapsed_invalid")
 
 
 __all__ = [

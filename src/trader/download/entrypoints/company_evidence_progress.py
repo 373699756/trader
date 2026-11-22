@@ -6,8 +6,9 @@ from trader.infra.progress_format import ProgressDuration, ShortProgressText
 
 import sys
 import time
-from collections.abc import Callable
-from dataclasses import replace
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from datetime import date
 from math import ceil
 from threading import Lock
@@ -18,8 +19,10 @@ from trader.download.application.progress_message import (
     ProgressLevel,
     ProgressMessage,
     ProgressRow,
+    ProgressState,
     ProgressTask,
 )
+from trader.download.application.company_round_progress import CompanyFieldOutcomeCounts, IsCompanyNewsReference
 from trader.download.infra.progress_projection import ProgressNumber
 from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.download.infra.terminal_progress import TerminalDownloadProgress
@@ -29,7 +32,7 @@ from trader.download.domain.company_evidence import (
 )
 from trader.download.domain.history_sync import HistoryStCheckFailure, HistoryStCheckProgress
 from trader.download.domain.company_events import CompanyDataState
-from trader.download.domain.company_sync import CompanySyncFamilyResult
+from trader.download.domain.company_sync import CompanySyncFamily, CompanySyncFamilyResult, CompanySyncRoundResult
 from trader.download.domain.download_failure import DownloadFailureObservation
 from trader.download.entrypoints.company_result_feedback import CompanyResultFeedback
 
@@ -149,38 +152,171 @@ def _quantity(value: int | None) -> str:
     return "未核对" if value is None else str(value)
 
 
-def ReportCompanySyncStart(report: SyncProgress, requested: int) -> None:
-    message = ProgressMessage((ProgressField(f"本次请求总体 {requested}股"),
-        ProgressField("核对固定轮次、资料完整性及必要本地恢复；请求额度不重置")),
-        task=ProgressTask("company", "prepare", "公司轮次"), state="开始")
-    report.register_observer("company", lambda: replace(message, state="等待"), task_key="prepare")
-    report(message)
+_COMPANY_ROUND_TASK = ProgressTask("company", "prepare", "公司轮次")
 
 
-def ReportCompanySyncFamily(report: Callable[[ProgressMessage], None], family: CompanySyncFamilyResult) -> None:
-    report(ProgressMessage(_family_fields(family),
-        task=ProgressTask("company", family.family.value, "公司资料"),
-        state="失败" if family.result.failure is not None else "完成" if family.result.business_complete else "等待",
-        finished=True))
+@dataclass(slots=True)
+class _CompanyFamilyRun:
+    seconds: float | None = None
+    acknowledged: int = 0
+    latest: CompanySyncFamilyResult | None = None
 
 
-def ReportCompanySyncAdvance(report: SyncProgress, family: CompanySyncFamilyResult) -> None:
-    """Expose only acknowledged journal facts; the heartbeat performs no I/O."""
-    message = ProgressMessage((ProgressField("最近确认调度步"), *_family_fields(family)),
-        task=ProgressTask("company", "prepare", "公司轮次"),
-        state="失败" if family.result.failure is not None else "处理中")
-    report.register_observer("company", lambda: replace(message, state="等待"), task_key="prepare")
-    report(message)
+class CompanyRoundProgress:
+    """Display the current invocation separately from the persisted round."""
+
+    def __init__(self, report: SyncProgress, monotonic: Callable[[], float]) -> None:
+        self._report = report
+        self._monotonic = monotonic
+        self._lock = Lock()
+        self._families = {family: _CompanyFamilyRun() for family in CompanySyncFamily}
+        self._running: tuple[CompanySyncFamily, float] | None = None
+        self._last_message: ProgressMessage | None = None
+        self._last_feedback = float("-inf")
+        self._finished = False
+
+    def start(self, requested: int) -> None:
+        message = ProgressMessage(
+            (
+                ProgressField(f"本次请求总体 {requested}股"),
+                ProgressField("核对固定轮次、资料完整性及必要本地恢复。沿用原请求额度。"),
+            ),
+            task=_COMPANY_ROUND_TASK,
+            state="开始",
+        )
+        with self._lock:
+            self._last_message = message
+            self._last_feedback = self._monotonic()
+        self._report.register_observer("company", self._heartbeat, task_key="prepare")
+        self._report(message)
+
+    @contextmanager
+    def activity(self, family: CompanySyncFamily) -> Iterator[None]:
+        started_at = self._monotonic()
+        with self._lock:
+            if self._running is not None or self._finished:
+                raise ValueError("company_sync_progress_activity_invalid")
+            self._running = (family, started_at)
+        try:
+            yield
+        finally:
+            with self._lock:
+                timing = self._families[family]
+                timing.seconds = (timing.seconds or 0.0) + self._monotonic() - started_at
+                self._running = None
+
+    def advance(self, family: CompanySyncFamilyResult) -> None:
+        failure = family.result.failure
+        state: ProgressState = "阻塞" if failure == "source_attempt_unconfirmed" else "失败" if failure else "处理中"
+        message = ProgressMessage(
+            (ProgressField("最近确认调度步"), *_family_fields(family)),
+            task=_COMPANY_ROUND_TASK,
+            state=state,
+            immediate=failure is not None,
+        )
+        with self._lock:
+            if self._finished:
+                return
+            timing = self._families[family.family]
+            timing.acknowledged += 1
+            timing.latest = family
+            self._last_message = message
+            self._last_feedback = self._monotonic()
+        self._report(message)
+
+    def finish(self, result: CompanySyncRoundResult, *, fields: CompanyFieldOutcomeCounts | None = None) -> None:
+        with self._lock:
+            if self._running is not None:
+                raise ValueError("company_sync_progress_activity_unfinished")
+            self._finished = True
+        self._report.finish_owner("company")
+        for family in result.families:
+            timing = self._families[family.family]
+            details = (*_family_fields(family), *_invocation_fields(timing, family.family))
+            if family.family is CompanySyncFamily.FIELDS:
+                published = fields if fields is not None and fields.publication_hash == result.publication_hash else None
+                details += _published_field_totals(published)
+            self._report(ProgressMessage(
+                details,
+                task=ProgressTask("company", family.family.value, "公司资料"),
+                state=_family_status(family, result),
+                finished=True,
+                stage_elapsed_seconds=timing.seconds if timing.seconds is not None else "not_run",
+            ))
+
+    def _heartbeat(self) -> ProgressMessage | None:
+        with self._lock:
+            now = self._monotonic()
+            message = self._last_message
+            if self._finished or message is None or now - self._last_feedback < 5.0:
+                return None
+            self._last_feedback = now
+            if self._running is None:
+                state = message.state if message.state in {"阻塞", "失败"} else "等待"
+                return replace(message, state=state, immediate=False)
+            family, started_at = self._running
+            current = ProgressField(f"当前执行 {family.value} 已用 {ProgressDuration(now - started_at)}")
+            return replace(message, fields=(current, *message.fields), state="处理中", immediate=False)
+
+
+def _family_status(family: CompanySyncFamilyResult, result: CompanySyncRoundResult) -> ProgressState:
+    step = family.result
+    if step.failure == "source_attempt_unconfirmed":
+        return "阻塞"
+    if step.failure:
+        return "失败"
+    if step.business_complete:
+        return "完成"
+    if IsCompanyNewsReference(family):
+        return "采集结束"
+    if result.cancelled and step.can_continue:
+        return "取消"
+    if "source_budget_exhausted" in step.gaps or (result.budget_exhausted and step.can_continue):
+        return "暂停"
+    return "待继续" if step.can_continue or (step.pending_count is None and not step.gaps) else "待补证"
+
+
+def _invocation_fields(timing: _CompanyFamilyRun, family: CompanySyncFamily) -> tuple[ProgressField, ...]:
+    if timing.seconds is None:
+        description = (
+            f"本次确认{timing.acknowledged}步，未派发族内作业"
+            if timing.acknowledged else "本次未执行，沿用账本"
+        )
+        return (ProgressField(description),)
+    duration = ProgressField(f"本次确认{timing.acknowledged}步，执行用时{timing.seconds:.2f}秒")
+    if timing.latest is not None and family is CompanySyncFamily.FIELDS:
+        return duration, ProgressField(f"本次最近确认核验{_quantity(timing.latest.result.accepted_inputs)}股")
+    return (duration,)
+
+
+def _published_field_totals(fields: CompanyFieldOutcomeCounts | None) -> tuple[ProgressField, ...]:
+    if fields is None:
+        return (ProgressField("正式字段及待处理正文统计未核对", ProgressLevel.WARNING),)
+    return (
+        ProgressField(
+            f"正式字段核实{fields.verified}项，有值待核{fields.present_unverified}项，"
+            f"其他待核{fields.other_pending}项，已证未披露{fields.not_disclosed}项，不适用{fields.not_applicable}项"
+        ),
+        ProgressField(f"各股待处理正文合计{fields.pending_documents}篇次"),
+    )
 
 
 def _family_fields(family: CompanySyncFamilyResult) -> tuple[ProgressField, ...]:
-    return (ProgressField(
-        f"{family.family.value}：已接纳{_quantity(family.accepted_inputs)}项；"
+    accepted = (
+        f"累计核验{_quantity(family.accepted_inputs)}股次/{family.steps}步，累计变动{len(family.result.changed_codes)}股"
+        if family.family is CompanySyncFamily.FIELDS
+        else f"累计接纳输入{_quantity(family.accepted_inputs)}项"
+    )
+    fields = (ProgressField(
+        f"{family.family.value} {accepted}；"
         f"本族请求预算已占用{_quantity(family.source_calls)}，未知{_quantity(family.unknown_attempts)}；"
         f"缺口{len(family.result.gaps)}项"),
         *((ProgressField(f"错误 {family.result.failure}", ProgressLevel.ERROR),) if family.result.failure is not None else ()),
         *((ProgressField(f"缺口原因 {','.join(family.result.gaps)}", ProgressLevel.WARNING),) if family.result.gaps else ()),
     )
+    if IsCompanyNewsReference(family):
+        fields += (ProgressField("新闻用于辅助研究。发行人风险由正式披露凭据核验。"),)
+    return fields
 
 
 def _market_label(market: str) -> str:
@@ -736,5 +872,10 @@ def _recovery(progress: EvidenceSyncProgress) -> str:
     return result
 
 
-__all__ = ["CompanyEvidenceProgress", "ReportCompanyStock", "ReportCompanyFailure", "ReportStPreparation",
-    "ReportCompanySyncStart", "ReportCompanySyncFamily", "ReportCompanySyncAdvance"]
+__all__ = [
+    "CompanyEvidenceProgress",
+    "CompanyRoundProgress",
+    "ReportCompanyStock",
+    "ReportCompanyFailure",
+    "ReportStPreparation",
+]

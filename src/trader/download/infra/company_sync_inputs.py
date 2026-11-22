@@ -149,14 +149,18 @@ class SQLiteCompanySyncInputStore:
             return tuple(row[0] for row in connection.run(
                 "SELECT task FROM company_source_task WHERE scope=? AND family='news_scope' AND task<>'initialized' ORDER BY task", (scope,)))
 
-    def watermark(self, scope: str) -> str:
+    def field_input_identity(self, scope: str) -> str:
+        """Bind only the structured inputs consumed by local field compilation."""
         with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection):
-            pages = tuple(tuple(row) for row in connection.run("SELECT component,page,pages,total,raw_count,decoded_hash FROM company_source_page WHERE scope=? ORDER BY component,page", (scope,)))
-            tasks = tuple(tuple(row) for row in connection.run("SELECT family,task,accepted,input_hash FROM company_source_task WHERE scope=? AND family<>'fields' ORDER BY family,task", (scope,)))
+            annuals = tuple(tuple(row) for row in connection.run(
+                "SELECT code,report_date,disclosed_at,updated_at,observed_at,currency,revenue,record_hash "
+                "FROM company_annual_income_observation WHERE scope=? ORDER BY code,report_date,disclosed_at,updated_at",
+                (scope,),
+            ))
             recovered = tuple((row[0], row[1], row[2], row[3], row[4].hex()) for row in connection.run(
                 "SELECT code,source,source_key,record_hash,body_hash FROM company_recovered_input WHERE scope=? ORDER BY code,source,source_key,record_hash,body_hash", (scope,),
             ))
-            return CanonicalDigest((pages, tasks, recovered))
+            return CanonicalDigest((annuals, recovered))
 
     def record_recovered(self, scope: str, item: CompanyRecoveredInput) -> None:
         with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):

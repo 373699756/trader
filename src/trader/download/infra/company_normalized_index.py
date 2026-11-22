@@ -429,8 +429,8 @@ class SQLiteCompanyNormalizedIndex:
             if parent is None:
                 raise ValueError("company_normalization_identity_missing")
             generation = connection.run("SELECT generation FROM company_round_generation WHERE scope=?", (scope,)).fetchone()
-            previous = ReadCompanyFactRows(connection, codes)
-            changed = tuple(item for item in facts if item not in previous)
+            previous = {item.code: item for item in ReadCompanyFactRows(connection, codes)}
+            changed = tuple(item for item in facts if item != previous.get(item.code))
             source_pairs = _sources(connection)
         if generation is not None:
             return self._publish_scope(scope, codes, cutoff)

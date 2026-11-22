@@ -120,6 +120,7 @@ def Main() -> int:
     audit.add_argument("--database-only", action="store_true")
     audit.add_argument("--consumer-only", action="store_true")
     parser.add_argument("--consumer-http", action="store_true")
+    audit.add_argument("--source-qualification-only", action="store_true")
     audit.add_argument("--field-proof-only", action="store_true")
     audit.add_argument("--field-proof-recovery-only", action="store_true")
     parser.add_argument("--field-proof-recovery-manifest", type=Path)
@@ -135,7 +136,7 @@ def Main() -> int:
     audit.add_argument("--directory-only", action="store_true")
     args = parser.parse_args()
     if args.directory_only or not any((
-        args.audit_only, args.database_only, args.consumer_only, args.field_proof_only,
+        args.audit_only, args.database_only, args.consumer_only, args.field_proof_only, args.source_qualification_only,
         args.field_replay_keys, args.field_proof_recovery_only, args.pagination_only,
         args.pipeline_only, args.pacing_only, args.material_keys,
         args.ocr_only, args.document_only,
@@ -151,6 +152,8 @@ def Main() -> int:
         parser.error("--consumer-only requires --facts-database and does not accept --directory")
     if args.consumer_http and not args.consumer_only:
         parser.error("--consumer-http requires --consumer-only")
+    if args.source_qualification_only and args.directory is not None:
+        parser.error("--source-qualification-only does not accept --directory")
     if args.field_proof_only and (args.facts_database is None or args.directory is not None):
         parser.error("--field-proof-only requires --facts-database and does not accept --directory")
     if args.field_proof_recovery_only and (
@@ -200,6 +203,34 @@ def Main() -> int:
         parser.error("--recovered-text requires --field-replay-keys")
     if args.replay_observed_at is not None and args.field_replay_keys is None:
         parser.error("--replay-observed-at requires --field-replay-keys")
+    if args.source_qualification_only:
+        from scripts.download.company.company_source_qualification import AuditCompanySourceQualification
+        from trader.download.infra.company_document_files import CompanyDocumentFiles
+        from trader.download.infra.download_settings import LoadCompanySyncConfiguration
+
+        paths = runtime.data_paths
+        if args.database.resolve() != paths.company_collection.resolve() or (
+            args.facts_database is not None and args.facts_database.resolve() != paths.company.resolve()
+        ):
+            parser.error("--source-qualification-only requires company paths from the configured runtime")
+        configuration = LoadCompanySyncConfiguration(runtime.project_root)
+        strategy = LoadStrategySettings(runtime.strategy_config_path)
+        report = AuditCompanySourceQualification(
+            paths,
+            documents=CompanyDocumentFiles(
+                paths.company_documents,
+                max_text_characters=configuration.extended_document_limits.max_text_characters,
+                max_bytes=configuration.temporary_text_capacity_bytes,
+                reserve_bytes=configuration.temporary_disk_reserve_bytes,
+            ),
+            sqlite_policy=sqlite_policy,
+            policy=strategy.long_research,
+            unlock_days=strategy.company_scoring.events.unlock_days,
+            deadline=time.monotonic() + args.budget_seconds,
+            monotonic=time.monotonic,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
     if args.field_replay_keys is not None:
         if args.facts_database is None or args.directory is None:
             parser.error("--field-replay-keys requires --facts-database and a new external --directory")

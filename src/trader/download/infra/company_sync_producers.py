@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import timedelta
 
+from trader.download.application.company_sync import CompanyDirectoryResponseReceipt
 from trader.download.application.company_source_ports import (
     CompanyNewsSource, CompanyOfficialDocumentSource, CompanyRatioSource,
 )
@@ -19,6 +20,7 @@ from datetime import datetime
 from trader.download.domain.company_sync import (
     CompanySyncFamily, CompanySyncPhasePlan, CompanySyncPhaseState, CompanySyncRoundScope, CompanySyncStepResult,
 )
+from trader.download.infra.company_disclosure_source import DecodeCninfoDirectoryResponse
 from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
 from trader.download.infra.company_field_recovery import ReadCompanyFieldRecovery, ReadRequiredCompanyMaterialDependencies
@@ -26,6 +28,7 @@ from trader.download.infra.company_material_index import SQLiteCompanyMaterialIn
 from trader.download.infra.company_raw_files import CompanyRawCapacityError
 from trader.download.infra.company_sync_inputs import CompanyRecoveredInput, SQLiteCompanySyncInputStore
 from trader.download.infra.company_sync_io import CompanySyncIoBudget
+from trader.infra.http_contracts import HttpResponse
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from pathlib import Path
@@ -261,6 +264,29 @@ class CompanyAnnouncementProducer:
         if isinstance(work, DisclosurePartition):
             return CompanySyncPhaseState(CanonicalDigest(work), any(EvidenceMarket(code) == work.market for code in self._current_codes))
         return CompanySyncPhaseState(_required_identity(None), False)
+
+    def recover_directory(
+        self, scope: CompanySyncRoundScope, receipt: CompanyDirectoryResponseReceipt,
+    ) -> CompanySyncStepResult | None:
+        if not self._initialized(scope):
+            return None
+        restored = DecodeCninfoDirectoryResponse(
+            receipt.request_body, HttpResponse(200, receipt.response_content, encoding=receipt.encoding),
+        )
+        if restored is None:
+            return None
+        partition, page = restored
+        if (
+            not any(
+                window.market == partition.market and window.start <= partition.start <= partition.end <= window.end
+                for window in self._partitions
+            )
+            or not any(EvidenceMarket(code) == partition.market for code in self._current_codes)
+        ):
+            return None
+        if not self._material.recover_directory_page(partition, page, scope.cutoff, receipt.state_hash):
+            return None
+        return CompanySyncStepResult(False, True, accepted_inputs=len(page.rows))
 
     def advance(self, scope: CompanySyncRoundScope, *, cancel_requested: Callable[[], bool], deadline: float) -> CompanySyncStepResult:
         if not self._initialized(scope):

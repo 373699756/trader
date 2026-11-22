@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader import bootstrap
+from trader.download.application.company_round_progress import CompanyFieldOutcomeCounts
 from trader.download.application.sync_data import SyncResult, SyncTaskResult
 from trader.download.application.progress_message import ProgressField, ProgressMessage, ProgressTask
 from trader.download.domain.company_evidence import (
@@ -21,20 +22,24 @@ from trader.download.domain.company_evidence import (
     DisclosureSecurity,
     EvidenceSyncProgress,
 )
-from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress, ReportCompanyStock, ReportCompanySyncStart, ReportCompanySyncFamily, ReportCompanySyncAdvance
+from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress, CompanyRoundProgress, ReportCompanyStock
 from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.entrypoints.cli import Main
 from trader.download.domain.company_sync import CompanySyncFamily, CompanySyncFamilyResult, CompanySyncStepResult
 from tests.helpers.download.company_round import CompanySyncFamilyFixture, CompanySyncRoundFixture
 
 
+_ROUND_AT = datetime(2026, 11, 21, 11, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+
 def test_company_round_start_has_heartbeat_and_finishes_with_owner():
     messages = []
     clock = [0.0]
     progress = SyncProgress(messages.append, lambda: clock[0])
-    CompanyEvidenceProgress(report=progress, observe=progress.register_observer)
+    company_progress = CompanyRoundProgress(progress, lambda: clock[0])
+
     def operation():
-        ReportCompanySyncStart(progress, 4403)
+        company_progress.start(4403)
         clock[0] = 10
         progress.heartbeat()
 
@@ -48,25 +53,33 @@ def test_company_round_start_has_heartbeat_and_finishes_with_owner():
 
 def test_company_round_unconfirmed_counts_are_not_none_or_zero():
     messages = []
+    progress = SyncProgress(messages.append, lambda: 0.0)
+    company_progress = CompanyRoundProgress(progress, lambda: 0.0)
     family = CompanySyncFamilyResult(CompanySyncFamily.FIELDS, 1, None, None,
         CompanySyncStepResult(True, False, None, 0, (), ()), unknown_attempts=None)
-    ReportCompanySyncFamily(messages.append, family)
-    text = messages[0].fields[0].text
-    assert "已接纳未核对项" in text and "预算已占用未核对，未知未核对" in text and "None" not in text
+    company_progress.finish(CompanySyncRoundFixture(_ROUND_AT, families=(family,)))
+    text = " | ".join(field.text for field in messages[0].fields)
+    assert "累计核验未核对股次" in text and "预算已占用未核对，未知未核对" in text and "None" not in text
+    assert "统计未核对" in text
 
 
-@pytest.mark.parametrize("report", (ReportCompanySyncFamily, ReportCompanySyncAdvance))
-def test_company_failure_is_visible_with_exact_gaps_before_progress_throttle(report):
+@pytest.mark.parametrize("terminal", (False, True))
+def test_company_failure_is_visible_with_exact_gaps_before_progress_throttle(terminal):
     messages = []
     clock = [0.0]
     progress = SyncProgress(messages.append, lambda: clock[0])
-    report(progress, CompanySyncFamilyFixture(CompanySyncFamily.FINANCIAL, complete=False))
+    company_progress = CompanyRoundProgress(progress, lambda: clock[0])
+    company_progress.advance(CompanySyncFamilyFixture(CompanySyncFamily.FINANCIAL, complete=False))
     clock[0] = 0.1
     failure = "company_round_page_number_mismatch"
-    report(progress, CompanySyncFamilyFixture(
+    result = CompanySyncFamilyFixture(
         CompanySyncFamily.FINANCIAL, complete=False,
         failure=failure, gaps=("supplier_input_rejected", "latest_financial_population_unverified"),
-    ))
+    )
+    if terminal:
+        company_progress.finish(CompanySyncRoundFixture(_ROUND_AT, families=(result,)))
+    else:
+        company_progress.advance(result)
     assert len(messages) == 2 and messages[-1].state == "失败"
     text = " | ".join(field.text for field in messages[-1].fields)
     assert f"错误 {failure}" in text
@@ -78,21 +91,82 @@ def test_company_step_heartbeat_repeats_acknowledged_counts_and_stops_with_owner
     messages = []
     clock = [0.0]
     progress = SyncProgress(messages.append, lambda: clock[0])
-    CompanyEvidenceProgress(report=progress, observe=progress.register_observer)
-    ReportCompanySyncStart(progress, 4403)
+    company_progress = CompanyRoundProgress(progress, lambda: clock[0])
+    company_progress.start(4403)
     family = CompanySyncFamilyResult(CompanySyncFamily.FINANCIAL, 2, 293, 3,
         CompanySyncStepResult(False, True, accepted_inputs=293), unknown_attempts=1)
     clock[0] = 2
-    ReportCompanySyncAdvance(progress, family)
+    company_progress.advance(family)
     assert any("最近确认调度步" == field.text for field in messages[-1].fields)
-    assert any("已接纳293项" in field.text and "占用3，未知1" in field.text for field in messages[-1].fields)
-    clock[0] = 20
-    progress.heartbeat()
-    assert messages[-1].state == "等待" and any("已接纳293项" in field.text for field in messages[-1].fields)
+    assert any("累计接纳输入293项" in field.text and "占用3，未知1" in field.text for field in messages[-1].fields)
+    with company_progress.activity(CompanySyncFamily.PLEDGE):
+        clock[0] = 6
+        progress.heartbeat()
+        assert len(messages) == 2
+        clock[0] = 8
+        progress.heartbeat()
+        assert messages[-1].state == "处理中"
+        assert any("当前执行 pledge 已用 00:00:06" in field.text for field in messages[-1].fields)
+        assert any("累计接纳输入293项" in field.text for field in messages[-1].fields)
     count = len(messages)
     progress.finish_owner("company")
     clock[0] = 40
     progress.heartbeat()
+    assert len(messages) == count
+
+
+def test_company_finishes_with_measured_execution_and_pinned_field_counts():
+    messages = []
+    clock = [0.0]
+    progress = SyncProgress(messages.append, lambda: clock[0])
+    company_progress = CompanyRoundProgress(progress, lambda: clock[0])
+    company_progress.start(4403)
+    pledge = CompanySyncFamilyFixture(CompanySyncFamily.PLEDGE, gaps=("pledge_population_coverage_unverified",))
+    announcements = replace(
+        CompanySyncFamilyFixture(
+            CompanySyncFamily.ANNOUNCEMENTS, failure="source_attempt_unconfirmed", source_calls=1,
+        ),
+        unknown_attempts=1,
+    )
+    news = CompanySyncFamilyFixture(CompanySyncFamily.NEWS, gaps=("news_metadata_does_not_verify_issuer_risk",))
+    field = CompanySyncFamilyResult(
+        CompanySyncFamily.FIELDS, 371, 1_633_513, 0,
+        CompanySyncStepResult(
+            True, False, 4403, changed_codes=("600001", "600002"), pending_count=47, gaps=("field_proof_incomplete",),
+        ),
+    )
+    with company_progress.activity(CompanySyncFamily.FIELDS):
+        clock[0] = 3
+        company_progress.advance(field)
+    clock[0] = 30
+    with company_progress.activity(CompanySyncFamily.FIELDS):
+        clock[0] = 34
+        company_progress.advance(field)
+    round_result = CompanySyncRoundFixture(_ROUND_AT, families=(pledge, announcements, news, field))
+    company_progress.finish(round_result, fields=CompanyFieldOutcomeCounts(
+        publication_hash=round_result.publication_hash,
+        verified=25,
+        present_unverified=37,
+        other_pending=10,
+        not_disclosed=0,
+        not_applicable=46,
+        pending_documents=85,
+    ))
+    pledge_done, announcements_done, news_done, fields_done = messages[-4:]
+    assert pledge_done.state == "待补证" and "--:--:--" in pledge_done.fields[1].text
+    assert any("本次未执行，沿用账本" in item.text for item in pledge_done.fields)
+    assert announcements_done.state == "阻塞" and any("source_attempt_unconfirmed" in item.text for item in announcements_done.fields)
+    assert news_done.state == "采集结束" and any("新闻用于辅助研究" in item.text for item in news_done.fields)
+    assert fields_done.state == "待补证" and "00:00:07" in fields_done.fields[1].text
+    text = " | ".join(item.text for item in fields_done.fields)
+    assert "累计核验1633513股次/371步，累计变动2股" in text
+    assert "本次确认2步，执行用时7.00秒" in text and "本次最近确认核验4403股" in text
+    assert "正式字段核实25项，有值待核37项，其他待核10项，已证未披露0项，不适用46项" in text
+    assert "各股待处理正文合计85篇次" in text
+    count = len(messages)
+    clock[0] = 40
+    progress.heartbeat()
+    company_progress.advance(field)
     assert len(messages) == count
 
 

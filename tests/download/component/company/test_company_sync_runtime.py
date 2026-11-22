@@ -7,7 +7,7 @@ import pytest
 from tests.download.component.company.test_company_sync_round import _SCOPE
 from tests.helpers.download.configuration import CompanyEventPolicyFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
-from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDownloadStore, CompanyInputValidationFailure, Disclosure, DisclosurePage, DisclosureQuery, StructuredCompanyPage
+from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDownloadStore, CompanyInputValidationFailure, Disclosure, DisclosurePage, DisclosurePartition, DisclosureQuery, StructuredCompanyPage, StructuredCompanyQuery
 from trader.download.domain.company_source_records import CompanyFinancialSourcePage
 from trader.download.domain.company_sync import CompanySyncBudget
 from trader.download.infra.company_document_files import CompanyDocumentFiles
@@ -16,12 +16,13 @@ from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceRead
 from trader.download.infra.company_financial_observations import ReadCompanyFinancialObservations
 from trader.download.infra.company_material_index import SQLiteCompanyMaterialIndex
 from trader.download.infra.company_normalized_index import SQLiteCompanyNormalizedIndex
-from trader.download.infra.company_sync_inputs import SQLiteCompanySyncInputStore
+from trader.download.infra.company_sync_inputs import CompanyRecoveredInput, SQLiteCompanySyncInputStore
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
 from trader.download.infra.company_sync_runtime import CompanySyncRuntime
 from trader.download.infra.company_sync_producers import CompanyAnnouncementProducer
 from trader.infra.http_contracts import HttpResponse
 from trader.infra.http_transport import RequestsHttpTransport
+from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_connection import SqliteSession
 
 
@@ -81,6 +82,32 @@ def _runtime(tmp_path):
         read_document=documents.read, financial_source=source, ratio_source=source, annual_source=source,
         news_source=source, official_source=source)
     return runtime, reader, transport, physical
+
+
+def test_local_field_watermark_reacts_to_proof_inputs_and_coverage_only(tmp_path):
+    runtime, _, transport, physical = _runtime(tmp_path)
+    with transport:
+        runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
+        before = runtime.field_watermark(_SCOPE, _SCOPE.codes, lambda: None)
+        today = _SCOPE.cutoff.date()
+        runtime.inputs.accept_ratios(_SCOPE.identity, StructuredCompanyQuery("unlock", today, today),
+            StructuredCompanyPage("unlock", 1, 1, 0), _SCOPE.cutoff)
+        runtime.inputs.complete_task(_SCOPE.identity, "news", _SCOPE.codes[0], 1, CanonicalDigest("news_metadata"))
+        assert runtime.field_watermark(_SCOPE, _SCOPE.codes, lambda: None) == before
+
+        partition = DisclosurePartition("sse", today, today)
+        runtime.material.register_partition(partition, _SCOPE.cutoff)
+        runtime.material.commit_page(partition, DisclosurePage((), 0, False), _SCOPE.cutoff)
+        covered = runtime.field_watermark(_SCOPE, _SCOPE.codes, lambda: None)
+        assert covered != before
+
+        proof = CompanyRecoveredInput(_SCOPE.codes[0], "cninfo", "fixture", "a" * 64, b"b" * 32)
+        runtime.inputs.record_recovered(_SCOPE.identity, proof)
+        recovered = runtime.field_watermark(_SCOPE, _SCOPE.codes, lambda: None)
+        assert recovered != covered
+        runtime.inputs.acknowledge_recovered(_SCOPE.identity, (proof,))
+        assert runtime.field_watermark(_SCOPE, _SCOPE.codes, lambda: None) == recovered
+    assert physical == []
 
 
 def test_broad_directory_duplicates_refine_durable_dates_without_accepting_duplicate_rows(tmp_path):
@@ -276,26 +303,32 @@ def test_old_formal_schema_rejected_before_other_stores_or_requests_are_created(
     transport.close()
 
 
-def test_unadmitted_complete_financial_row_stays_observation_and_never_leaks_through_field_publication(tmp_path):
+def test_normal_financial_download_collects_multiple_issuers_in_one_page_without_pdf_fanout(tmp_path):
     from datetime import date
     from trader.download.domain.company_evidence import CompanyFinancial
     from trader.download.domain.company_source_records import CompanyFinancialSourceObservation, CompanyFinancialSourceRecordHash
     runtime, reader, transport, physical = _runtime(tmp_path)
-    runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
-    financial = CompanyFinancial("600001", date(2026, 9, 30), _SCOPE.cutoff - timedelta(days=1), 1, 2, 3, 4, 5, 6, 7, 8)
-    observation = CompanyFinancialSourceObservation(financial, "600001.SH", financial.published_at, financial.published_at,
-        _SCOPE.cutoff, "CNY", CompanyFinancialSourceRecordHash(financial, "600001.SH", financial.published_at, financial.published_at, "CNY"), ())
+    codes = ("600001", "600002")
+    runtime.initialize(codes, _SCOPE.cutoff)
+    notice_at = _SCOPE.cutoff - timedelta(days=1)
+    observations = []
+    for code in codes:
+        financial = CompanyFinancial(code, date(2026, 9, 30), notice_at, 1, 2, 3, 4, 5, 6, 7, 8)
+        security = f"{code}.SH"
+        observations.append(CompanyFinancialSourceObservation(financial, security, notice_at, notice_at, _SCOPE.cutoff,
+            "CNY", CompanyFinancialSourceRecordHash(financial, security, notice_at, notice_at, "CNY"), ()))
     def source(query, *, observed_at):
         runtime._financial_source.transport.get("https://example.test/financial", timeout=1)
-        return CompanyFinancialSourcePage(1, 1, 1, 1, (observation,), "a" * 64)
+        return CompanyFinancialSourcePage(1, 1, len(observations), len(observations), tuple(observations), "a" * 64)
     runtime._financial_source.financial_observations = source
-    before = reader.read(_SCOPE.codes)
+    before = reader.read(codes)
     with transport:
-        result = runtime.run(_SCOPE.codes, _SCOPE.cutoff, CompanySyncBudget(100, 20, 20, 10), cancel_requested=lambda: False, monotonic=lambda: 0)
-    assert result.processing_complete and not result.business_complete and reader.read(_SCOPE.codes) == before
+        result = runtime.run(codes, _SCOPE.cutoff, CompanySyncBudget(100, 20, 20, 10), cancel_requested=lambda: False, monotonic=lambda: 0)
+    assert result.processing_complete and not result.business_complete and reader.read(codes) == before
+    assert physical.count("https://example.test/financial") == 1
     with SqliteSession(runtime.normalized.path) as normalized, SqliteSession(runtime.facts.path) as formal:
-        assert ReadCompanyFinancialObservations(normalized, _SCOPE.codes) == (observation,)
-        assert ReadCompanyFinancialObservations(formal, _SCOPE.codes) == ()
+        assert ReadCompanyFinancialObservations(normalized, codes) == tuple(observations)
+        assert ReadCompanyFinancialObservations(formal, codes) == ()
         assert formal.run("SELECT COUNT(*) FROM company_input_receipt WHERE source='eastmoney_financial'").require_one()[0] == 0
 
 

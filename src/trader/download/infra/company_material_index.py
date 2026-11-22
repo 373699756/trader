@@ -41,6 +41,7 @@ from trader.download.infra.company_pipeline_queries import (
 )
 from trader.download.infra.company_raw_files import CompanyRawFiles
 from trader.download.infra.download_failure_diagnostics import WriteDownloadFailure
+from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_connection import EnsureSqliteSchema, SqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
@@ -208,6 +209,77 @@ class SQLiteCompanyMaterialIndex:
         )
 
     def commit_page(self, partition: DisclosurePartition, page: DisclosurePage, observed_at: datetime) -> int:
+        return self._commit_page(partition, page, observed_at, reset_invalid_cursor=True)
+
+    def recover_directory_page(
+        self,
+        partition: DisclosurePartition,
+        page: DisclosurePage,
+        observed_at: datetime,
+        state_hash: str,
+    ) -> bool:
+        """Restore the exact unsettled page, including acceptance before its journal acknowledgement."""
+        if partition.query is not None:
+            return False
+        with self._connect() as connection:
+            row = connection.run("""SELECT next_page,expected_rows,received_rows,is_complete,checked_at FROM partitions
+                WHERE market=? AND start_date=? AND end_date=?
+                AND NOT EXISTS(SELECT 1 FROM disclosure_queries q WHERE q.market=partitions.market
+                    AND q.start_date=partitions.start_date AND q.end_date=partitions.end_date)""", _key(partition)).fetchone()
+            if row is None:
+                return False
+            next_page, expected, received, complete, checked_at = row
+            if next_page == partition.page and not complete:
+                prior = replace(partition, expected_rows=expected, received_rows=received)
+            elif (
+                next_page == partition.page + 1 and received >= len(page.rows) and expected == page.total
+                and bool(complete) == (not page.has_more) and checked_at == observed_at.isoformat()
+            ):
+                prior = replace(
+                    partition, expected_rows=None if partition.page == 1 else expected,
+                    received_rows=received - len(page.rows),
+                )
+                if CanonicalDigest(prior) != state_hash:
+                    return False
+                if complete:
+                    # Final acceptance drops its temporary page membership.
+                    # The exact coverage record and retained source identities
+                    # then prove this transaction under the company write lock.
+                    if connection.run(
+                        "SELECT 1 FROM coverage WHERE market=? AND start_date=? AND end_date=? AND checked_at=?",
+                        (*_key(partition), observed_at.isoformat()),
+                    ).fetchone() is None:
+                        return False
+                    return all(
+                        connection.run("""SELECT 1 FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id
+                            WHERE d.source='cninfo' AND d.source_key=? AND c.code=? AND d.record_hash=?""",
+                            (item.identity, code, item.digest)).fetchone() is not None
+                        for item in page.rows for code in item.codes
+                    )
+                return all(
+                    connection.run("""SELECT 1 FROM partition_rows p JOIN disclosures d ON d.source='cninfo' AND d.source_key=p.source_key
+                        WHERE p.market=? AND p.start_date=? AND p.end_date=? AND p.source_key=? AND p.code=? AND d.record_hash=?""",
+                        (*_key(partition), item.identity, code, item.digest)).fetchone() is not None
+                    for item in page.rows for code in item.codes
+                )
+            else:
+                return False
+        if CanonicalDigest(prior) != state_hash:
+            return False
+        try:
+            self._commit_page(prior, page, observed_at, reset_invalid_cursor=False)
+        except CompanyInputValidationFailure:
+            return False
+        return True
+
+    def _commit_page(
+        self,
+        partition: DisclosurePartition,
+        page: DisclosurePage,
+        observed_at: datetime,
+        *,
+        reset_invalid_cursor: bool,
+    ) -> int:
         if partition.page_size != 30 or partition.filter_identity != "all_announcements":
             raise ValueError("company_query_contract_unverified")
         if partition.query is not None:
@@ -219,9 +291,10 @@ class SQLiteCompanyMaterialIndex:
                     CommitDisclosureQueryPage(connection, partition, page)
                 return changes
             except CompanyInputValidationFailure:
-                self.restart_partition(partition)
+                if reset_invalid_cursor:
+                    self.restart_partition(partition)
                 raise
-        self._validate_page(partition, page)
+        self._validate_page(partition, page, reset_invalid_cursor=reset_invalid_cursor)
         received = partition.received_rows + len(page.rows)
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             CheckDisclosureQueryContract(connection, partition)
@@ -376,16 +449,19 @@ class SQLiteCompanyMaterialIndex:
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             DeferDisclosurePartition(connection, partition, retry_after)
 
-    def _validate_page(self, partition: DisclosurePartition, page: DisclosurePage) -> None:
+    def _validate_page(self, partition: DisclosurePartition, page: DisclosurePage, *, reset_invalid_cursor: bool = True) -> None:
         if partition.expected_rows is not None and partition.expected_rows != page.total:
-            self.restart_partition(partition)
+            if reset_invalid_cursor:
+                self.restart_partition(partition)
             raise CompanyInputValidationFailure("cninfo_partition_changed")
         received = partition.received_rows + len(page.rows)
         if not page.has_more and received != page.total:
-            self.restart_partition(partition)
+            if reset_invalid_cursor:
+                self.restart_partition(partition)
             raise CompanyInputValidationFailure("cninfo_page_truncated")
         if page.has_more and received >= page.total:
-            self.restart_partition(partition)
+            if reset_invalid_cursor:
+                self.restart_partition(partition)
             raise CompanyInputValidationFailure("cninfo_page_count_inconsistent")
         links = tuple((item.identity, code) for item in page.rows for code in item.codes)
         duplicate = len(links) != len(set(links))
@@ -400,7 +476,8 @@ class SQLiteCompanyMaterialIndex:
                     for identity, code in links
                 )
         if duplicate:
-            self.restart_partition(partition)
+            if reset_invalid_cursor:
+                self.restart_partition(partition)
             raise CompanyInputValidationFailure("cninfo_duplicate_page_links")
 
     def restart_partition(self, partition: DisclosurePartition) -> None:

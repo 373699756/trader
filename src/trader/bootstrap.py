@@ -6,6 +6,7 @@ from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.infra.sqlite_verification_cache import SqliteVerificationCache
 
 import logging
+import sqlite3
 import time
 import threading
 from collections.abc import Callable
@@ -1316,17 +1317,21 @@ def ExecuteCompanySync(
     sqlite_policy, paths = BuildSqlitePolicy(settings), settings.data_paths
     cutoff = ShanghaiClock(lambda: scope.cutoff).now()
     deadline = time.monotonic() + configuration.round_timeout_seconds
+    # Leave bounded time for the already authorized response and journal confirmation.
+    source_deadline = deadline - 2.0
     io_budget = CompanySyncIoBudget(deadline=deadline, monotonic=time.monotonic, cancel_requested=cancel_requested)
     codes = scope.codes
+    progress = company_evidence_progress.CompanyRoundProgress(report, time.monotonic)
+    progress.start(len(codes))
 
     def paused() -> CompanySyncRoundResult:
         cancelled = cancel_requested()
-        return CompanySyncRoundResult("", CompanySyncRoundScope(codes, cutoff), (), cancelled, not cancelled, "")
+        result = CompanySyncRoundResult("", CompanySyncRoundScope(codes, cutoff), (), cancelled, not cancelled, "")
+        progress.finish(result)
+        return result
 
     def stopped() -> bool:
         return cancel_requested() or time.monotonic() >= deadline
-
-    company_evidence_progress.ReportCompanySyncStart(report, len(codes))
 
     with ExitStack() as resources:
         resources.enter_context(ProcessLock(paths.company_collection.parent / "evidence.lock", label="sync company"))
@@ -1364,7 +1369,7 @@ def ExecuteCompanySync(
             sqlite_policy=sqlite_policy, clean_material=clean_material, cancel_requested=stopped, io_budget=io_budget)
         inputs = SQLiteCompanySyncInputStore(paths.company_inputs, sqlite_policy=sqlite_policy, io_budget=io_budget)
         transport = resources.enter_context(OpenExternalHttp(authorize=journal.authorize_request,
-            observe=journal.observe_attempt, deadline_limit=deadline))
+            observe=journal.observe_attempt, inspect_response=journal.retain_directory_response, deadline_limit=source_deadline))
         structured = EastmoneyCompanySource(transport, monotonic=time.monotonic,
             timeout_seconds=configuration.source_timeout_seconds, cancel_requested=stopped)
         try:
@@ -1395,7 +1400,7 @@ def ExecuteCompanySync(
             financial_source=structured, ratio_source=structured, annual_source=structured,
             news_source=structured, official_source=official, io_budget=io_budget,
             document_configuration=configuration, document_policies=policies, wall_clock=ShanghaiClock(_utc_now).now,
-            observe=partial(company_evidence_progress.ReportCompanySyncAdvance, report))
+            observe=progress.advance, activity=progress.activity, source_ready=lambda: time.monotonic() < source_deadline)
         budget = CompanySyncBudget(configuration.round_step_limit, configuration.round_request_limit,
             min(256, configuration.round_step_limit), deadline)
         try:
@@ -1410,6 +1415,13 @@ def ExecuteCompanySync(
                 news_codes=news_codes)
         except CompanySyncInterrupted:
             return paused()
-        for family in result.families:
-            company_evidence_progress.ReportCompanySyncFamily(report, family)
+        fields = None
+        if result.publication_hash and not stopped():
+            try:
+                fields = reader.read_field_counts(cancel_requested=stopped)
+            except CompanySyncInterrupted:
+                pass
+            except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
+                logging.getLogger(__name__).warning("公司正式字段计数不可用 category=%s", type(exc).__name__)
+        progress.finish(result, fields=fields)
         return result

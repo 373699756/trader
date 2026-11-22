@@ -83,7 +83,10 @@ class SyncProgress:
             self._emit(task, timing, message, now)
 
     def _emit(self, task: ProgressTask, timing: _TaskTiming, message: ProgressMessage, now: float) -> None:
-        self._report(WithProgressTime(message, now - self._started, now - timing.started))
+        measured = message.stage_elapsed_seconds
+        if measured is None:
+            measured = now - timing.started
+        self._report(WithProgressTime(message, now - self._started, None if measured == "not_run" else measured))
         timing.emitted = now
 
     def heartbeat(self) -> None:

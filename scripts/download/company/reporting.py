@@ -176,6 +176,15 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
         return replace(result, payload=dict(source, status=revision_status))
     report_name = result.name
     summary = source.get("summary")
+    if report_name == "company_resume" and isinstance(summary, Mapping) and "source_qualification_audit" in summary:
+        audit = summary["source_qualification_audit"]
+        valid = isinstance(audit, Mapping) and (
+            source.get("status") == "degraded" and audit.get("scope") == "frozen_company_inputs"
+            and all(audit.get(name) is True for name in ("read_only", "stable_source_read"))
+            and all(audit.get(name) is False for name in ("source_admission_verified", "production_adopted"))
+            and all(type(audit.get(name)) is int and audit.get(name) == 0 for name in ("network_requests", "source_data_writes"))
+        )
+        return replace(result, error_code="invalid_company_source_qualification" if not valid else None)
     if report_name == "company_resume" and isinstance(summary, Mapping) and "field_proof_recovery" in summary:
         recovery = summary["field_proof_recovery"]
         valid = isinstance(recovery, Mapping) and (

@@ -164,6 +164,38 @@ def test_fixed_source_budget_exhaustion_still_runs_local_fields_and_does_not_ref
     assert not physical and journal.source_calls(result.round_id) == 1
 
 
+def test_source_reserve_does_not_preallocate_next_page_and_keeps_local_work(tmp_path):
+    journal, producers, budget, physical, calls, transport = _resources(tmp_path)
+    clock = [0.0]
+    advance = producers[0].advance
+
+    def advance_first_page(scope, *, cancel_requested, deadline):
+        result = advance(scope, cancel_requested=cancel_requested, deadline=deadline)
+        clock[0] = 9.0
+        return result
+
+    producers[0].advance = advance_first_page
+    with transport:
+        first = RunCompanySyncRound(
+            journal, producers, _SCOPE, budget, monotonic=lambda: clock[0],
+            cancel_requested=lambda: False, source_ready=lambda: clock[0] < 8,
+        )
+    assert first.paused and not first.processing_complete
+    assert physical == ["https://example.test/1"] and "fields" in calls
+    assert journal.source_calls(first.round_id) == 1
+    assert journal.outstanding_family(first.round_id) is None
+
+    restarted, producers, budget, physical, calls, transport = _resources(tmp_path)
+    with transport:
+        second = RunCompanySyncRound(
+            restarted, producers, _SCOPE, budget, monotonic=lambda: 0,
+            cancel_requested=lambda: False, source_ready=lambda: True,
+        )
+    assert second.business_complete and second.round_id == first.round_id
+    assert physical == ["https://example.test/2"] and calls == ["financial"]
+    assert restarted.source_calls(second.round_id) == 2
+
+
 def test_recommendation_families_rotate_before_optional_inputs(tmp_path):
     journal, producers, budget, physical, calls, transport = _resources(tmp_path)
     order = []

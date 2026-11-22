@@ -61,6 +61,7 @@ def BuildCommands(
                 *(("--database-only",) if options.company_database_audit else ()),
                 *(("--consumer-only",) if options.company_consumer_audit else ()),
                 *(("--consumer-http",) if options.company_consumer_http else ()),
+                *(("--source-qualification-only",) if options.company_source_qualification_audit else ()),
                 *(("--field-proof-only",) if options.company_field_proof_audit else ()),
                 *(("--field-proof-recovery-only",) if options.company_field_proof_recovery else ()),
                 *(("--field-proof-recovery-manifest", str(options.company_field_proof_recovery_manifest)) if options.company_field_proof_recovery_manifest is not None else ()),

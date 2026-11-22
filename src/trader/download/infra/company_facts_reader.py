@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
+from trader.download.application.company_round_progress import CompanyFieldOutcomeCounts
 from trader.download.domain.company_document_links import CompanyDocumentLinkSnapshot
 from trader.download.domain.company_events import CompanyEventPolicy
 from trader.download.domain.company_facts import CompanyFacts
@@ -17,7 +18,7 @@ from trader.download.domain.company_field_results import CompanyFieldSnapshot
 from trader.download.infra.company_document_link_rows import ReadCompanyDocumentLinks
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
-from trader.download.infra.company_facts_protocol import CompanyExtractionHash
+from trader.download.infra.company_facts_protocol import CompanyExtractionHash, CompanyInteger
 from trader.download.infra.company_facts_schema import COMPANY_FACTS_SCHEMA
 from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
@@ -118,11 +119,58 @@ class SQLiteCompanyEvidenceReader:
                     version = self._publication_version(connection, check=check_cancelled)
                     results = ReadCompanyFieldResults(connection, codes) if version else ()
                     if results:
-                        marker = connection.run("SELECT rules_hash FROM company_field_proof_rule WHERE singleton=1").fetchone()
-                        if marker is None or marker[0] != CompanyFieldProofRulesHash():
-                            raise ValueError("company_field_rules_unreproved")
+                        self._require_current_field_rules(connection)
                     check_cancelled()
                     return CompanyFieldSnapshot(version, results)
+        except sqlite3.Error as exc:
+            if cancel_requested is not None and cancel_requested():
+                raise InterruptedError("company_field_read_cancelled") from exc
+            raise RuntimeError("company_fields_unreadable") from exc
+
+    @staticmethod
+    def _require_current_field_rules(connection: SqliteConnection) -> None:
+        marker = connection.run("SELECT rules_hash FROM company_field_proof_rule WHERE singleton=1").fetchone()
+        if marker is None or marker[0] != CompanyFieldProofRulesHash():
+            raise ValueError("company_field_rules_unreproved")
+
+    def read_field_counts(
+        self, *, cancel_requested: Callable[[], bool] | None = None,
+    ) -> CompanyFieldOutcomeCounts | None:
+        """Count conclusions and pending documents from the same formal snapshot."""
+        def check_cancelled() -> None:
+            if cancel_requested is not None and cancel_requested():
+                raise InterruptedError("company_field_read_cancelled")
+
+        check_cancelled()
+        if not self.path.exists():
+            return None
+        try:
+            with self._session(cancel_requested=cancel_requested) as connection, SqliteTransaction(connection):
+                version = self._publication_version(connection, check=check_cancelled)
+                if not version:
+                    return None
+                total, verified, present, pending, undisclosed, inapplicable, documents = connection.run("""
+                    SELECT COUNT(*),
+                      COUNT(CASE WHEN state='verified' THEN 1 END),
+                      COUNT(CASE WHEN state='present_unverified' THEN 1 END),
+                      COUNT(CASE WHEN applicable=1 AND state NOT IN ('verified', 'present_unverified', 'not_disclosed') THEN 1 END),
+                      COUNT(CASE WHEN state='not_disclosed' THEN 1 END),
+                      COUNT(CASE WHEN applicable=0 THEN 1 END),
+                      (SELECT COALESCE(SUM(pending_docs), 0) FROM company_facts)
+                    FROM company_field_result
+                    """).require_one()
+                if total:
+                    self._require_current_field_rules(connection)
+                check_cancelled()
+                return CompanyFieldOutcomeCounts(
+                    version,
+                    CompanyInteger(verified),
+                    CompanyInteger(present),
+                    CompanyInteger(pending),
+                    CompanyInteger(undisclosed),
+                    CompanyInteger(inapplicable),
+                    CompanyInteger(documents),
+                )
         except sqlite3.Error as exc:
             if cancel_requested is not None and cancel_requested():
                 raise InterruptedError("company_field_read_cancelled") from exc

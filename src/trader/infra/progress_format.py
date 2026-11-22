@@ -69,13 +69,13 @@ def WrapProgressText(text: str, width: int) -> tuple[str, ...]:
 def ProgressPrefix(
     total_seconds: float,
     task: str,
-    stage_seconds: float,
+    stage_seconds: float | None,
     state: str,
     *,
     stage_width: int = 52,
 ) -> tuple[str, str, str]:
     """Bound stage labels without adding fixed-width padding to the prefix."""
-    duration = ProgressDuration(stage_seconds)
+    duration = "--:--:--" if stage_seconds is None else ProgressDuration(stage_seconds)
     label = ShortProgressText(task, max(0, stage_width - DisplayWidth(duration) - 1))
     return ProgressDuration(total_seconds), f"{label} {duration}", CleanProgressText(state)
 

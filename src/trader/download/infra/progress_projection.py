@@ -29,7 +29,7 @@ def ProgressNumber(value: int | None, width: int = 6) -> str:
     return ("-" if value is None else str(value)).rjust(width)
 
 
-def WithProgressTime(message: ProgressMessage, total_seconds: float, stage_seconds: float) -> ProgressMessage:
+def WithProgressTime(message: ProgressMessage, total_seconds: float, stage_seconds: float | None) -> ProgressMessage:
     if message.task is None:
         raise ValueError("sync_progress_task_missing")
     prefix = progress_format.ProgressPrefix(

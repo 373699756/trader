@@ -22,6 +22,8 @@
 
 同入口`field_audit.financial_sources`分别核对保留与最新报告八项、报告期及精确披露时点。`source_null`表示当前采集依据为空，`publication_missing`表示依据有值而正式值丢失，`source_revision_changed`另列未确认；不将来源空值认证为发行人未披露。汇总覆盖全部正式行，逐股缺项列表最多50条、每条最多8项；旧完整报告不能遮蔽最新报告缺项。`--company-field-replay-keys`也可选择减持依据，在隔离副本中核验正式字段证据及第二轮复用；来源并发变化、缺原文或仍有重复正文读取时保持degraded，不借用局部出证数签全库或性能通过。
 
+`download/company/coverage --company-source-qualification-audit`只读取配置内的固定公司轮次、规范财务、比例观察、原公告目录和正式发布。该模式检查来源计划摘要、分页与总体身份，输出财务样本和最新缺项的逐股原报告候选、修订与留存正文检查，以及质押／解禁分母和范围覆盖缺口。它不联网或发布，分页核对与正式可用覆盖各自报告。有未合并WAL或读窗内库变化时拒绝签稳定结果。
+
 同一`--company-database-audit`入口按实际配置的事件规则调用生产`SQLiteCompanyEvidenceReader`，将全部正式股票事实、事件字段结论／证据、正式公告链接和发布身份与固定SQL快照逐值比较，输出`publication.consumer_read`；`document_links/document_links_equal`分别记录实际链接数量和逐值一致性。未读完、规则不匹配、链接或发布身份不一致及预算到期不能计为一致。`http_checked=false`明确表示该审计未验HTTP接口；并发变更、未完成库存及来源质量继续独立报告。
 
 只核正式库与生产reader一致性时，选择`download/company/coverage --company-consumer-audit`，可用`--company-evidence-database`指定正式库。该模式不打开采集库、不做dbstat或字段恢复规划，不需要回放目录；与其它company审计模式互斥，并拒绝回放目录和旧风险对照参数。输出`consumer_audit.scope=formal_reader_consistency_only`，事实、字段、正式链接和发布身份逐值一致且读窗未变、预算未耗尽才通过；`collection_checked/recovery_planned/field_correctness_verified/full_market_verified/http_checked`均为false。

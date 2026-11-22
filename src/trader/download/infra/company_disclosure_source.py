@@ -13,9 +13,10 @@ import tempfile
 from pathlib import Path
 from collections.abc import Callable, Mapping
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from functools import partial
-from typing import Literal
+from typing import Literal, cast
+from urllib.parse import parse_qsl, urlencode
 from zoneinfo import ZoneInfo
 
 from trader.download.domain.company_financial_report import CompanyFinancialReportRequest, IsCompanyFinancialReportTitle
@@ -33,6 +34,7 @@ from trader.download.domain.company_evidence import (
     DisclosureSecurity,
     DocumentRoute,
     EvidenceMarket,
+    Market,
 )
 from trader.download.infra.company_document_ocr import CompanyOcrEngine
 from trader.download.domain.download_failure import DownloadValidationFailure
@@ -52,6 +54,7 @@ from trader.infra.http_contracts import (
     HttpTransport,
 )
 
+CNINFO_DIRECTORY_URL = "https://www.cninfo.com.cn/new/hisAnnouncement/query"
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DEFAULT_POLICIES = CompanyDocumentPolicies("text_4:poppler-path", "ocr_3:unavailable", "limits_1:default")
 _DEFAULT_TEXT_CAPABILITY = CompanyTextCapability("poppler-path", "pdftotext", "pdfinfo")
@@ -63,10 +66,10 @@ class CninfoMarketDisclosureSource:
     def request_endpoint(self, component: str) -> str:
         """Expose stable public routes and local processing names without a document URL."""
         return {
-            "announcements": "https://www.cninfo.com.cn/new/hisAnnouncement/query",
-            "directory": "https://www.cninfo.com.cn/new/hisAnnouncement/query",
-            "annual_income": "https://www.cninfo.com.cn/new/hisAnnouncement/query",
-            "financial": "https://www.cninfo.com.cn/new/hisAnnouncement/query",
+            "announcements": CNINFO_DIRECTORY_URL,
+            "directory": CNINFO_DIRECTORY_URL,
+            "annual_income": CNINFO_DIRECTORY_URL,
+            "financial": CNINFO_DIRECTORY_URL,
             "download": "https://static.cninfo.com.cn/finalpage/",
             "risk_documents": "https://static.cninfo.com.cn/finalpage/",
             "text": "local_pdf_text_extraction",
@@ -125,27 +128,8 @@ class CninfoMarketDisclosureSource:
 
     def _fetch_page(self, partition: DisclosurePartition, *, order: str = "") -> HttpResponse:
         return self._session.post(
-            "https://www.cninfo.com.cn/new/hisAnnouncement/query",
-            data={
-                "pageNum": str(partition.page),
-                "pageSize": str(partition.page_size),
-                "column": partition.market,
-                "plate": partition.query.plate
-                if partition.query
-                else {"sse": "sh", "szse": "sz", "bse": "bj"}[partition.market],
-                "tabName": "fulltext",
-                "stock": ";".join(f"{s.code},{s.org_id}" for s in partition.query.securities)
-                if partition.query
-                else "",
-                "searchkey": "",
-                "secid": "",
-                "category": "",
-                "trade": "",
-                "seDate": f"{partition.start.isoformat()}~{partition.end.isoformat()}",
-                "sortName": "code" if order else "",
-                "sortType": order,
-                "isHLtitle": "false",
-            },
+            CNINFO_DIRECTORY_URL,
+            data=_directory_page_form(partition, order=order),
             headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.cninfo.com.cn/"},
             timeout=self._timeout,
             deadline=self._monotonic() + self._timeout,
@@ -594,6 +578,50 @@ def _repair_groups(members: list[DisclosureSecurity]) -> tuple[DisclosureQuery, 
     return tuple(queries)
 
 
+def _directory_page_form(partition: DisclosurePartition, *, order: str) -> dict[str, str]:
+    return {
+        "pageNum": str(partition.page),
+        "pageSize": str(partition.page_size),
+        "column": partition.market,
+        "plate": partition.query.plate if partition.query else {"sse": "sh", "szse": "sz", "bse": "bj"}[partition.market],
+        "tabName": "fulltext",
+        "stock": ";".join(f"{s.code},{s.org_id}" for s in partition.query.securities) if partition.query else "",
+        "searchkey": "",
+        "secid": "",
+        "category": "",
+        "trade": "",
+        "seDate": f"{partition.start.isoformat()}~{partition.end.isoformat()}",
+        "sortName": "code" if order else "",
+        "sortType": order,
+        "isHLtitle": "false",
+    }
+
+
+def DecodeCninfoDirectoryResponse(body: bytes, response: HttpResponse) -> tuple[DisclosurePartition, DisclosurePage] | None:
+    """Replay a complete ordinary directory response against its exact supplier form."""
+    try:
+        form = dict(parse_qsl(body.decode("ascii"), keep_blank_values=True, strict_parsing=True, max_num_fields=14))
+        market = form["column"]
+        if market not in ("sse", "szse", "bse"):
+            return None
+        start, end = form["seDate"].split("~")
+        partition = DisclosurePartition(
+            cast(Market, market), date.fromisoformat(start), date.fromisoformat(end),
+            page=int(form["pageNum"]), page_size=int(form["pageSize"]),
+        )
+        if (
+            partition.page > 100 or partition.page_size != 30
+            or body != urlencode(_directory_page_form(partition, order="desc")).encode("ascii")
+        ):
+            return None
+        page = _parse_page(_response_json(response), partition)
+    except (KeyError, ValueError, DownloadValidationFailure, HttpError):
+        return None
+    if len(page.rows) > partition.page_size or page.total > 100 * partition.page_size:
+        return None
+    return partition, page
+
+
 def _response_json(response: HttpResponse) -> object:
     try:
         return response.json()
@@ -686,4 +714,4 @@ def _layout_policy(policy: str) -> str:
     return hashlib.sha256((policy + "\0pdftotext:-layout").encode()).hexdigest()
 
 
-__all__ = ["CninfoMarketDisclosureSource"]
+__all__ = ["CNINFO_DIRECTORY_URL", "CninfoMarketDisclosureSource", "DecodeCninfoDirectoryResponse"]

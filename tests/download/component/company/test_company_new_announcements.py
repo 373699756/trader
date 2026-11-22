@@ -1,6 +1,7 @@
 """Current ordinary composition publishes independently verified new official evidence."""
 
 import hashlib
+import json
 from dataclasses import replace
 from datetime import timedelta
 
@@ -10,10 +11,15 @@ from tests.download.component.company.test_company_sync_round import _SCOPE
 from tests.download.component.company.test_company_sync_runtime import _runtime
 from tests.helpers.download.configuration import CompanySyncConfigurationFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
+from trader.download.application.company_sync import ResumeCompanySyncPendingStep, RunCompanySyncRound
 from trader.download.domain.company_evidence import BuildCompanyDocumentPolicies, CompanyDocumentExtraction, CompanyDocumentFailure, Disclosure, DisclosurePage
 from trader.download.domain.company_events import CompanyEventStatus, CompanyRiskType
-from trader.download.domain.company_sync import CompanySyncBudget
+from trader.download.domain.company_sync import CompanySyncBudget, CompanySyncFamily, CompanySyncStepResult
+from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
+from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
 from trader.download.infra.company_sync_producers import CompanyAnnouncementProducer
+from trader.infra.http_contracts import HttpResponse
+from trader.infra.http_transport import RequestsHttpTransport
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_connection import SqliteSession
 from trader.recommendation.domain.scoring.company import IsCompanyRiskEffective
@@ -285,6 +291,104 @@ def test_risk_originals_across_the_population_precede_positive_material_without_
     assert calls == [
         "reduction-ended", first_partition, "investigation", producer._partitions[1], "commitment", "positive",
     ]
+
+
+@pytest.mark.parametrize(
+    "terminal,already_accepted,receipt_fault",
+    ((False, False, None), (True, False, None), (True, True, None), (True, False, "digest"), (True, False, "missing")),
+)
+def test_directory_response_recovers_exact_unsettled_slot_without_fetch(
+    tmp_path, terminal, already_accepted, receipt_fault,
+):
+    runtime, reader, fixture_transport, _ = _runtime(tmp_path)
+    fixture_transport.close()
+    scope = replace(_SCOPE, families=(CompanySyncFamily.ANNOUNCEMENTS,))
+    runtime.initialize(scope.codes, scope.cutoff)
+    journal = runtime.journal
+    policy = SqlitePolicyFixture()
+    config = CompanySyncConfigurationFixture()
+    physical = []
+
+    def execute(request):
+        physical.append(request)
+        return HttpResponse(200, json.dumps({
+            "totalRecordNum": 1,
+            "hasMore": False,
+            "announcements": [{
+                "announcementId": "recovered",
+                "secCode": scope.codes[0],
+                "announcementTitle": "普通公告",
+                "announcementTime": int(scope.cutoff.timestamp() * 1000),
+                "adjunctUrl": "finalpage/2026-11-17/recovered.PDF",
+            }],
+        }).encode("utf-8"))
+
+    with RequestsHttpTransport(
+        authorize=journal.authorize_request, inspect_response=journal.retain_directory_response,
+        execute_request=execute, monotonic=lambda: 0,
+    ) as transport:
+        source = CninfoMarketDisclosureSource(
+            transport, monotonic=lambda: 0, sleeper=lambda _: None, timeout_seconds=1,
+            document_download_timeout_seconds=1, document_parse_timeout_seconds=1, request_interval_seconds=0,
+            document_limits=config.document_limits, extended_document_limits=config.extended_document_limits,
+        )
+        producer = CompanyAnnouncementProducer(
+            runtime.inputs, runtime.material, source, scope, sqlite_policy=policy,
+            extraction_hash=runtime.facts.extraction_hash,
+        )
+        budget = CompanySyncBudget(1, 1, 1, 10)
+        round_id = journal.begin(scope, (producer.plan,), max_source_calls=budget.max_source_calls)
+        journal.start(round_id, CompanySyncFamily.ANNOUNCEMENTS, producer.state(scope))
+        initialized = producer.advance(scope, cancel_requested=lambda: False, deadline=budget.deadline)
+        journal.finish(round_id, CompanySyncFamily.ANNOUNCEMENTS, initialized)
+        journal.start(round_id, CompanySyncFamily.ANNOUNCEMENTS, producer.state(scope))
+        partition = producer._partitions[0]
+        page = source.fetch(partition, order="desc")
+        if already_accepted:
+            runtime.material.commit_page(partition, page, scope.cutoff)
+        if terminal:
+            journal.finish(round_id, CompanySyncFamily.ANNOUNCEMENTS, CompanySyncStepResult(
+                False, False, gaps=("source_attempt_unconfirmed",), failure="source_attempt_unconfirmed",
+            ))
+        receipt_path = journal.path.with_name(journal.path.name + ".directory-response.json")
+        if receipt_fault == "digest":
+            receipt_path.write_text(receipt_path.read_text().replace('"content_hash":"', '"content_hash":"x'))
+        elif receipt_fault == "missing":
+            receipt_path.unlink()
+
+    # The original source now holds a closed transport. Recovery can only use local data.
+    restarted = SQLiteCompanySyncRoundJournal(
+        journal.path, sqlite_policy=policy, publication_identity=reader.publication_identity,
+    )
+    if not terminal:
+        assert ResumeCompanySyncPendingStep(
+            restarted, (producer,), scope, round_id, budget, monotonic=lambda: 0,
+            cancel_requested=lambda: False, recover_directory=producer.recover_directory,
+        )
+    else:
+        RunCompanySyncRound(
+            restarted, (producer,), scope, budget, monotonic=lambda: 0,
+            cancel_requested=lambda: False, recover_directory=producer.recover_directory,
+        )
+    family = restarted.family(round_id, CompanySyncFamily.ANNOUNCEMENTS)
+    assert len(physical) == restarted.source_calls(round_id) == family.source_calls == 1
+    if receipt_fault:
+        assert family.unknown_attempts == 1 and family.result.failure == "source_attempt_unconfirmed"
+        assert runtime.material.pending_partitions(partition) == (partition,)
+        return
+    assert family.unknown_attempts == 0 and family.result.failure is None
+    assert family.accepted_inputs == 1 and "source_attempt_unconfirmed" not in family.result.gaps
+    assert all(not gap.startswith("directory_response_recovered:") for gap in family.result.gaps)
+    assert runtime.material.pending_partitions(partition) == ()
+    assert restarted.directory_response(round_id) is None
+    with SqliteSession(restarted.path) as connection:
+        assert tuple(connection.run("SELECT attempt,observed,status FROM company_sync_request").require_one()) == (1, 1, 200)
+        if terminal:
+            history = tuple(connection.run(
+                "SELECT failure,gaps FROM company_sync_step WHERE family='announcements' AND step>=2 ORDER BY step",
+            ))
+            assert history[0][0] == "source_attempt_unconfirmed"
+            assert "directory_response_recovered:2" in json.loads(history[1][1])
 
 
 @pytest.mark.parametrize("guard", ("other_stock", "multi_stock", "future", "expired", "other_source", "ineligible"))

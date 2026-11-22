@@ -1,8 +1,9 @@
 """Company resource orchestration with explicit clients and one formal owner."""
 
 import sqlite3
+from collections import defaultdict
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -14,9 +15,11 @@ from trader.download.application.company_source_ports import (
 from trader.download.application.company_sync import CompanySyncProducer, ResumeCompanySyncPendingStep, RunCompanySyncRound
 from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy
 from trader.download.domain.company_evidence import (
-    CompanyDatabaseIncompatibleError, CompanyDownloadStore, CompanyDocumentPolicies, CompanySyncConfiguration, StructuredCompanyQuery,
+    CompanyDatabaseIncompatibleError, CompanyDownloadStore, CompanyDocumentPolicies, CompanySyncConfiguration, EvidenceMarket, StructuredCompanyQuery,
 )
 from trader.download.domain.company_facts import CompanyFacts
+from trader.download.domain.company_document_links import CompanyPublishedEvidenceLink
+from trader.download.domain.company_field_results import CompanyFieldConclusion
 from trader.download.domain.company_sync import (
     CompanySyncBudget, CompanySyncFamily, CompanySyncFamilyResult, CompanySyncInterrupted, CompanySyncPhasePlan, CompanySyncPhaseState,
     CompanySyncRoundResult, CompanySyncRoundScope, CompanySyncStepResult, CompanySourceCancelled,
@@ -58,6 +61,8 @@ class CompanySyncRuntime:
         document_configuration: CompanySyncConfiguration | None = None, document_policies: CompanyDocumentPolicies | None = None,
         wall_clock: Callable[[], datetime] | None = None,
         observe: Callable[[CompanySyncFamilyResult], None] | None = None,
+        activity: Callable[[CompanySyncFamily], AbstractContextManager[None]] | None = None,
+        source_ready: Callable[[], bool] | None = None,
     ) -> None:
         paths = (normalized.path, facts.path, material.path, journal.path, inputs.path)
         if any(path.is_symlink() for path in paths) or any(
@@ -73,6 +78,8 @@ class CompanySyncRuntime:
         self._document_configuration, self._document_policies = document_configuration, document_policies
         self._wall_clock = wall_clock
         self._observe = observe
+        self._activity = activity
+        self._source_ready = source_ready
         self._execution_scope: CompanySyncRoundScope | None = None
         self._execution_round_id = ""
 
@@ -182,14 +189,16 @@ class CompanySyncRuntime:
                 return ReadCompanyFactRows(formal, selected)
         query = financial_query or StructuredCompanyQuery("financial", scope.cutoff.date() - timedelta(days=365), scope.cutoff.date())
         fields = _FieldProducer(self, monotonic, eligible_codes)
+        announcements = CompanyAnnouncementProducer(self.inputs, self.material, self._official_source, scope,
+            sqlite_policy=self._sqlite_policy, extraction_hash=self.facts.extraction_hash, io_budget=self._io_budget,
+            current_codes=eligible_codes, configuration=self._document_configuration, policies=self._document_policies,
+            wall_clock=self._wall_clock)
         producers: tuple[CompanySyncProducer, ...] = (
             CompanyFinancialProducer(self.normalized, self._financial_source, query, qualification_gaps=(
                 "latest_financial_population_unverified", "financial_first_disclosure_revision_unverified"), current_codes=eligible_codes),
             CompanyRatioProducer(self.inputs, self._ratio_source, StructuredCompanyQuery("pledge", scope.cutoff.date() - timedelta(days=365), scope.cutoff.date()), current_codes=eligible_codes),
             CompanyRatioProducer(self.inputs, self._ratio_source, StructuredCompanyQuery("unlock", scope.cutoff.date(), scope.cutoff.date() + timedelta(days=min(180, self._event_policy.unlock_days))), current_codes=eligible_codes),
-            CompanyAnnouncementProducer(self.inputs, self.material, self._official_source, scope, sqlite_policy=self._sqlite_policy,
-                extraction_hash=self.facts.extraction_hash, io_budget=self._io_budget, current_codes=eligible_codes,
-                configuration=self._document_configuration, policies=self._document_policies, wall_clock=self._wall_clock),
+            announcements,
             CompanyAnnualIncomeProducer(self.inputs, self._annual_source, annual_facts, current_codes=eligible_codes),
             CompanyNewsProducer(self.inputs, self.material, self._news_source, news_codes=news_codes, fill=fill, current_codes=eligible_codes),
             fields,
@@ -203,7 +212,8 @@ class CompanySyncRuntime:
         preflight_task = "preflight:" + fields.plan.request_hash
         if not self.inputs.task_done(scope.identity, "fields", preflight_task):
             recovered = ResumeCompanySyncPendingStep(self.journal, producers, scope, round_id, budget,
-                monotonic=monotonic, cancel_requested=cancel_requested, observe=self._observe)
+                monotonic=monotonic, cancel_requested=cancel_requested, observe=self._observe,
+                activity=self._activity, recover_directory=announcements.recover_directory)
             if recovered:
                 if budget.max_steps == 1:
                     return CompanySyncRoundResult(round_id, scope, (), False, True, "")
@@ -211,12 +221,14 @@ class CompanySyncRuntime:
             pending = self.journal.outstanding(round_id, CompanySyncFamily.FIELDS)
             if pending is None:
                 self.journal.start(round_id, CompanySyncFamily.FIELDS, CompanySyncPhaseState(CanonicalDigest("field_preflight"), False))
-            try:
-                prepared = fields.advance(scope, cancel_requested=cancel_requested, deadline=budget.deadline)
-            except CompanySyncInterrupted:
-                return CompanySyncRoundResult(round_id, scope, (), cancel_requested(), not cancel_requested(), "")
-            self.journal.finish(round_id, CompanySyncFamily.FIELDS, replace(prepared, processed_scope_complete=False, can_continue=True, deferred=True))
-            self.inputs.complete_task(scope.identity, "fields", preflight_task, prepared.accepted_inputs or 0, CanonicalDigest((prepared.changed_codes, fields.plan)))
+            activity = self._activity(CompanySyncFamily.FIELDS) if self._activity is not None else nullcontext()
+            with activity:
+                try:
+                    prepared = fields.advance(scope, cancel_requested=cancel_requested, deadline=budget.deadline)
+                except CompanySyncInterrupted:
+                    return CompanySyncRoundResult(round_id, scope, (), cancel_requested(), not cancel_requested(), "")
+                self.journal.finish(round_id, CompanySyncFamily.FIELDS, replace(prepared, processed_scope_complete=False, can_continue=True, deferred=True))
+                self.inputs.complete_task(scope.identity, "fields", preflight_task, prepared.accepted_inputs or 0, CanonicalDigest((prepared.changed_codes, fields.plan)))
             if self._observe is not None:
                 confirmed = self.journal.family(round_id, CompanySyncFamily.FIELDS)
                 if confirmed is not None:
@@ -227,7 +239,8 @@ class CompanySyncRuntime:
             budget = replace(budget, max_steps=budget.max_steps - 1)
         try:
             result = RunCompanySyncRound(self.journal, producers, scope, budget, monotonic=monotonic,
-                cancel_requested=cancel_requested, observe=self._observe)
+                cancel_requested=cancel_requested, observe=self._observe, activity=self._activity,
+                recover_directory=announcements.recover_directory, source_ready=self._source_ready)
         except CompanySyncInterrupted:
             return CompanySyncRoundResult(round_id, scope, (), cancel_requested(), not cancel_requested(), "")
         if population_gaps:
@@ -241,6 +254,8 @@ class CompanySyncRuntime:
 
     def field_watermark(self, scope: CompanySyncRoundScope, eligible_codes: tuple[str, ...], check: Callable[[], None]) -> str:
         check()
+        eligible = frozenset(eligible_codes)
+        markets = tuple(sorted({EvidenceMarket(code) for code in eligible_codes}))
         material: list[tuple[object, ...]] = []
         with self._session(self.facts.path, check=check, read_only=True) as formal, SqliteTransaction(formal):
             facts = ReadCompanyFactRows(formal, eligible_codes)
@@ -248,13 +263,18 @@ class CompanySyncRuntime:
         identities = tuple(sorted({identity for fact in facts for event in fact.risk_events + fact.positive_events for identity in event.evidence_ids}
             | {review.evidence_id for fact in facts for review in fact.review_reasons if review.evidence_id is not None}))
         with self._session(self.material.path, check=check, read_only=True) as raw, SqliteTransaction(raw):
+            coverage = tuple(tuple(row) for row in raw.run(
+                "SELECT market,start_date,end_date FROM coverage "
+                f"WHERE market IN ({','.join('?' for _ in markets)}) ORDER BY market,start_date,end_date",
+                markets,
+            )) if markets else ()
             for offset in range(0, len(eligible_codes), 128):
                 check()
                 codes = eligible_codes[offset:offset + 128]
                 for row in raw.run("""SELECT c.code,d.source,d.source_key,d.record_hash,d.body_hash,d.body_checked,d.body_retained
                     FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id
                     JOIN company_document_requirements required ON required.disclosure_id=d.id
-                    WHERE d.kind='announcement' AND d.source='cninfo' AND d.published_at>=? AND d.published_at<=?
+                    WHERE d.kind='announcement' AND d.published_at>=? AND d.published_at<=?
                     AND c.code IN (""" + ",".join("?" for _ in codes) + ") ORDER BY c.code,d.source,d.source_key",
                     ((scope.cutoff.date() - timedelta(days=365)).isoformat(), scope.cutoff.isoformat(), *codes)):
                     material.append((row[0], row[1], row[2], row[3], row[4].hex() if isinstance(row[4], bytes) else None, row[5], row[6]))
@@ -262,9 +282,9 @@ class CompanySyncRuntime:
                 check()
                 batch = identities[offset:offset + 512]
                 for row in raw.run("SELECT c.code,d.source,d.source_key,d.record_hash,d.body_hash,d.body_checked,d.body_retained FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id WHERE d.source_key IN (" + ",".join("?" for _ in batch) + ") ORDER BY c.code,d.source,d.source_key", batch):
-                    if row[0] in eligible_codes:
+                    if row[0] in eligible:
                         material.append((row[0], row[1], row[2], row[3], row[4].hex() if isinstance(row[4], bytes) else None, row[5], row[6]))
-        return CanonicalDigest((self.inputs.watermark(scope.identity),
+        return CanonicalDigest((self.inputs.field_input_identity(scope.identity), coverage,
             tuple(sorted(set(material), key=lambda row: (str(row[0]), str(row[1]), str(row[2])))),
             publication.content_hash.hex() if publication is not None else None))
 
@@ -305,19 +325,28 @@ class CompanySyncRuntime:
             marker = formal.run("SELECT rules_hash FROM company_field_proof_rule WHERE singleton=1").fetchone()
             revalidate = marker is None or marker[0] != rules_hash
             all_codes = tuple(sorted(set(eligible_codes) | {row[0] for row in formal.run("SELECT code FROM company_facts ORDER BY code")})) if revalidate else eligible_codes
-            old = ReadCompanyFactRows(formal, all_codes)
-            facts = tuple(next((fact for fact in old if fact.code == code), _unavailable(code, scope.cutoff)) for code in all_codes)
+            old = {fact.code: fact for fact in ReadCompanyFactRows(formal, all_codes)}
+            fields_by_code: dict[str, list[CompanyFieldConclusion]] = defaultdict(list)
+            for field in ReadCompanyFieldResults(formal, all_codes):
+                fields_by_code[field.code].append(field)
+            links_by_code: dict[str, list[CompanyPublishedEvidenceLink]] = defaultdict(list)
+            for link in ReadCompanyDocumentLinks(formal, all_codes):
+                links_by_code[link.code].append(link)
+            eligible = frozenset(eligible_codes)
             prepared = []
-            for fact in facts:
+            for code in all_codes:
                 check()
-                current_fields = ReadCompanyFieldResults(formal, (fact.code,))
+                fact = old.get(code)
+                if fact is None:
+                    fact = _unavailable(code, scope.cutoff)
+                current_fields = fields_by_code.get(code, ())
                 needs_recovery_reproof = any(field.applicable and field.value is not None and field.state != "verified"
                     and any(item.code == fact.code and item.source_key in event.evidence_ids for item in recovered
                         for event in fact.risk_events + fact.positive_events if event.event_id == field.event_id) for field in current_fields)
                 prepared.append(PrepareCompanyIssuerInputs(raw, formal, fact, cutoff=scope.cutoff,
                     extraction_hash=self.facts.extraction_hash, event_policy=self._event_policy,
-                    read_document=self._read_document, check=check, revalidate=revalidate or needs_recovery_reproof, correct_measurements=fact.code in eligible_codes,
-                    include_new_announcements=True, published_links=ReadCompanyDocumentLinks(formal, (fact.code,)), recovered=recovered,
+                    read_document=self._read_document, check=check, revalidate=revalidate or needs_recovery_reproof, correct_measurements=code in eligible,
+                    include_new_announcements=True, published_links=tuple(links_by_code.get(code, ())), recovered=recovered,
                     annual_incomes=annuals))
         changed = self.normalized.publish_prepared(all_codes, tuple(item.facts for item in prepared),
             tuple(field for item in prepared for field in item.fields), tuple(receipt for item in prepared for receipt in item.receipts),

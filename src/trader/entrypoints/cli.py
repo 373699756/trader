@@ -172,7 +172,7 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
 
 def _run_sync(args: argparse.Namespace, progress: SyncProgress) -> int:
     from trader.bootstrap import ExecuteSync, PrepareRuntimeDisk
-    from trader.download.entrypoints.sync_projection import ProjectSyncResult
+    from trader.download.entrypoints.sync_projection import ProjectSyncResult, ProjectSyncTerminalState
 
     task = ProgressTask("启动", "configuration", "配置检查")
     progress(ProgressMessage((), task=task, state="开始"))
@@ -201,7 +201,9 @@ def _run_sync(args: argparse.Namespace, progress: SyncProgress) -> int:
             return 2
     _report_sync_failure(result, progress)
     summary = ProjectSyncResult(result)
-    progress(ProgressMessage(tuple(ProgressField(f"{task.task} {'待补齐' if task.status == 'pending' else task.status} 原因 {task.reason or '无'}") for task in result.tasks)
+    terminal_state = ProjectSyncTerminalState(result)
+    pending_label = "采集结束，新闻为辅助" if terminal_state == "采集结束" else "待补齐"
+    progress(ProgressMessage(tuple(ProgressField(f"{task.task} {pending_label if task.status == 'pending' else task.status} 原因 {task.reason or '无'}") for task in result.tasks)
                              + tuple(ProgressField(f"company·{family.family.value} 错误 {family.result.failure}", ProgressLevel.ERROR)
                                      for task in result.tasks if task.company is not None
                                      for family in task.company.families if family.result.failure is not None)
@@ -210,8 +212,7 @@ def _run_sync(args: argparse.Namespace, progress: SyncProgress) -> int:
                                      and any(family.result.failure is not None for family in task.company.families))
                              + ((ProgressField(f"前置失败 {result.failure}"),) if result.failure is not None else ()),
                              task=ProgressTask("sync", "result", "结果汇总"),
-                             state="取消" if summary["status"] == "cancelled" else "失败" if summary["status"] == "failed"
-                             else "完成" if summary["status"] == "completed" else "等待", finished=True))
+                             state=terminal_state, finished=True))
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True, indent=2))
     return result.exit_code
 

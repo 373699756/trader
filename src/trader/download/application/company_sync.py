@@ -1,6 +1,7 @@
 """One finite full-company round; every family keeps its own truthful outcome."""
 
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, replace
 from typing import Protocol
 
@@ -22,6 +23,23 @@ _RECOMMENDATION_FAMILIES = frozenset({
 })
 
 
+@dataclass(frozen=True, slots=True)
+class CompanyDirectoryResponseReceipt:
+    round_id: str
+    step: int
+    attempt: int
+    request_hash: str
+    state_hash: str
+    request_body: bytes
+    response_content: bytes
+    encoding: str
+
+
+CompanyDirectoryRecovery = Callable[
+    [CompanySyncRoundScope, CompanyDirectoryResponseReceipt], CompanySyncStepResult | None,
+]
+
+
 class CompanySyncProducer(Protocol):
     @property
     def plan(self)->CompanySyncPhasePlan: ...
@@ -40,6 +58,8 @@ class CompanySyncRoundJournal(Protocol):
     def completed_state(self,round_id:str,family:CompanySyncFamily)->CompanySyncPhaseState|None: ...
     def start(self,round_id:str,family:CompanySyncFamily,state:CompanySyncPhaseState)->None: ...
     def finish(self,round_id:str,family:CompanySyncFamily,result:CompanySyncStepResult)->None: ...
+    def directory_response(self, round_id: str) -> CompanyDirectoryResponseReceipt | None: ...
+    def confirm_directory_recovery(self, receipt: CompanyDirectoryResponseReceipt, result: CompanySyncStepResult) -> None: ...
     def publication_identity(self)->str: ...
 
 
@@ -60,6 +80,9 @@ def RunCompanySyncRound(
     monotonic:Callable[[],float],
     cancel_requested:Callable[[],bool],
     observe:Callable[[CompanySyncFamilyResult],None]|None=None,
+    activity: Callable[[CompanySyncFamily], AbstractContextManager[None]] | None = None,
+    recover_directory: CompanyDirectoryRecovery | None = None,
+    source_ready: Callable[[], bool] | None = None,
 )->CompanySyncRoundResult:
     """Run bounded steps, retain accepted work and never reissue an unconfirmed request.
 
@@ -70,7 +93,11 @@ def RunCompanySyncRound(
     if tuple(producer.plan.family for producer in producers)!=scope.families:
         raise ValueError("company_sync_producers_invalid")
     round_id=journal.begin(scope,tuple(producer.plan for producer in producers),max_source_calls=budget.max_source_calls)
-    steps=0
+    recovered_directory = (
+        not cancel_requested() and monotonic() < budget.deadline
+        and _restore_directory(journal, producers, scope, round_id, recover_directory, activity, observe)
+    )
+    steps = int(recovered_directory)
     stopped=False
     exhausted=False
     pending_family = journal.outstanding_family(round_id)
@@ -78,7 +105,10 @@ def RunCompanySyncRound(
     progress = tuple(_FamilyProgress(producer) for producer in ordered_producers)
     for item in progress:
         family = item.producer.plan.family
-        if family not in _RECOMMENDATION_FAMILIES and not cancel_requested() and monotonic() < budget.deadline:
+        if recovered_directory and family is CompanySyncFamily.ANNOUNCEMENTS:
+            item.steps = 1
+            item.result = journal.family(round_id, family)
+        elif family not in _RECOMMENDATION_FAMILIES and not cancel_requested() and monotonic() < budget.deadline:
             item.result = journal.family(round_id, family)
     pass_progress = tuple(sorted(progress, key=lambda item: item.producer.plan.family != pending_family))
     while not stopped:
@@ -112,17 +142,24 @@ def RunCompanySyncRound(
             outstanding=journal.outstanding(round_id,family)
             reconciled=outstanding is not None and (outstanding.source_required or outstanding.identity!=state.identity)
             if reconciled and outstanding is not None:
-                result=_unconfirmed_source_result(journal,round_id,family,outstanding,state) or CompanySyncStepResult(
-                    False,True,accepted_inputs=None,gaps=("accepted_input_count_unconfirmed",))
+                with activity(family) if activity is not None else nullcontext():
+                    result=_unconfirmed_source_result(journal,round_id,family,outstanding,state) or CompanySyncStepResult(
+                        False,True,accepted_inputs=None,gaps=("accepted_input_count_unconfirmed",))
             else:
+                source_budget_exhausted = state.source_required and journal.source_calls(round_id) >= budget.max_source_calls
+                if outstanding is None and state.source_required and not source_budget_exhausted and source_ready is not None and not source_ready():
+                    exhausted = True
+                    item.deferred = True
+                    continue
                 if outstanding is None:
                     journal.start(round_id,family,state)
-                if state.source_required and journal.source_calls(round_id)>=budget.max_source_calls:
+                if source_budget_exhausted:
                     exhausted=True
                     result=CompanySyncStepResult(False,False,gaps=("source_budget_exhausted",))
                 else:
                     try:
-                        result=_invoke_step(producer,scope,budget,monotonic,cancel_requested)
+                        with activity(family) if activity is not None else nullcontext():
+                            result=_invoke_step(producer,scope,budget,monotonic,cancel_requested)
                     except CompanySyncInterrupted:
                         item.result=_interrupted_family(item.result,producer.plan,state.source_required)
                         exhausted=not cancel_requested()
@@ -160,6 +197,34 @@ def RunCompanySyncRound(
 def _with_plan_gaps(result:CompanySyncStepResult,plan:CompanySyncPhasePlan)->CompanySyncStepResult:
     gaps=plan.qualification_gaps+tuple(gap for gap in result.gaps if gap not in plan.qualification_gaps)
     return replace(result,gaps=gaps)
+
+
+def _restore_directory(
+    journal: CompanySyncRoundJournal,
+    producers: tuple[CompanySyncProducer, ...],
+    scope: CompanySyncRoundScope,
+    round_id: str,
+    recover: CompanyDirectoryRecovery | None,
+    activity: Callable[[CompanySyncFamily], AbstractContextManager[None]] | None,
+    observe: Callable[[CompanySyncFamilyResult], None] | None,
+) -> bool:
+    if recover is None:
+        return False
+    receipt = journal.directory_response(round_id)
+    if receipt is None:
+        return False
+    family = CompanySyncFamily.ANNOUNCEMENTS
+    producer = next(item for item in producers if item.plan.family is family)
+    with activity(family) if activity is not None else nullcontext():
+        result = recover(scope, receipt)
+        if result is None:
+            return False
+        journal.confirm_directory_recovery(receipt, _with_plan_gaps(result, producer.plan))
+    if observe is not None:
+        confirmed = journal.family(round_id, family)
+        if confirmed is not None:
+            observe(confirmed)
+    return True
 
 
 def _unconfirmed_source_result(
@@ -213,27 +278,35 @@ def _invoke_step(producer:CompanySyncProducer,scope:CompanySyncRoundScope,budget
 
 def ResumeCompanySyncPendingStep(journal:CompanySyncRoundJournal,producers:tuple[CompanySyncProducer,...],
     scope:CompanySyncRoundScope,round_id:str,budget:CompanySyncBudget,*,monotonic:Callable[[],float],cancel_requested:Callable[[],bool],
-    observe:Callable[[CompanySyncFamilyResult],None]|None=None)->bool:
+    observe:Callable[[CompanySyncFamilyResult],None]|None=None,
+    activity: Callable[[CompanySyncFamily], AbstractContextManager[None]] | None = None,
+    recover_directory: CompanyDirectoryRecovery | None = None,
+)->bool:
     """Reconcile one old intent before a new local prerequisite; never start HTTP."""
     family=journal.outstanding_family(round_id)
-    if family is None:
+    if family is None and recover_directory is None:
         return False
     if cancel_requested() or monotonic()>=budget.deadline:
         raise CompanySyncInterrupted("company_sync_recovery_interrupted")
+    if _restore_directory(journal, producers, scope, round_id, recover_directory, activity, observe):
+        return True
+    if family is None:
+        return False
     producer=next(item for item in producers if item.plan.family is family)
     old=journal.outstanding(round_id,family)
     if old is None:
         raise ValueError("company_sync_pending_owner_changed")
-    current=producer.state(scope)
-    result=_unconfirmed_source_result(journal,round_id,family,old,current)
-    if result is None:
-        if old.identity!=current.identity:
-            result=CompanySyncStepResult(False,True,accepted_inputs=None,gaps=("accepted_input_count_unconfirmed",))
-        else:
-            if current.source_required:
-                raise ValueError("company_sync_recovery_source_state_mismatch")
-            result=_invoke_step(producer,scope,budget,monotonic,cancel_requested)
-    journal.finish(round_id,family,_with_plan_gaps(result,producer.plan))
+    with activity(family) if activity is not None else nullcontext():
+        current=producer.state(scope)
+        result=_unconfirmed_source_result(journal,round_id,family,old,current)
+        if result is None:
+            if old.identity!=current.identity:
+                result=CompanySyncStepResult(False,True,accepted_inputs=None,gaps=("accepted_input_count_unconfirmed",))
+            else:
+                if current.source_required:
+                    raise ValueError("company_sync_recovery_source_state_mismatch")
+                result=_invoke_step(producer,scope,budget,monotonic,cancel_requested)
+        journal.finish(round_id,family,_with_plan_gaps(result,producer.plan))
     if observe is not None:
         confirmed=journal.family(round_id,family)
         if confirmed is not None:

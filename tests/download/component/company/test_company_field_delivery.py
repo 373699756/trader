@@ -97,6 +97,8 @@ def test_actual_rule_content_change_reproves_old_named_proofs_and_attempts_befor
     assert current_hash != old_hash
     with pytest.raises(ValueError, match="company_field_rules_unreproved"):
         _reader(index).read_fields(document.disclosure.codes)
+    with pytest.raises(ValueError, match="company_field_rules_unreproved"):
+        _reader(index).read_field_counts()
     reads = []
     files = CompanyDocumentFilesFixture(index.path.parent / "text")
 
@@ -131,9 +133,14 @@ def test_reduction_fields_publish_with_risk_facts_and_reuse_without_reading_body
     before = reader.read(("600001",))
     risk, = before[0].risk_events
     assert risk.status is CompanyEventStatus.ONGOING
-    fields = reader.read_fields(("600001",)).results
+    snapshot = reader.read_fields(("600001",))
+    fields = snapshot.results
     verified = {item.field for item in fields if item.state == "verified"}
     assert verified == {"start_date", "end_date", "planned_pct"}
+    totals = reader.read_field_counts()
+    assert totals is not None and totals.publication_hash == snapshot.publication_hash
+    assert totals.verified == 3 and totals.not_applicable == 1
+    assert totals.present_unverified == totals.other_pending == totals.not_disclosed == totals.pending_documents == 0
     assert all(proof.source_key == document.disclosure.identity for item in fields for proof in item.evidence)
     valid = _receipts(index, ordinary_only=True)
 
