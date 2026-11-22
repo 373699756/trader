@@ -7,15 +7,18 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from trader.download.application.company_round_progress import IsCompanyNewsReference
 from trader.download.application.progress_message import (
     ProgressField, ProgressLevel, ProgressMessage, ProgressRow, ProgressState, ProgressTask,
 )
+from trader.download.application.sync_data import SyncResult
 from trader.download.domain.company_events import CompanyDataState
 from trader.download.domain.company_evidence import (
     CompanyOperationResult, CompanyPublicationProgress, CompanyRecoveryDecision, CompanyStockProgress,
     DisclosurePartition, StructuredCompanyQuery,
 )
 from trader.download.domain.download_failure import DownloadFailureObservation, DownloadFailureRecord
+from trader.download.domain.company_sync import CompanySyncRoundResult
 from trader.infra.progress_format import ShortProgressText
 
 _SOURCES = {"cninfo": "巨潮", "eastmoney": "东财", "eastmoney_news": "东财", "local": "本地"}
@@ -34,6 +37,13 @@ _ACTIONS = {
     "directory": "目录查询", "structured": "结构化查询", "collection_commit": "资料落库",
     "publication": "正式发布", "inventory": "库存核对", "prepare": "资料准备", "finish": "收尾",
     "annual_income": "年度营收", "news": "新闻获取",
+}
+_SUMMARY_FAMILIES = {"announcements": "公告", "fields": "字段核验"}
+_SUMMARY_FAILURES = {
+    "preparation_ReferenceDatabaseIncompatibleError": "ST资格及交易日历参考库结构不兼容",
+    "preparation_AkshareCalendarTimeoutError": "交易日历准备超时",
+    "CompanyDatabaseIncompatibleError": "公司资料库或请求账本结构不兼容，具体范围见上方诊断",
+    "ProcessLockError": "另一个任务持有公司同步锁",
 }
 _REASONS = {
     "timeout": "请求超时", "HttpTimeout": "请求超时", "HttpConnectionError": "连接失败",
@@ -79,6 +89,56 @@ _FailureKey = tuple[str, str, str, str]
 def ExplainCompanyRoundReason(code: str) -> str | None:
     """Return a fixed explanation for a recognized round reason code."""
     return _ROUND_REASON_EXPLANATIONS.get(code)
+
+
+def FormatCompanySyncSummary(result: SyncResult, state: ProgressState) -> str:
+    """Summarize an explicit company command without projecting internal JSON."""
+    status = "采集结束（新闻为辅助资料）" if state == "采集结束" else state
+    heading = f"公司同步：{status}"
+    task = next((item for item in result.tasks if item.task == "company"), None)
+    company = task.company if task is not None else None
+    if company is None:
+        reason = result.failure or (task.reason if task is not None else None)
+        if reason is None:
+            return heading
+        return f"{heading}\n原因：{_summary_failure(reason)}。"
+
+    lines = [f"{heading}，范围 {len(company.scope.codes):,} 股"]
+    failures: list[str] = []
+    pending: list[str] = []
+    for family in company.families:
+        step = family.result
+        label = _SUMMARY_FAMILIES.get(family.family.value, _LABELS.get(family.family.value, family.family.value))
+        if step.failure is not None:
+            failures.append(f"{label}：{_summary_failure(step.failure)}")
+        if step.pending_count:
+            pending.append(f"{label} {step.pending_count:,} 项")
+        elif step.failure is None and not step.business_complete and not IsCompanyNewsReference(family):
+            if "news_skipped_by_fill" not in step.gaps:
+                pending.append(label)
+    if failures:
+        lines.append("异常：" + "。".join(failures) + "。")
+    if state == "暂停":
+        lines.append("已到本轮时限或工作上限，已有断点保留。")
+    if pending and not result.cancelled:
+        lines.append("待处理：" + "、".join(pending) + "。")
+    lines.append(_request_totals(company))
+    return "\n".join(lines)
+
+
+def _summary_failure(code: str) -> str:
+    translated = ExplainCompanyRoundReason(code) or _REASONS.get(code) or _SUMMARY_FAILURES.get(code)
+    return translated or f"具体原因见上方诊断（{code}）"
+
+
+def _request_totals(company: CompanySyncRoundResult) -> str:
+    if tuple(family.family for family in company.families) != company.scope.families:
+        return "请求账本：本轮总数未核对。"
+    used = tuple(family.source_calls for family in company.families)
+    unconfirmed = tuple(family.unknown_attempts for family in company.families)
+    used_text = "占用数未核对" if None in used else f"已占用 {sum(value for value in used if value is not None):,} 次"
+    unknown_text = "未确认数未核对" if None in unconfirmed else f"未确认 {sum(value for value in unconfirmed if value is not None):,} 次"
+    return f"请求账本：{used_text}，{unknown_text}。"
 
 
 def _component(kind: str | None, scope: DisclosurePartition | StructuredCompanyQuery | None = None) -> str:
@@ -473,4 +533,4 @@ def _state(value: CompanyDataState | None) -> str:
     }[value]
 
 
-__all__ = ["CompanyResultFeedback", "ExplainCompanyRoundReason"]
+__all__ = ["CompanyResultFeedback", "ExplainCompanyRoundReason", "FormatCompanySyncSummary"]

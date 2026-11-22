@@ -1,6 +1,5 @@
 """Risk download terminal and JSON distinguish stage work from published stocks."""
 
-import json
 from dataclasses import replace
 from datetime import datetime
 from io import StringIO
@@ -252,14 +251,13 @@ def _messages(text: str) -> list[str]:
         (SyncResult((SyncTaskResult("company", "failed", "ProcessLockError"),)), "用 fg 恢复对应任务后按 Ctrl+C"),
     ),
 )
-def test_sync_failures_explain_recovery_without_polluting_json(monkeypatch, capsys, result, expected):
+def test_sync_failures_explain_recovery_and_end_with_a_readable_summary(monkeypatch, capsys, result, expected):
     monkeypatch.setattr(bootstrap, "ExecuteSync", lambda *args, **kwargs: result)
     config = Path(__file__).resolve().parents[4] / "config/runtime.json"
     assert Main(["--config", str(config), "sync", "company"]) == 1
     captured = capsys.readouterr()
-    payload = json.loads(captured.out)
-    assert payload["status"] == "failed"
-    assert expected in captured.err and expected not in captured.out
+    assert captured.out.startswith("公司同步：失败\n原因：") and "\"status\"" not in captured.out
+    assert expected in captured.err
 
 
 def test_elapsed_hms_and_final_progress_are_printed_even_inside_throttle_window():
@@ -406,7 +404,7 @@ def test_restart_displays_persistent_failures_separately_from_new_failures():
     assert "未解决失败7篇" in stream.getvalue()
 
 
-def test_terminal_and_json_show_pending_units_without_claiming_full_coverage(monkeypatch, capsys):
+def test_terminal_and_fill_summary_show_pending_units_without_claiming_full_coverage(monkeypatch, capsys):
     stream = StringIO()
     report = CompanyEvidenceProgress(stream, monotonic=lambda: 0)
     report(
@@ -429,21 +427,20 @@ def test_terminal_and_json_show_pending_units_without_claiming_full_coverage(mon
         ) if family in {CompanySyncFamily.ANNOUNCEMENTS, CompanySyncFamily.FIELDS}
             else CompanySyncFamilyFixture(family) for family in CompanySyncFamily),
     )
-    monkeypatch.setattr(
-        bootstrap,
-        "ExecuteSync",
-        lambda *args, **kwargs: SyncResult((SyncTaskResult("company", "pending", company=result),)),
-    )
+    def execute(*args, **kwargs):
+        assert kwargs["fill_missing"]
+        return SyncResult((SyncTaskResult("company", "pending", company=result),))
+
+    monkeypatch.setattr(bootstrap, "ExecuteSync", execute)
     config = Path(__file__).resolve().parents[4] / "config/runtime.json"
-    assert Main(["--config", str(config), "sync", "company"]) == 1
-    payload = json.loads(capsys.readouterr().out)["tasks"][0]
-    families = {item["family"]: item for item in payload["families"]}
-    assert families["fields"]["pending_count"] == 3 and families["announcements"]["pending_count"] == 26
-    assert payload["requested_codes"] == 4402 and not payload["processing_complete"]
-    assert not payload["business_complete"]
+    assert Main(["--config", str(config), "sync", "company", "fill"]) == 1
+    assert capsys.readouterr().out.splitlines() == [
+        "公司同步：待继续，范围 4,402 股", "异常：公告：请求超时。",
+        "待处理：公告 26 项、字段核验 3 项。", "请求账本：已占用 0 次，未确认 0 次。",
+    ]
 
 
-def test_cancelled_terminal_and_json_report_unknown_counts_without_claiming_zero_pending(monkeypatch, capsys):
+def test_cancelled_terminal_and_summary_report_unknown_counts_without_claiming_zero_pending(monkeypatch, capsys):
     stream = StringIO()
     report = CompanyEvidenceProgress(stream, monotonic=lambda: 0)
     report(EvidenceSyncProgress(
@@ -468,14 +465,7 @@ def test_cancelled_terminal_and_json_report_unknown_counts_without_claiming_zero
     )
     config = Path(__file__).resolve().parents[4] / "config/runtime.json"
     assert Main(["--config", str(config), "sync", "company"]) == 130
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "cancelled"
-    company = payload["tasks"][0]
-    assert len(company["families"]) == 1
-    family, = company["families"]
-    assert family["accepted_inputs"] == 1 and family["request_slots_consumed"] is None and family["pending_count"] is None
-    assert family["observed_attempts"] is None and family["unknown_attempts"] is None
-    assert company["paused"] and not company["processing_complete"] and not company["business_complete"]
+    assert capsys.readouterr().out.splitlines() == ["公司同步：取消，范围 2 股", "请求账本：本轮总数未核对。"]
 
 
 def test_last_stock_closes_verification_without_claiming_a_publication():

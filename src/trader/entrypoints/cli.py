@@ -114,8 +114,11 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
         try:
             return _run_sync(args, progress)
         except KeyboardInterrupt:
-            progress(ProgressMessage((ProgressField("已有断点保留"),),
-                                     task=ProgressTask("sync", "result", "结果汇总"), state="取消", finished=True))
+            if args.target == "company":
+                print("公司同步：已取消，已有断点保留。")
+            else:
+                progress(ProgressMessage((ProgressField("已有断点保留"),),
+                                         task=ProgressTask("sync", "result", "结果汇总"), state="取消", finished=True))
             return 130
     if args.command == "train":
         if args.profile is not None:
@@ -172,8 +175,10 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
 
 def _run_sync(args: argparse.Namespace, progress: SyncProgress) -> int:
     from trader.bootstrap import ExecuteSync, PrepareRuntimeDisk
+    from trader.download.entrypoints.company_result_feedback import FormatCompanySyncSummary
     from trader.download.entrypoints.sync_projection import ProjectSyncResult, ProjectSyncTerminalState
 
+    company_only = args.target == "company"
     task = ProgressTask("启动", "configuration", "配置检查")
     progress(ProgressMessage((), task=task, state="开始"))
     try:
@@ -183,7 +188,10 @@ def _run_sync(args: argparse.Namespace, progress: SyncProgress) -> int:
         _configuration_payload(runtime, None)
     except (OSError, RuntimeError, ValueError) as exc:
         progress(ProgressMessage((ProgressField(f"原因 {type(exc).__name__}"),), task=task, state="失败", finished=True))
-        print(json.dumps({"status": "failed", "failure": "configuration_invalid", "category": type(exc).__name__}, ensure_ascii=False))
+        if company_only:
+            print("公司同步：启动失败，运行配置或环境检查未通过。")
+        else:
+            print(json.dumps({"status": "failed", "failure": "configuration_invalid", "category": type(exc).__name__}, ensure_ascii=False))
         return 2
     progress.finish_owner("启动")
     progress(ProgressMessage((ProgressField("配置与运行环境就绪"),), task=task, state="完成", finished=True))
@@ -197,11 +205,16 @@ def _run_sync(args: argparse.Namespace, progress: SyncProgress) -> int:
         except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
             progress(ProgressMessage((ProgressField(f"原因 {type(exc).__name__}"),),
                                      task=ProgressTask("sync", "result", "结果汇总"), state="失败", finished=True))
-            print(json.dumps({"status": "failed", "failure": "sync_input_invalid", "category": type(exc).__name__}))
+            if company_only:
+                print("公司同步：失败，同步任务未能正常返回，具体原因见上方诊断。")
+            else:
+                print(json.dumps({"status": "failed", "failure": "sync_input_invalid", "category": type(exc).__name__}))
             return 2
     _report_sync_failure(result, progress)
-    summary = ProjectSyncResult(result)
     terminal_state = ProjectSyncTerminalState(result)
+    if company_only:
+        print(FormatCompanySyncSummary(result, terminal_state))
+        return result.exit_code
     pending_label = "采集结束，新闻为辅助" if terminal_state == "采集结束" else "待补齐"
     progress(ProgressMessage(tuple(ProgressField(f"{task.task} {pending_label if task.status == 'pending' else task.status} 原因 {task.reason or '无'}") for task in result.tasks)
                              + tuple(ProgressField(f"company·{family.family.value} 错误 {family.result.failure}", ProgressLevel.ERROR)
@@ -213,7 +226,7 @@ def _run_sync(args: argparse.Namespace, progress: SyncProgress) -> int:
                              + ((ProgressField(f"前置失败 {result.failure}"),) if result.failure is not None else ()),
                              task=ProgressTask("sync", "result", "结果汇总"),
                              state=terminal_state, finished=True))
-    print(json.dumps(summary, ensure_ascii=False, sort_keys=True, indent=2))
+    print(json.dumps(ProjectSyncResult(result), ensure_ascii=False, sort_keys=True, indent=2))
     return result.exit_code
 
 

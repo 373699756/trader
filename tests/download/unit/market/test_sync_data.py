@@ -258,16 +258,13 @@ def test_company_terminal_reason_reaches_projection_and_cli(
     progress = SyncProgress(messages.append, lambda: 0.0)
     args = cli.BuildParser().parse_args(["--config", str(tmp_path / "runtime.json"), "sync", "company"])
     assert cli._run_sync(args, progress) == (130 if cancelled else int(reason is not None))
-    terminal = messages[-1]
-    assert terminal.state == terminal_state and terminal.finished
-    fields = " | ".join(field.text for field in terminal.fields)
-    assert f"原因 {reason or '无'}" in fields
+    output = capsys.readouterr().out
+    assert output.startswith(f"公司同步：{terminal_state}") and "\"status\"" not in output
     if tested_family is CompanySyncFamily.NEWS:
-        assert "company 采集结束，新闻为辅助" in fields
+        assert "新闻为辅助资料" in output and "待处理" not in output
     if failure is not None:
-        assert f"company·fields 错误 {failure}" in fields
-        assert f"公司失败记录 company/company_sync.sqlite3；轮次 {company.round_id}" in fields
-    payload = json.loads(capsys.readouterr().out)
+        assert "异常：字段核验" in output
+    payload = ProjectSyncResult(result)
     assert payload["status"] == status and payload["tasks"][0]["reason"] == reason
     tested, = (item for item in payload["tasks"][0]["families"] if item["family"] == tested_family.value)
     assert tested["pending_count"] == pending

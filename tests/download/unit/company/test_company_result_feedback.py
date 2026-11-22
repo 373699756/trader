@@ -318,18 +318,41 @@ def test_cancel_fences_in_flight_and_late_feedback_blocks() -> None:
     assert len(messages) == count
 
 
-def test_feedback_is_stderr_only_and_cli_json_remains_machine_readable(monkeypatch, capsys) -> None:
+@pytest.mark.parametrize("target", ("company", "all", "history"))
+def test_detailed_feedback_is_stderr_only_and_summary_matches_target(monkeypatch, capsys, target) -> None:
     def execute(*args, **kwargs):
         CompanyEvidenceProgress(monotonic=lambda: 0.0)(_feedback(_result()))
         return SyncResult(())
 
     monkeypatch.setattr(bootstrap, "ExecuteSync", execute)
     config = Path(__file__).resolve().parents[4] / "config/runtime.json"
-    assert Main(["--config", str(config), "sync", "company"]) == 0
+    assert Main(["--config", str(config), "sync", target]) == 0
     captured = capsys.readouterr()
-    payload = json.loads(captured.out)
-    assert "schema_version" not in payload
+    if target == "company":
+        assert captured.out.strip() == "公司同步：完成"
+    else:
+        assert json.loads(captured.out) == {"status": "completed", "failure": None, "tasks": []}
     assert "cninfo:document-a" in captured.err and "cninfo:document-a" not in captured.out
+
+
+@pytest.mark.parametrize(("error", "exit_code", "text"), (
+    (ValueError, 2, "公司同步：失败，同步任务未能正常返回"),
+    (KeyboardInterrupt, 130, "公司同步：已取消，已有断点保留。"),
+))
+def test_company_cli_exceptions_before_a_result_print_text(monkeypatch, capsys, error, exit_code, text):
+    def execute(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(bootstrap, "ExecuteSync", execute)
+    config = Path(__file__).resolve().parents[4] / "config/runtime.json"
+    assert Main(["--config", str(config), "sync", "company"]) == exit_code
+    assert capsys.readouterr().out.startswith(text)
+
+
+def test_company_cli_invalid_config_prints_text_before_sync(tmp_path, capsys):
+    config = tmp_path / "missing.json"
+    assert Main(["--config", str(config), "sync", "company", "fill"]) == 2
+    assert capsys.readouterr().out == "公司同步：启动失败，运行配置或环境检查未通过。\n"
 
 
 def test_replanned_parent_error_closes_only_when_all_directory_dates_are_confirmed() -> None:

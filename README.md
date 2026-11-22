@@ -65,7 +65,7 @@ Shell与PowerShell使用相同的精简命令和参数范围，Windows可将上�
 4. 查看页面输入准备和诊断，确认是否真正达到评分条件。
 
 train只使用本地已发布资料，不下载资料，也不是普通启动的前置脚本。价格截止、各头最新成熟训练日和预测特征截止各有含义，日期不足与进度口径见[训练设计](docs/e_训练设计.md#1-输入固定双头独立)。
-`sync`省略类型时依次执行history和company。指定类型时更新对应资料，`fill`用于`company`。stdout为最终JSON，进度走stderr。
+`sync`省略类型时依次执行history和company。指定类型时更新对应资料，`fill`用于`company`。`sync company`及`fill`在stdout显示简短中文结果，进度和详细诊断写入stderr。`sync`、`sync all`和`sync history`的最终结果仍为JSON。
 退出码0/1/2/130分别为完成、失败或待补、参数/配置错误、取消。
 
 每个下载命令都会准备公共参考，只缺某类资料时使用对应命令。train不准备在线参考，不更新历史、在线短窗口或公司资料。

@@ -14,7 +14,7 @@
 
 公司资料重下后的旧风险对照沿同一`download/company/coverage`动作，显式组合`--company-database-audit --company-risk-baseline /external/baseline-risks.json`，并用`--company-collection-database`、`--company-evidence-database`选定采集库和正式库。基线只读，上限4MiB、10000条风险、50000条证据及50000条匹配凭证；保存固定发布的摘要／提取身份／时点、全风险业务字段，以及每个来源依据对应的全部valid输入修订／正文hash／原提交时间／策略。当前结构必须包含publication、risks、evidence及每条依据的receipts，旧基线须重新显式导出，不提供兼容或迁移。比较忽略自增ID，分别报告精确保留、缺失及变化待审；同公告编号但原凭证丢失不能签保全，缺valid或正文hash则保留evidence_identity_confirmed=false。比较与原数据库审计共用总期限，公开报告只含发布身份、变更字段名和证据保全状态，不含凭证明细、案件正文或原字段值。缺失不等于解除，快照变化或无正式发布不能签稳定完成；匹配凭证保留不证明具体事件与修订的语义绑定、供应商原值、其它附表或全市场资料正确。此参数不能与隔离回放目录组合，也不会启动同步或初始化数据库。
 
-普通`trader-cli sync company`现由同一有限轮次用例推进七族资料及本地字段，来源未准入时按族留缺口并保留最近有效事实，不再整条拒绝本地处理。CLI的`processing_complete/business_complete/paused`各有独立含义；族结果分别给出真实待处理数、缺证、失败以及`request_slots_consumed/unknown_attempts/observed_attempts`，未知不按零。固定来源额度跨恢复保留，纯本地规则及输入水位变化不重置请求；具体存储不兼容按文件报告，请求账本不属于资料删除重下范围。配置及恢复合同见下载设计5.15／第9章。显式live-sync计量仍受其自身来源与性能准入约束，普通有限轮次可运行不表示性能或来源全集验收通过。
+普通`trader-cli sync company`和`fill`由同一有限轮次推进七族资料。stdout显示中文结果，stderr保留进度、缺证及详细失败。需要全量同步结果的工具可从`sync all`的JSON读取`processing_complete/business_complete/paused`及各族请求、缺口数据。固定来源额度跨恢复保留，纯本地规则及输入水位变化不重置请求。具体存储不兼容按文件报告，请求账本不属于资料删除重下范围。配置及恢复合同见下载设计5.15／第9章。显式live-sync计量仍受其自身来源与性能准入约束，普通有限轮次可运行不表示性能或来源全集验收通过。
 
 公司正文错误复验仍用`download/company/coverage`：`--company-ocr-audit --company-replay-directory /external/new-ocr`覆盖低质量、超时及耗尽，优先复制hash一致的本地失败PDF，缺原件才下载。`--company-document-audit`不加目录仍只做请求对照；显式加`--company-replay-directory /external/new-documents`改为复验容量失败的未核验正文，核对最近50条记录的当前来源版本，至多2篇走正常下载、解析及必要OCR。容量复验须用隔离新目录，报告只含有限身份、字符数及状态，不改活动公司库；超过抽样上限、未提取正文或版本失配不能签完整恢复。两种模式互斥，预算通过`--company-audit-budget-seconds`和更大的`--command-timeout-seconds`显式限制。
 
