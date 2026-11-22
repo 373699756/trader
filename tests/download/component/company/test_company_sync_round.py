@@ -1,18 +1,19 @@
 """Persisted scope and transport slots protect retries across process restarts."""
 
+from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from tests.helpers.shared.configuration import SqlitePolicyFixture
-from trader.download.application.company_sync import RunCompanySyncRound
+from trader.download.application.company_sync import ResumeCompanySyncPendingStep, RunCompanySyncRound
 from trader.download.domain.company_sync import (
     CompanySyncBudget, CompanySyncFamily, CompanySyncPhasePlan, CompanySyncPhaseState, CompanySyncRoundScope, CompanySyncStepResult, CompanySyncInterrupted,
 )
 from trader.download.infra.company_sync_inputs import SQLiteCompanySyncInputStore
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
-from trader.infra.http_contracts import HttpResponse
+from trader.infra.http_contracts import HttpRequest, HttpResponse
 from trader.download.domain.company_sync import CompanySourceCancelled
 from trader.infra.http_transport import RequestsHttpTransport
 from trader.infra.serialization.canonical_codec import CanonicalDigest
@@ -60,7 +61,9 @@ def _resources(tmp_path, *, maximum=8, crash=False, cancel=None):
     def execute(request):
         physical.append(request.url)
         return HttpResponse(200, b"ok")
-    transport = RequestsHttpTransport(authorize=journal.authorize_request, observe=journal.observe_attempt, execute_request=execute)
+    transport = RequestsHttpTransport(
+        authorize=journal.authorize_request, observe=journal.observe_attempt, execute_request=execute, monotonic=lambda: 0,
+    )
     producers = tuple(_Producer(family, inputs, transport, calls, crash=crash and family is CompanySyncFamily.FINANCIAL,
         cancel=cancel if family is CompanySyncFamily.FINANCIAL else None) for family in CompanySyncFamily)
     budget = CompanySyncBudget(100, maximum, 10, 10)
@@ -161,32 +164,76 @@ def test_fixed_source_budget_exhaustion_still_runs_local_fields_and_does_not_ref
     assert not physical and journal.source_calls(result.round_id) == 1
 
 
-def test_each_family_advances_before_financial_fetches_its_next_page(tmp_path):
+def test_recommendation_families_rotate_before_optional_inputs(tmp_path):
     journal, producers, budget, physical, calls, transport = _resources(tmp_path)
     order = []
-    for producer in producers:
-        original = producer.advance
-
-        def record(scope, *, cancel_requested, deadline, selected=producer, advance=original):
-            order.append(selected.plan.family)
-            return advance(scope, cancel_requested=cancel_requested, deadline=deadline)
-
-        producer.advance = record
     with transport:
-        result = RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: False)
+        result = RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0,
+            cancel_requested=lambda: False, observe=lambda family: order.append(family.family))
     assert result.business_complete
-    assert tuple(order[:7]) == tuple(CompanySyncFamily)
-    assert order[7] is CompanySyncFamily.FINANCIAL and len(physical) == 2
+    assert order == [
+        CompanySyncFamily.FINANCIAL, CompanySyncFamily.PLEDGE, CompanySyncFamily.UNLOCK,
+        CompanySyncFamily.ANNOUNCEMENTS, CompanySyncFamily.FIELDS, CompanySyncFamily.FINANCIAL,
+        CompanySyncFamily.FINANCIAL, CompanySyncFamily.ANNUAL_INCOME, CompanySyncFamily.NEWS,
+    ]
+    assert tuple(item.family for item in result.families) == tuple(CompanySyncFamily)
+    assert len(physical) == 2
 
 
-def test_small_step_allowance_reaches_later_families_without_finishing_financial(tmp_path):
+def test_small_step_allowance_reaches_recommendation_fields_before_optional_inputs(tmp_path):
     journal, producers, budget, physical, calls, transport = _resources(tmp_path)
-    budget = CompanySyncBudget(7, 8, 10, 10)
+    budget = CompanySyncBudget(5, 8, 10, 10)
     with transport:
         result = RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: False)
     assert not result.processing_complete and result.budget_exhausted
-    assert len(physical) == 1 and tuple(item.family for item in result.families) == tuple(CompanySyncFamily)
-    assert result.families[-1].result.processed_scope_complete and "news" in calls
+    assert len(physical) == 1 and calls == ["pledge", "unlock", "announcements", "fields"]
+    assert result.families[-1].family is CompanySyncFamily.FIELDS
+    assert result.families[-1].result.processed_scope_complete
+
+
+def test_optional_inputs_run_after_core_family_reaches_its_invocation_limit(tmp_path):
+    journal, producers, budget, physical, calls, transport = _resources(tmp_path)
+    budget = CompanySyncBudget(100, 8, 1, 10)
+    with transport:
+        result = RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: False)
+    assert not result.processing_complete and not result.budget_exhausted
+    assert len(physical) == 1
+    assert calls == ["pledge", "unlock", "announcements", "fields", "annual_income", "news"]
+
+    restarted, producers, budget, physical, calls, transport = _resources(tmp_path)
+    short = CompanySyncBudget(1, budget.max_source_calls, budget.steps_per_family, budget.deadline)
+    with transport:
+        resumed = RunCompanySyncRound(restarted, producers, _SCOPE, short, monotonic=lambda: 0, cancel_requested=lambda: False)
+    assert resumed.round_id == result.round_id
+    assert resumed.families[4:6] == result.families[4:6]
+    assert physical == ["https://example.test/2"] and not calls
+
+
+@pytest.mark.parametrize("preflight", (False, True))
+def test_unobserved_pending_request_stays_blocked_if_priority_changes_selected_input(tmp_path, preflight):
+    journal, producers, budget, physical, calls, transport = _resources(tmp_path)
+    plans = tuple(producer.plan for producer in producers)
+    round_id = journal.begin(_SCOPE, plans, max_source_calls=budget.max_source_calls)
+    pending_family = CompanySyncFamily.ANNOUNCEMENTS
+    journal.start(round_id, pending_family, CompanySyncPhaseState(CanonicalDigest("previous_document"), True))
+    journal.authorize_request(HttpRequest("GET", "https://example.test/previous-document", 1))
+
+    restarted, producers, budget, physical, calls, transport = _resources(tmp_path)
+    observed = []
+    with transport:
+        if preflight:
+            assert ResumeCompanySyncPendingStep(restarted, producers, _SCOPE, round_id, budget,
+                monotonic=lambda: 0, cancel_requested=lambda: False, observe=observed.append)
+        result = RunCompanySyncRound(restarted, producers, _SCOPE, budget,
+            monotonic=lambda: 0, cancel_requested=lambda: False, observe=observed.append)
+
+    assert observed[0].family is pending_family
+    assert observed[0].result.failure == "source_attempt_unconfirmed"
+    assert observed[0].unknown_attempts == 1
+    assert result.round_id == round_id and not result.business_complete
+    assert physical == ["https://example.test/1", "https://example.test/2"]
+    assert "announcements" not in calls and "fields" in calls
+    assert restarted.source_calls(round_id) == 3
 
 
 def test_finishing_exactly_at_step_limit_does_not_invent_budget_exhaustion(tmp_path):
@@ -202,7 +249,6 @@ def test_transport_rejection_and_unobserved_slot_cannot_be_reported_as_confirmed
     plans = tuple(item.plan for item in producers)
     round_id = journal.begin(_SCOPE, plans, max_source_calls=1)
     journal.start(round_id, CompanySyncFamily.FINANCIAL, producers[0].state(_SCOPE))
-    from trader.infra.http_contracts import HttpRequest
     journal.authorize_request(HttpRequest("GET", "https://example.test/1", 1))
     journal.finish(round_id, CompanySyncFamily.FINANCIAL, CompanySyncStepResult(False, False, failure="source_attempt_unconfirmed"))
     assert journal.family(round_id, CompanySyncFamily.FINANCIAL).unknown_attempts == 1
@@ -239,6 +285,25 @@ def test_later_local_outstanding_is_resolved_before_earlier_family_requests_resu
     with transport:
         result = RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: False)
     assert result.business_complete and physical == ["https://example.test/2"]
+
+
+def test_reopened_field_intent_is_reconciled_before_source_when_watermark_returns_to_completed_value(tmp_path):
+    journal, producers, budget, physical, calls, transport = _resources(tmp_path)
+    fields = producers[-1]
+    fields.plan = replace(fields.plan, refresh_on_input_change=True)
+    round_id = journal.begin(_SCOPE, tuple(item.plan for item in producers), max_source_calls=budget.max_source_calls)
+    journal.start(round_id, CompanySyncFamily.FIELDS, fields.state(_SCOPE))
+    journal.finish(round_id, CompanySyncFamily.FIELDS, CompanySyncStepResult(True, False, pending_count=0))
+    journal.start(round_id, CompanySyncFamily.FIELDS, CompanySyncPhaseState(CanonicalDigest("changed_material"), False))
+
+    events = []
+    with transport:
+        result = RunCompanySyncRound(journal, producers, _SCOPE, budget,
+            monotonic=lambda: 0, cancel_requested=lambda: False, observe=events.append)
+    assert events[0].family is CompanySyncFamily.FIELDS
+    assert events[0].result.gaps == ("accepted_input_count_unconfirmed",)
+    assert result.business_complete and physical == ["https://example.test/1", "https://example.test/2"]
+    assert journal.outstanding_family(round_id) is None
 
 
 def test_unknown_interrupted_error_is_not_hidden_even_when_deadline_expires(tmp_path):
@@ -321,7 +386,6 @@ def test_known_source_rejection_does_not_skip_later_local_fields(tmp_path, failu
 
 
 def test_new_local_rules_and_input_watermark_reopen_only_fields_and_clear_resolved_gap(tmp_path):
-    from dataclasses import replace
     journal, producers, budget, physical, calls, transport = _resources(tmp_path)
     fields = producers[-1]
     fields.plan = replace(fields.plan, refresh_on_input_change=True)

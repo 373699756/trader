@@ -10,6 +10,7 @@ from datetime import timedelta
 from trader.download.application.company_source_ports import (
     CompanyNewsSource, CompanyOfficialDocumentSource, CompanyRatioSource,
 )
+from trader.download.domain.company_event_extraction import CompanyDocumentRiskRelevant
 from trader.download.domain.company_evidence import (
     CompanyInputValidationFailure, CompanyDocumentFailure, CompanyDocumentFailureRules, CompanyDocumentPolicies,
     CompanySyncConfiguration, CompanyDocumentRouteForFailure, Disclosure, DisclosurePartition, EvidenceMarket, StructuredCompanyQuery,
@@ -114,6 +115,13 @@ class _RequiredDocument:
     disclosure: Disclosure
     body_hash: bytes
     payload_hash: bytes
+    for_recommendation: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _NewDocument:
+    disclosure: Disclosure
+    before_partition: DisclosurePartition | None
 
 
 class CompanyAnnouncementProducer:
@@ -180,16 +188,19 @@ class CompanyAnnouncementProducer:
     def _document(self, scope: CompanySyncRoundScope) -> _RequiredDocument | None:
         if self._configuration is None or self._policies is None or self._wall_clock is None:
             return None
+        deferred: _RequiredDocument | None = None
         with self._session(self._material.path) as connection, SqliteTransaction(connection):
             dependencies = ReadRequiredCompanyMaterialDependencies(connection, self._extraction_hash)
+            if not dependencies:
+                return None
+            if len(dependencies) > 120000:
+                raise ValueError("company_required_material_scope_limit")
             with self._session(self._material.facts_path) as formal, SqliteTransaction(formal):
                 recoveries = ReadCompanyFieldRecovery(formal, connection, scope.codes, scope.cutoff, self._material.path.parent, field_rule_hash=CompanyFieldProofRulesHash())
                 valid = frozenset((item.code, item.source, item.evidence_id, item.record_hash, item.body_hash) for item in dependencies
                     if item.code in scope.codes and formal.run("SELECT 1 FROM company_input_receipt WHERE code=? AND source=? AND source_key=? AND record_hash=? AND body_hash=? AND extraction_hash=? AND outcome='valid'",
                     (item.code, item.source, item.evidence_id, item.record_hash, item.body_hash, self._extraction_hash)).fetchone() is not None)
-            permitted = tuple((item.gap.code, item.gap.evidence_id) for item in recoveries if item.action in {"download", "extract"})
-            if len(dependencies) > 120000:
-                raise ValueError("company_required_material_scope_limit")
+            permitted = frozenset((item.gap.code, item.gap.evidence_id) for item in recoveries if item.action in {"download", "extract"})
             for dependency in dependencies:
                 if ((dependency.code, dependency.evidence_id) not in permitted
                     or (dependency.code, dependency.source, dependency.evidence_id, dependency.record_hash, dependency.body_hash) not in valid
@@ -210,31 +221,46 @@ class CompanyAnnouncementProducer:
                 retry = self._material.document_retry(item, self._policies.standard)
                 if retry is not None and retry.retry_after > self._wall_clock():
                     continue
-                required = _RequiredDocument(item, dependency.body_hash, row["payload_hash"])
+                required = _RequiredDocument(
+                    item, dependency.body_hash, row["payload_hash"],
+                    dependency.scope in {"risk", "financial"} or _risk_priority(item.title),
+                )
                 if (not self._inputs.task_done(scope.identity, "announcements", "document:" + _required_identity(required))
                     and not self._inputs.task_done(scope.identity, "announcements", "ineligible_document:" + _required_identity(required))):
-                    return required
-        return None
+                    if required.for_recommendation:
+                        return required
+                    if deferred is None:
+                        deferred = required
+        return deferred
+
+    def _work(self, scope: CompanySyncRoundScope) -> _RequiredDocument | _NewDocument | DisclosurePartition | None:
+        required = self._document(scope)
+        if required is not None and required.for_recommendation:
+            return required
+        partition = self._partition(scope)
+        if partition is not None and self._inputs.task_done(scope.identity, "announcement_document_turn", CanonicalDigest(partition)):
+            return partition
+        fresh = self._new_document(scope, risk_only=partition is not None or required is not None)
+        if fresh is not None:
+            return _NewDocument(fresh, partition)
+        return partition if partition is not None else required
 
     def state(self, scope: CompanySyncRoundScope) -> CompanySyncPhaseState:
         if not self._initialized(scope):
             return CompanySyncPhaseState(CanonicalDigest("initialize"), False)
-        required = self._document(scope)
-        if required is not None:
-            payload_hash = self._source.document_payload_hash(required.disclosure)
-            return CompanySyncPhaseState(_required_identity(required), payload_hash is None,
-                local_input_verified=payload_hash == required.payload_hash)
-        fresh = self._new_document(scope)
-        partition = self._partition(scope)
-        if fresh is not None and (partition is None or not self._inputs.task_done(scope.identity, "announcement_document_turn", CanonicalDigest(partition))):
-            ready = self._source.document_payload_hash(fresh) is not None
-            return CompanySyncPhaseState(CanonicalDigest((fresh, self._policies)), not ready, local_input_verified=ready)
-        if partition is not None:
-            return CompanySyncPhaseState(CanonicalDigest(partition), any(EvidenceMarket(code) == partition.market for code in self._current_codes))
-        document = self._document(scope)
-        payload_hash = self._source.document_payload_hash(document.disclosure) if document is not None else None
-        return CompanySyncPhaseState(_required_identity(document), document is not None and document.disclosure.codes[0] in self._current_codes and payload_hash is None,
-            document is not None and payload_hash == document.payload_hash)
+        work = self._work(scope)
+        if isinstance(work, _RequiredDocument):
+            payload_hash = self._source.document_payload_hash(work.disclosure)
+            can_download = work.disclosure.codes[0] in self._current_codes and payload_hash is None
+            return CompanySyncPhaseState(
+                _required_identity(work), can_download, local_input_verified=payload_hash == work.payload_hash,
+            )
+        if isinstance(work, _NewDocument):
+            ready = self._source.document_payload_hash(work.disclosure) is not None
+            return CompanySyncPhaseState(CanonicalDigest((work.disclosure, self._policies)), not ready, local_input_verified=ready)
+        if isinstance(work, DisclosurePartition):
+            return CompanySyncPhaseState(CanonicalDigest(work), any(EvidenceMarket(code) == work.market for code in self._current_codes))
+        return CompanySyncPhaseState(_required_identity(None), False)
 
     def advance(self, scope: CompanySyncRoundScope, *, cancel_requested: Callable[[], bool], deadline: float) -> CompanySyncStepResult:
         if not self._initialized(scope):
@@ -244,15 +270,15 @@ class CompanyAnnouncementProducer:
                     self._material.restart_partition(initial_partition)
             self._inputs.complete_task(scope.identity, "announcements", "initialize", 0, CanonicalDigest(self._partitions))
             return CompanySyncStepResult(False, True)
-        required = self._document(scope)
-        partition = self._partition(scope) if required is None else None
-        fresh = self._new_document(scope) if required is None else None
-        if fresh is not None and (partition is None or not self._inputs.task_done(scope.identity, "announcement_document_turn", CanonicalDigest(partition))):
-            result = self._accept_new_document(scope, fresh)
-            if partition is not None:
-                self._inputs.complete_task(scope.identity, "announcement_document_turn", CanonicalDigest(partition), 0, CanonicalDigest(partition))
+        work = self._work(scope)
+        if isinstance(work, _NewDocument):
+            result = self._accept_new_document(scope, work.disclosure)
+            if work.before_partition is not None:
+                partition_identity = CanonicalDigest(work.before_partition)
+                self._inputs.complete_task(scope.identity, "announcement_document_turn", partition_identity, 0, partition_identity)
             return result
-        if partition is not None:
+        if isinstance(work, DisclosurePartition):
+            partition = work
             if not any(EvidenceMarket(code) == partition.market for code in self._current_codes):
                 self._inputs.complete_task(scope.identity, "announcements", "ineligible_partition:" + CanonicalDigest(partition), 0, CanonicalDigest(("ineligible", partition)))
                 return CompanySyncStepResult(False, True, gaps=("population_members_became_ineligible",))
@@ -276,7 +302,7 @@ class CompanyAnnouncementProducer:
                     self._refine_partition(partition, scope)
                     return CompanySyncStepResult(False, True, source_calls=1)
             return CompanySyncStepResult(False, True, len(page.rows), 1)
-        document = required
+        document = work
         if document is None:
             return CompanySyncStepResult(True, False, pending_count=None, gaps=("announcement_required_material_not_fully_verified",))
         if document.disclosure.codes[0] not in self._current_codes:
@@ -314,30 +340,41 @@ class CompanyAnnouncementProducer:
             CanonicalDigest((_required_identity(document), extraction.payload_hash.hex())))
         return CompanySyncStepResult(False, True, 1, int(called))
 
-    def _new_document(self, scope: CompanySyncRoundScope) -> Disclosure | None:
+    def _new_document(self, scope: CompanySyncRoundScope, *, risk_only: bool) -> Disclosure | None:
         if self._configuration is None or self._policies is None or self._wall_clock is None:
             return None
         now = self._wall_clock()
         if now.utcoffset() is None:
             raise ValueError("company_document_retry_clock_invalid")
+        current_codes = frozenset(scope.codes).intersection(self._current_codes)
+        if not current_codes:
+            return None
+        other: Disclosure | None = None
         with self._session(self._material.path) as connection:
-            for offset in range(0, len(self._current_codes), 128):
-                codes = self._current_codes[offset:offset + 128]
-                rows = connection.run("""SELECT d.*,c.code FROM disclosures d
-                    JOIN disclosure_codes c ON c.disclosure_id=d.id
-                    JOIN company_document_requirements required ON required.disclosure_id=d.id
-                    WHERE d.source='cninfo' AND d.kind='announcement' AND d.body_checked=0
-                    AND d.published_at>=? AND d.published_at<=? AND c.code IN (""" + ",".join("?" for _ in codes) + """ )
-                    AND (SELECT COUNT(*) FROM disclosure_codes members WHERE members.disclosure_id=d.id)=1
-                    AND NOT EXISTS(SELECT 1 FROM document_retries retry WHERE retry.disclosure_id=d.id
-                        AND retry.record_hash=d.record_hash AND retry.retry_policy_id=? AND retry.retry_at>?)
-                    ORDER BY d.published_at DESC,d.source_key""",
-                    ((scope.cutoff.date() - timedelta(days=365)).isoformat(), scope.cutoff.isoformat(), *codes, self._policies.standard, now.isoformat()))
-                for row in rows:
-                    item = DecodeCompanyDisclosure(row)
-                    if not self._inputs.task_done(scope.identity, "new_announcement_document", CanonicalDigest((item, self._policies))):
-                        return item
-        return None
+            rows = connection.run("""SELECT d.*,c.code FROM disclosures d
+                JOIN disclosure_codes c ON c.disclosure_id=d.id
+                JOIN company_document_requirements required ON required.disclosure_id=d.id
+                WHERE d.source='cninfo' AND d.kind='announcement' AND d.body_checked=0
+                AND d.published_at>=? AND d.published_at<=?
+                AND (SELECT COUNT(*) FROM disclosure_codes members WHERE members.disclosure_id=d.id)=1
+                AND NOT EXISTS(SELECT 1 FROM document_retries retry WHERE retry.disclosure_id=d.id
+                    AND retry.record_hash=d.record_hash AND retry.retry_policy_id=? AND retry.retry_at>?)
+                ORDER BY d.published_at DESC,d.source_key""",
+                ((scope.cutoff.date() - timedelta(days=365)).isoformat(), scope.cutoff.isoformat(),
+                    self._policies.standard, now.isoformat()))
+            for row in rows:
+                if row["code"] not in current_codes:
+                    continue
+                is_risk = _risk_priority(row["title"])
+                if not is_risk and (risk_only or other is not None):
+                    continue
+                item = DecodeCompanyDisclosure(row)
+                if self._inputs.task_done(scope.identity, "new_announcement_document", CanonicalDigest((item, self._policies))):
+                    continue
+                if is_risk:
+                    return item
+                other = item
+        return other
 
     def _accept_new_document(self, scope: CompanySyncRoundScope, item: Disclosure) -> CompanySyncStepResult:
         assert self._configuration is not None and self._policies is not None and self._wall_clock is not None
@@ -371,6 +408,12 @@ class CompanyAnnouncementProducer:
 
 
 __all__ = ["CompanyRatioProducer", "CompanyNewsProducer", "CompanyAnnouncementProducer"]
+
+
+def _risk_priority(title: str) -> bool:
+    # A voluntary pledge not to reduce is still reviewable. Other risk cues in
+    # the same title, and formal risk dependencies, keep their normal priority.
+    return CompanyDocumentRiskRelevant(title.replace("自愿承诺不减持", ""))
 
 
 def _required_identity(document: _RequiredDocument | None) -> str:

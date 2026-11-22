@@ -13,6 +13,15 @@ from trader.download.domain.download_failure import DownloadValidationFailure
 from trader.download.application.company_failures import CompanyFailureCode
 
 
+_RECOMMENDATION_FAMILIES = frozenset({
+    CompanySyncFamily.FINANCIAL,
+    CompanySyncFamily.PLEDGE,
+    CompanySyncFamily.UNLOCK,
+    CompanySyncFamily.ANNOUNCEMENTS,
+    CompanySyncFamily.FIELDS,
+})
+
+
 class CompanySyncProducer(Protocol):
     @property
     def plan(self)->CompanySyncPhasePlan: ...
@@ -26,6 +35,7 @@ class CompanySyncRoundJournal(Protocol):
     def family(self,round_id:str,family:CompanySyncFamily)->CompanySyncFamilyResult|None: ...
     def outstanding(self,round_id:str,family:CompanySyncFamily)->CompanySyncPhaseState|None: ...
     def outstanding_calls(self,round_id:str,family:CompanySyncFamily)->int: ...
+    def outstanding_has_unobserved_request(self, round_id: str, family: CompanySyncFamily) -> bool: ...
     def outstanding_family(self,round_id:str)->CompanySyncFamily|None: ...
     def completed_state(self,round_id:str,family:CompanySyncFamily)->CompanySyncPhaseState|None: ...
     def start(self,round_id:str,family:CompanySyncFamily,state:CompanySyncPhaseState)->None: ...
@@ -53,9 +63,9 @@ def RunCompanySyncRound(
 )->CompanySyncRoundResult:
     """Run bounded steps, retain accepted work and never reissue an unconfirmed request.
 
-    A family can finish its permitted work with qualification or quality gaps.
-    Other local and independent families still run. No failed/empty attempt is
-    retried within this fixed round merely because another family advanced.
+    Rotate through families that supply recommendation evidence first. Optional
+    inputs run when that group has no step left in this invocation. Recover the
+    one outstanding intent ahead of both groups.
     """
     if tuple(producer.plan.family for producer in producers)!=scope.families:
         raise ValueError("company_sync_producers_invalid")
@@ -63,14 +73,23 @@ def RunCompanySyncRound(
     steps=0
     stopped=False
     exhausted=False
-    pending_family=journal.outstanding_family(round_id)
-    ordered_producers=tuple(producer for producer in producers if producer.plan.family==pending_family)+tuple(producer for producer in producers if producer.plan.family!=pending_family)
-    progress=tuple(_FamilyProgress(producer) for producer in ordered_producers)
+    pending_family = journal.outstanding_family(round_id)
+    ordered_producers = sorted(producers, key=lambda producer: producer.plan.family not in _RECOMMENDATION_FAMILIES)
+    progress = tuple(_FamilyProgress(producer) for producer in ordered_producers)
+    for item in progress:
+        family = item.producer.plan.family
+        if family not in _RECOMMENDATION_FAMILIES and not cancel_requested() and monotonic() < budget.deadline:
+            item.result = journal.family(round_id, family)
+    pass_progress = tuple(sorted(progress, key=lambda item: item.producer.plan.family != pending_family))
     while not stopped:
         advanced=False
-        for item in progress:
+        recommendation_advanced = False
+        for item in pass_progress:
             producer=item.producer
             family=producer.plan.family
+            recommendation = family in _RECOMMENDATION_FAMILIES
+            if not recommendation and recommendation_advanced:
+                continue
             if item.deferred or item.steps>=budget.steps_per_family:
                 continue
             if cancel_requested() or monotonic()>=budget.deadline:
@@ -82,7 +101,7 @@ def RunCompanySyncRound(
                 item.result=current
             refresh=(current is not None and producer.plan.refresh_on_input_change
                 and journal.completed_state(round_id,family)!=producer.state(scope))
-            if current is not None and not current.result.can_continue and not refresh:
+            if current is not None and not current.result.can_continue and not refresh and family is not pending_family:
                 exhausted=exhausted or "source_budget_exhausted" in current.result.gaps
                 continue
             if steps>=budget.max_steps:
@@ -93,12 +112,8 @@ def RunCompanySyncRound(
             outstanding=journal.outstanding(round_id,family)
             reconciled=outstanding is not None and (outstanding.source_required or outstanding.identity!=state.identity)
             if reconciled and outstanding is not None:
-                if outstanding.source_required and outstanding.identity==state.identity and not state.local_input_verified:
-                    result=(CompanySyncStepResult(False,True,deferred=True)
-                        if journal.outstanding_calls(round_id,family)==0 else
-                        CompanySyncStepResult(False,False,gaps=("source_attempt_unconfirmed",),failure="source_attempt_unconfirmed"))
-                else:
-                    result=CompanySyncStepResult(False,True,accepted_inputs=None,gaps=("accepted_input_count_unconfirmed",))
+                result=_unconfirmed_source_result(journal,round_id,family,outstanding,state) or CompanySyncStepResult(
+                    False,True,accepted_inputs=None,gaps=("accepted_input_count_unconfirmed",))
             else:
                 if outstanding is None:
                     journal.start(round_id,family,state)
@@ -117,7 +132,10 @@ def RunCompanySyncRound(
             steps+=1
             item.steps+=1
             advanced=True
+            recommendation_advanced = recommendation_advanced or recommendation
             journal.finish(round_id,family,_with_plan_gaps(result,producer.plan))
+            if family is pending_family:
+                pending_family = None
             current=journal.family(round_id,family)
             if current is not None:
                 item.result=current
@@ -130,6 +148,7 @@ def RunCompanySyncRound(
                 break
         if not advanced:
             break
+        pass_progress = progress
     # Do not open another database after cancellation to manufacture a final
     # inventory or publication count. The last acknowledged head stays explicit.
     publication="" if cancel_requested() or monotonic()>=budget.deadline else journal.publication_identity()
@@ -141,6 +160,23 @@ def RunCompanySyncRound(
 def _with_plan_gaps(result:CompanySyncStepResult,plan:CompanySyncPhasePlan)->CompanySyncStepResult:
     gaps=plan.qualification_gaps+tuple(gap for gap in result.gaps if gap not in plan.qualification_gaps)
     return replace(result,gaps=gaps)
+
+
+def _unconfirmed_source_result(
+    journal: CompanySyncRoundJournal, round_id: str, family: CompanySyncFamily,
+    outstanding: CompanySyncPhaseState, current: CompanySyncPhaseState,
+) -> CompanySyncStepResult | None:
+    if not outstanding.source_required:
+        return None
+    if outstanding.identity != current.identity:
+        # A different selection can come from queue ordering alone.
+        if not journal.outstanding_has_unobserved_request(round_id, family):
+            return None
+    elif current.local_input_verified:
+        return None
+    elif journal.outstanding_calls(round_id, family) == 0:
+        return CompanySyncStepResult(False, True, deferred=True)
+    return CompanySyncStepResult(False, False, gaps=("source_attempt_unconfirmed",), failure="source_attempt_unconfirmed")
 
 
 def _interrupted_family(
@@ -189,15 +225,14 @@ def ResumeCompanySyncPendingStep(journal:CompanySyncRoundJournal,producers:tuple
     if old is None:
         raise ValueError("company_sync_pending_owner_changed")
     current=producer.state(scope)
-    if old.source_required and old.identity==current.identity and not current.local_input_verified:
-        result=(CompanySyncStepResult(False,True,deferred=True) if journal.outstanding_calls(round_id,family)==0 else
-            CompanySyncStepResult(False,False,gaps=("source_attempt_unconfirmed",),failure="source_attempt_unconfirmed"))
-    elif old.identity!=current.identity:
-        result=CompanySyncStepResult(False,True,accepted_inputs=None,gaps=("accepted_input_count_unconfirmed",))
-    else:
-        if current.source_required:
-            raise ValueError("company_sync_recovery_source_state_mismatch")
-        result=_invoke_step(producer,scope,budget,monotonic,cancel_requested)
+    result=_unconfirmed_source_result(journal,round_id,family,old,current)
+    if result is None:
+        if old.identity!=current.identity:
+            result=CompanySyncStepResult(False,True,accepted_inputs=None,gaps=("accepted_input_count_unconfirmed",))
+        else:
+            if current.source_required:
+                raise ValueError("company_sync_recovery_source_state_mismatch")
+            result=_invoke_step(producer,scope,budget,monotonic,cancel_requested)
     journal.finish(round_id,family,_with_plan_gaps(result,producer.plan))
     if observe is not None:
         confirmed=journal.family(round_id,family)

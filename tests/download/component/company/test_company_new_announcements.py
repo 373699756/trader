@@ -1,6 +1,7 @@
 """Current ordinary composition publishes independently verified new official evidence."""
 
 import hashlib
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
@@ -9,10 +10,11 @@ from tests.download.component.company.test_company_sync_round import _SCOPE
 from tests.download.component.company.test_company_sync_runtime import _runtime
 from tests.helpers.download.configuration import CompanySyncConfigurationFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
-from trader.download.domain.company_evidence import BuildCompanyDocumentPolicies, CompanyDocumentExtraction, CompanyDocumentFailure, Disclosure
+from trader.download.domain.company_evidence import BuildCompanyDocumentPolicies, CompanyDocumentExtraction, CompanyDocumentFailure, Disclosure, DisclosurePage
 from trader.download.domain.company_events import CompanyEventStatus, CompanyRiskType
 from trader.download.domain.company_sync import CompanySyncBudget
 from trader.download.infra.company_sync_producers import CompanyAnnouncementProducer
+from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_connection import SqliteSession
 from trader.recommendation.domain.scoring.company import IsCompanyRiskEffective
 
@@ -216,6 +218,73 @@ def test_new_original_dispatch_uses_one_attempt_and_continues_after_parser_failu
     with SqliteSession(runtime.material.path) as connection:
         row = connection.run("SELECT body_checked,body_retained FROM disclosures WHERE source_key='new'").require_one()
         assert tuple(row) == ((0, 0) if failure else (1, 1))
+
+
+def test_risk_originals_across_the_population_precede_positive_material_without_starving_directory(tmp_path):
+    runtime, _, _, _ = _runtime(tmp_path)
+    codes = tuple(f"600{index:03d}" for index in range(1, 130))
+    scope = replace(_SCOPE, codes=codes)
+    runtime.initialize(scope.codes, scope.cutoff)
+    items = (
+        Disclosure("cninfo", "positive", (codes[0],), "关于回购股份进展的公告",
+            scope.cutoff - timedelta(days=1), "https://example.test/positive.PDF", "a" * 64),
+        Disclosure("cninfo", "investigation", (codes[-2],), "关于立案调查及控股股东自愿承诺不减持的公告",
+            scope.cutoff - timedelta(days=3), "https://example.test/investigation.PDF", "b" * 64),
+        Disclosure("cninfo", "reduction-ended", (codes[-1],), "关于持股5%以上股东提前终止减持计划的公告",
+            scope.cutoff - timedelta(days=2), "https://example.test/reduction-ended.PDF", "c" * 64),
+        Disclosure("cninfo", "commitment", (codes[0],), "关于控股股东自愿承诺不减持公司股份的公告",
+            scope.cutoff - timedelta(days=1), "https://example.test/commitment.PDF", "d" * 64),
+    )
+    runtime.material.register_disclosures(items)
+    calls = []
+
+    class Source:
+        def document_ready(self, disclosure):
+            return False
+
+        def document_payload_hash(self, disclosure):
+            return None
+
+        def download_document(self, disclosure, *, attempt_limit):
+            assert attempt_limit == 1
+            calls.append(disclosure.identity)
+
+        def extract_document(self, disclosure, **kwargs):
+            return CompanyDocumentExtraction(_INVESTIGATION, "text", b"p" * 32, "test_text")
+
+        def fetch(self, partition, *, order):
+            calls.append(partition)
+            rows = tuple(sorted(
+                (item for item in items if partition.start <= item.published_at.date() <= partition.end),
+                key=lambda item: item.published_at,
+                reverse=True,
+            ))
+            return DisclosurePage(rows, len(rows), False)
+
+    config = CompanySyncConfigurationFixture()
+    policies = BuildCompanyDocumentPolicies(config, "ocr-test", text_identity="text-test")
+    producer = CompanyAnnouncementProducer(
+        runtime.inputs,
+        runtime.material,
+        Source(),
+        scope,
+        sqlite_policy=SqlitePolicyFixture(),
+        extraction_hash=runtime.facts.extraction_hash,
+        configuration=config,
+        policies=policies,
+        wall_clock=lambda: scope.cutoff,
+    )
+    producer.advance(scope, cancel_requested=lambda: False, deadline=100)
+    assert producer.state(scope).identity == CanonicalDigest((items[2], policies))
+    producer.advance(scope, cancel_requested=lambda: False, deadline=100)
+    first_partition = producer._partitions[0]
+    assert producer.state(scope).identity == CanonicalDigest(first_partition)
+    for _ in range(5):
+        result = producer.advance(scope, cancel_requested=lambda: False, deadline=100)
+        assert result.can_continue and result.source_calls == 1
+    assert calls == [
+        "reduction-ended", first_partition, "investigation", producer._partitions[1], "commitment", "positive",
+    ]
 
 
 @pytest.mark.parametrize("guard", ("other_stock", "multi_stock", "future", "expired", "other_source", "ineligible"))

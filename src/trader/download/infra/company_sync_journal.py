@@ -208,6 +208,13 @@ class SQLiteCompanySyncRoundJournal:
                 raise ValueError("company_sync_journal_request_count_invalid")
             return value
 
+    def outstanding_has_unobserved_request(self, round_id: str, family: CompanySyncFamily) -> bool:
+        with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
+            return connection.run("""SELECT 1 FROM company_sync_request r
+                JOIN company_sync_step s ON s.round_id=r.round_id AND s.family=r.family AND s.step=r.step
+                WHERE s.round_id=? AND s.family=? AND s.complete=0 AND r.observed=0 LIMIT 1""",
+                (round_id, family.value)).fetchone() is not None
+
     def finish(self, round_id: str, family: CompanySyncFamily, result: CompanySyncStepResult) -> None:
         with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
             changed = connection.run("""UPDATE company_sync_step SET complete=1,processed=?,can_continue=?,accepted=?,changed_codes=?,gaps=?,pending=?,failure=?,deferred=?
