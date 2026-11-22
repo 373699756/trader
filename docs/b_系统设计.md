@@ -159,9 +159,10 @@ flowchart TD
 
 | 资料族 | 当前代码或文档中的代表路径 | 负责文档 | 主要读写方式 |
 | --- | --- | --- | --- |
-| 完整历史目录和年库 | `data/market/history/catalog.sqlite3`、`prices_<year>.sqlite3` | d 第3、8章 | 下载批写，训练按日期顺序读，启动按窗口读 |
+| 完整历史目录和年库 | `data/history/catalog.sqlite3`、`data/history/prices_<year>.sqlite3` | d 第3、8章 | 下载批写，训练按日期顺序读，启动按窗口读 |
 | 各档行情窗口 | 同一已发布年度历史 | d 第3、4章 | 按需读取配对记录，不另写行情库 |
-| 证券、ST、行业 | `data/market/reference/company_st.sqlite3`、`industry.sqlite3` | d 第2、8章 | 手动更新、启动批量读取 |
+| 独立 QFQ 短窗 | `data/daily_window.sqlite3`、`data/daily_window.lock` | d 第4、8章 | 短窗文件与写锁位于数据根目录 |
+| 证券、ST、日历、行业 | `data/metadata/company_st.sqlite3`、`data/metadata/industry.sqlite3` | d 第2、8章 | 手动更新、启动批量读取 |
 | 公司采集与正式事实 | `data/company/company_sources.sqlite3`、`company_published.sqlite3`、`company_sync.sqlite3` | d 第5、8章 | 来源观测与材料、正式事实、请求账本分别存储 |
 | 样本与模型 | `data/training/` | e 第3、7章 | 身份固定、有界批读、各档双头发布 |
 | 训练到期与提醒 | `data/training/maintenance.sqlite3` | e 第3.7节 | 训练owner独立事务、同日提醒first-wins；历史catalog只读，不随历史重排复制 |
@@ -201,7 +202,7 @@ flowchart TD
 | --- | --- | --- |
 | 证券/ST/日历 | reference的company_st.sqlite3 → PreparedReference/HistoryStEvidence → 发布参考；A的PublishedReferences/StaticMarketCache与B的PrepareReference使用各自资格，训练按发布总体/日历读取 | 下载与荐股排除当前／曾ST，unknown通过ST门并保留未核实标记；行业、历史／公司预载与行情请求采用同一放行名单。原检查日与本次观察时点分开；d2.3、c2/16.2；功能证据不等于实际整链采用 |
 | 历史发布/年度价格 | catalog与prices_<year>.sqlite3 → ReadPublishedHistoryUseCase、HistoryTrainingRow/Point；A共享预载、C共享历史fanout | 固定snapshot/revision/sequence，取消与只读名单在解码前生效；不另建子集manifest；d3/8、e3.1及3.4 |
-| 独立短窗 | daily_window.sqlite3 → 同一历史只读端口的短窗adapter → A启动历史投影 | 原始/前复权配对、成员和发布凭据独立；不借完整历史断点，不在运行期补历史；d4/6.1 |
+| 独立短窗 | `data/daily_window.sqlite3` → 同一历史只读端口的短窗adapter → A启动历史投影 | 原始/前复权配对、成员和发布凭据独立；不借完整历史断点，不在运行期补历史；d4/6.1 |
 | 行业 | industry.sqlite3 → CurrentIndustryCache → A的PublishedReferences展示／模型路由；组合根另冻结CurrentIndustrySnapshot → C四档全历史分组 | 当前映射、缺口、收到／刷新期限及原件凭据各保留含义；最新映射用于正常训练，不冒充历史当时分类。历史点时研究另验，旧发布不回写；d2.5、c7及e3.1 |
 | 公司正式事实 | company_published.sqlite3 → CompanyEvidenceReadPort/CompanyFacts → PublishedCompanyResearch内存投影 → A过滤/评分/风险 | 评分使用正式事实，保留未知状态及实际披露时点。见d5.4/5.9/5.10、c6/16.4。 |
 | 模型/样本 | C的封存samples.sqlite3/complete.json及双头model.json → 严格profile加载 → A模型排序/净效用/动作门 | V1/V5独立排序，V2/V3仍local_score；数值重放、质量、收益与实际采用分别取证；e3.4–3.6/7.1、c7–12 |

@@ -1077,7 +1077,7 @@ def test_qfq_composition_requests_baostock_after_all_tencent_requests(tmp_path, 
         return Bao()
 
     monkeypatch.setattr(bootstrap, "BaoStockHistorySupplier", baostock)
-    with HistoryMaintenanceLock(tmp_path / "data/market/.history.lock"):
+    with HistoryMaintenanceLock(tmp_path / "data/.history.lock"):
         result = bootstrap.ExecuteQfqDownload(
             paths,
             history_configuration,
@@ -1090,7 +1090,7 @@ def test_qfq_composition_requests_baostock_after_all_tencent_requests(tmp_path, 
         )
     assert result.completed_codes == 0 and result.pending_codes == 2
     assert events == ["tencent", "tencent", "baostock", "baostock"]
-    assert SQLiteQfqWindowCache((tmp_path / "data/market") / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture()).codes() == frozenset()
+    assert SQLiteQfqWindowCache(tmp_path / "data/daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture()).codes() == frozenset()
 
 
 def test_qfq_composition_uses_shared_st_evidence_without_published_history(tmp_path, monkeypatch) -> None:
@@ -1124,7 +1124,7 @@ def test_qfq_composition_uses_shared_st_evidence_without_published_history(tmp_p
             return replace(context, universe=universe)
 
     def st_source(path, *_args, **_kwargs):
-        assert path.path == tmp_path / "data/market/reference/company_st.sqlite3"
+        assert path.path == tmp_path / "data/metadata/company_st.sqlite3"
         return StSource()
 
     _install_download_config(tmp_path)
@@ -1148,10 +1148,10 @@ def test_qfq_composition_uses_shared_st_evidence_without_published_history(tmp_p
     )
 
     assert result.completed_codes == 1 and result.pending_codes == 0
-    assert SQLiteQfqWindowCache((tmp_path / "data/market") / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture()).codes() == frozenset(
+    assert SQLiteQfqWindowCache(tmp_path / "data/daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture()).codes() == frozenset(
         {eligible.code}
     )
-    assert SQLiteQfqWindowCache((tmp_path / "data/market") / "daily_window.sqlite3", "v3", sqlite_policy=SqlitePolicyFixture()).codes() == frozenset(
+    assert SQLiteQfqWindowCache(tmp_path / "data/daily_window.sqlite3", "v3", sqlite_policy=SqlitePolicyFixture()).codes() == frozenset(
         {eligible.code}
     )
 
@@ -1167,7 +1167,7 @@ def test_qfq_composition_rejects_another_qfq_writer_before_supplier_calls(tmp_pa
     paths = DataPaths(tmp_path / "data")
     supplier = Tencent()
     monkeypatch.setattr(bootstrap, "TencentQfqSupplier", lambda _dependencies, _options: supplier)
-    with HistoryMaintenanceLock(tmp_path / "data/market/daily_window.lock"):
+    with HistoryMaintenanceLock(tmp_path / "data/daily_window.lock"):
         result = bootstrap.ExecuteQfqDownload(
             paths,
             *_qfq_download_configuration(tmp_path, paths),
@@ -1179,7 +1179,7 @@ def test_qfq_composition_rejects_another_qfq_writer_before_supplier_calls(tmp_pa
     assert result.failure_reason == "HistoryMaintenanceAlreadyRunningError"
     assert supplier.calls == []
     assert not (tmp_path / "data/qfq/.checkpoint.json").exists()
-    assert SQLiteQfqWindowCache((tmp_path / "data/market") / "daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture()).codes() == frozenset()
+    assert SQLiteQfqWindowCache(tmp_path / "data/daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture()).codes() == frozenset()
 
 
 def test_history_and_qfq_download_overlap_and_publish_independently(tmp_path, monkeypatch) -> None:
@@ -1227,9 +1227,9 @@ def test_history_and_qfq_download_overlap_and_publish_independently(tmp_path, mo
     assert qfq_result.failure_reason is None and qfq_result.completed_codes == 1
     assert qfq_result.pending_codes == 0
     assert (root / "catalog.sqlite3").exists()
-    assert (tmp_path / "data/market/daily_window.sqlite3").exists()
+    assert (tmp_path / "data/daily_window.sqlite3").exists()
     for profile, sessions in (("v2", 251), ("v3", 61)):
-        cache = SQLiteQfqWindowCache((tmp_path / "data/market") / "daily_window.sqlite3", profile, sqlite_policy=SqlitePolicyFixture())
+        cache = SQLiteQfqWindowCache(tmp_path / "data/daily_window.sqlite3", profile, sqlite_policy=SqlitePolicyFixture())
         assert len(cache.read_code("600001").cells) == sessions
 
 

@@ -73,7 +73,7 @@ def _publish_industry(history, sqlite_policy):
 
     with RequestsHttpTransport(execute_request=execute) as transport:
         CurrentIndustryPublication(
-            history.parent / "reference/industry.sqlite3", CninfoIndustryClient(
+            history.parent / "metadata/industry.sqlite3", CninfoIndustryClient(
                 transport, request_headers=lambda: (("Accept-Enckey", "fixture"),),
             ), sqlite_policy=sqlite_policy, clock=lambda: now,
         ).fetch(now, universe, (date(2024, 1, 1), now.date()))
@@ -136,7 +136,7 @@ def test_all_profile_probe_requires_external_isolated_history_and_new_output(tmp
     assert commands[0].name == "training_alignment"
     assert "scripts.training.jobs.training_alignment" in commands[0].argv
     with pytest.raises(ValueError, match="external_history_copy"):
-        _probe(Path(__file__).resolve().parents[4] / "data/market/history", tmp_path / "probe", sqlite_policy=SqlitePolicyFixture())
+        _probe(Path(__file__).resolve().parents[4] / "data/history", tmp_path / "probe", sqlite_policy=SqlitePolicyFixture())
     with pytest.raises(ValueError, match="new_separate_output"):
         _probe(tmp_path / "history", tmp_path, sqlite_policy=SqlitePolicyFixture())
 
@@ -298,9 +298,9 @@ def test_history_copy_includes_committed_wal_and_references_without_source_write
     from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
     from trader import bootstrap
 
-    market = tmp_path / "source/market"
-    history = market / "history"
-    reference = market / "reference"
+    source = tmp_path / "source"
+    history = source / "history"
+    reference = source / "metadata"
     history.mkdir(parents=True)
     reference.mkdir()
     paths = (history / "catalog.sqlite3", history / "prices_2026.sqlite3",
@@ -315,7 +315,7 @@ def test_history_copy_includes_committed_wal_and_references_without_source_write
         connections.append(connection)
     with SqliteTransaction(connections[0]):
         connections[0].run("CREATE TABLE schema_contract(singleton INTEGER PRIMARY KEY,reference_file TEXT)")
-        connections[0].run("INSERT INTO schema_contract VALUES(1,'../reference/company_st.sqlite3')")
+        connections[0].run("INSERT INTO schema_contract VALUES(1,'../metadata/company_st.sqlite3')")
     for path in paths[:2]:
         PublishSqliteFile(path, sqlite_policy=SqlitePolicyFixture())
     before = tuple(path.read_bytes() for path in paths)
@@ -350,7 +350,7 @@ def test_history_copy_includes_committed_wal_and_references_without_source_write
             assert report["training_input_hash"] == snapshot.training_input_hash
             assert report["industry_snapshot_hash"] == industry.content_hash
             for path in paths:
-                with SqliteSession(target / path.relative_to(market), SqliteConnectionOptions(read_only=True), sqlite_policy=SqlitePolicyFixture()) as copied:
+                with SqliteSession(target / path.relative_to(source), SqliteConnectionOptions(read_only=True), sqlite_policy=SqlitePolicyFixture()) as copied:
                     assert tuple(copied.run("SELECT value FROM fixture").require_one()) == (17,)
         assert tuple(path.read_bytes() for path in paths) == before
         assert all(tuple(connection.run("SELECT value FROM fixture").require_one()) == (17,) for connection in connections)
@@ -367,9 +367,9 @@ def test_history_copy_rejects_reference_binding_outside_the_copied_layout(tmp_pa
     from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
     from trader import bootstrap
 
-    market = tmp_path / "source"
-    history = market / "history"
-    reference = market / "reference"
+    source = tmp_path / "source"
+    history = source / "history"
+    reference = source / "metadata"
     history.mkdir(parents=True)
     reference.mkdir()
     paths = (history / "catalog.sqlite3", history / "prices_2026.sqlite3",
@@ -382,7 +382,7 @@ def test_history_copy_rejects_reference_binding_outside_the_copied_layout(tmp_pa
     with SqliteSession(paths[0], sqlite_policy=SqlitePolicyFixture()) as connection, SqliteTransaction(connection):
         connection.run("CREATE TABLE schema_contract(singleton INTEGER PRIMARY KEY,reference_file TEXT)")
         connection.run("INSERT INTO schema_contract VALUES(1,?)", (
-            "../reference/company_st.sqlite3" if invalid == "copy_escape" else binding,
+            "../metadata/company_st.sqlite3" if invalid == "copy_escape" else binding,
         ))
     for path in paths[:2]:
         PublishSqliteFile(path, sqlite_policy=SqlitePolicyFixture())
@@ -445,7 +445,7 @@ def test_real_history_copy_preserves_readable_publication_and_rejects_invalid_so
         assert not (destination / "copy-summary.json").exists()
     else:
         result = PrepareTrainingHistoryCopy(history, destination, timeout_seconds=30, sqlite_policy=policy)
-        industry = ReadIndustrySnapshot(history.parent / "reference", datetime.now(ZoneInfo("Asia/Shanghai")), policy)
+        industry = ReadIndustrySnapshot(history.parent / "metadata", datetime.now(ZoneInfo("Asia/Shanghai")), policy)
         original = SQLiteHistoryTrainingInputSnapshot.open(history, industry_snapshot=industry, sqlite_policy=policy)
         copied = SQLiteHistoryTrainingInputSnapshot.open(destination / "history", industry_snapshot=industry, sqlite_policy=policy)
         dates = frozenset(original.snapshot.calendar.open_dates)

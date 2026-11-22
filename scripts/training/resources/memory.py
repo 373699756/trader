@@ -14,6 +14,7 @@ import tempfile
 from pathlib import Path
 
 from trader.infra.serialization.canonical import ContentHash
+from trader.infra.settings.data_paths import DataPaths
 from trader.training.application.tomorrow_training import (
     TOMORROW_TRAINING_COMPUTE_THREADS,
     TOMORROW_TRAINING_PEAK_RSS_MIB,
@@ -77,7 +78,7 @@ def Main(argv: list[str] | None = None) -> int:
     from zoneinfo import ZoneInfo
     sqlite_policy = BuildSqlitePolicy(runtime)
     industry = ReadIndustrySnapshot(
-        args.history_root.resolve().parent / "reference", datetime.now(ZoneInfo("Asia/Shanghai")), sqlite_policy,
+        DataPaths(args.history_root.resolve().parent).reference, datetime.now(ZoneInfo("Asia/Shanghai")), sqlite_policy,
     )
     os.nice(10)
     before = _peak_rss_bytes()

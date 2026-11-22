@@ -201,13 +201,13 @@ def test_annual_comparison_configuration_uses_the_selected_checkout_defaults(tmp
     selected = []
 
     def load(received_checkout, paths):
-        selected.append((received_checkout, paths.root))
-        return configured
+        selected.append((received_checkout, paths.root, paths.reference))
+        return replace(configured, reference_root=paths.reference)
 
     monkeypatch.setattr("trader.download.infra.download_settings.LoadHistorySyncConfiguration", load)
     actual = _annual_history_configuration(checkout, root, history)
-    assert selected == [(checkout, root)]
-    assert actual.history_root == history and actual.reference_root == root / "reference"
+    assert selected == [(checkout, root, root / "metadata")]
+    assert actual.history_root == history and actual.reference_root == root / "metadata"
     assert actual.sessions == 2000 and actual.minimum_free_bytes == 0
     assert actual.reread_sessions == configured.reread_sessions
     assert actual.download_batch_size == configured.download_batch_size

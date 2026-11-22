@@ -234,7 +234,7 @@ def _report_sync_failure(result: SyncResult, progress: SyncProgress) -> None:
     if result.failure == "preparation_ReferenceDatabaseIncompatibleError":
         _sync_error(progress,
             "sync: ST资格及交易日历参考库 company_st.sqlite3 的结构不兼容，尚未进入下载。"
-            "请退出使用该库的任务，删除下载目录 market/reference 下的 company_st.sqlite3 及其"
+            "请退出使用该库的任务，删除下载目录 metadata 下的 company_st.sqlite3 及其"
             " -wal、-shm、-journal 配套文件，再重新运行原同步命令；程序会重新下载参考资料。",
         )
     if result.failure == "preparation_AkshareCalendarTimeoutError":

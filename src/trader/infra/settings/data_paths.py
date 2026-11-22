@@ -10,11 +10,11 @@ class DataPaths:
 
     @property
     def history(self) -> Path:
-        return self.root / "market/history"
+        return self.root / "history"
 
     @property
     def reference(self) -> Path:
-        return self.root / "market/reference"
+        return self.root / "metadata"
 
     @property
     def reference_database(self) -> Path:

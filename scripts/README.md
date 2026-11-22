@@ -54,11 +54,11 @@
 
 ```bash
 .venv/bin/python3 scripts/tools.py --business download --module history --action publication \
-  --history-root /external/frozen-data/market/history --price-field-audit \
+  --history-root /external/frozen-data/history --price-field-audit \
   --audit-budget-seconds 3500 --command-timeout-seconds 3600 \
   --audit-checkpoint /external/history-audit-checkpoint.json --report /external/history-fields.json
 .venv/bin/python3 scripts/tools.py --business download --module history --action qfq \
-  --qfq-database /external/frozen-data/market/daily_window.sqlite3 --price-field-audit \
+  --qfq-database /external/frozen-data/daily_window.sqlite3 --price-field-audit \
   --runtime-config /external/frozen/config/runtime.json \
   --audit-budget-seconds 3500 --command-timeout-seconds 3600 \
   --audit-checkpoint /external/market-audit-checkpoint.json --report /external/market-fields.json
@@ -107,7 +107,7 @@ JSON输出为两空格缩进、中文直显；按当前字段及既有命令身�
 
 ```bash
 .venv/bin/python3 scripts/tools.py --business download --module history --action write \
-  --history-publication-profile --history-root /external/frozen-data/market/history \
+  --history-publication-profile --history-root /external/frozen-data/history \
   --runtime-config /external/frozen/config/runtime.json --command-timeout-seconds 3600 \
   --report /external/history-publication-profile.json
 ```
@@ -398,7 +398,7 @@ assets/consistency只读核对，assets/generate显式重建打包JS资源；公
 
 ```bash
 .venv/bin/python3 scripts/tools.py --business download --module history --action sqlite \
-  --history-root /external/frozen-data/market/history --runtime-config /external/frozen/config/runtime.json \
+  --history-root /external/frozen-data/history --runtime-config /external/frozen/config/runtime.json \
   --history-preload-audit --history-preload-profiles v1,v2,v3,v5 \
   --history-preload-context-candidate metrics_reuse \
   --command-timeout-seconds 1800 --report /external/preload-candidate.json

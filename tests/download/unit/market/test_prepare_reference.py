@@ -51,8 +51,8 @@ def test_incompatible_industry_reports_its_exact_download_scope_without_stopping
         _SOURCES,
     ), report=reports.append)
     text = str(reports)
-    assert "market/reference/industry.sqlite3" in text
-    assert "仅清理" in text and "其他资料同步继续" in text
+    assert "metadata/industry.sqlite3" in text
+    assert "移至备份" in text and "其他资料同步继续" in text
     assert result.industry_version is None and published == [result]
 
 

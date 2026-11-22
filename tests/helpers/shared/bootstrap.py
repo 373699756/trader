@@ -20,7 +20,7 @@ def _config(tmp_path: Path) -> Path:
     runtime["runtime_dir"] = str(tmp_path / "runtime")
     runtime["strategy_config"] = str(strategy_path)
     runtime["long_watchlist"] = str(config_dir / "long_watchlist.json")
-    reference_dir = tmp_path / "data/market/reference"
+    reference_dir = tmp_path / "data/metadata"
     reference_dir.mkdir(parents=True, exist_ok=True)
     for profile in (V2_D25_PROFILE, V3_D25_PROFILE):
         _publish_profile(tmp_path / "data" / "training" / "models", profile)

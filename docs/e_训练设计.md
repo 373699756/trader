@@ -63,7 +63,7 @@ CLI的`train`通过唯一组合根 `bootstrap.ExecuteSelectedTraining`独立启�
 
 ### 3.1 原始历史与参考
 
-数据库：`data/market/history/catalog.sqlite3` 保存发布/日历/总体身份，年度 `data/market/history/prices_<year>.sqlite3` 的 `daily_price_revision`、`daily_price_observation` 提供对应版本价格；行业从 `data/market/reference/industry.sqlite3` 的最新有效完整发布只读固定，不再使用历史发布绑定的行业区间。`HistoryTrainingRow`、`HistoryTrainingPoint` 是读取后形成的程序对象，不是数据库表名。路径以 `config/runtime.json` 的 `data_dir=data` 举例。
+数据库：`data/history/catalog.sqlite3` 保存发布/日历/总体身份，年度 `data/history/prices_<year>.sqlite3` 的 `daily_price_revision`、`daily_price_observation` 提供对应版本价格；行业从 `data/metadata/industry.sqlite3` 的最新有效完整发布只读固定，不再使用历史发布绑定的行业区间。`HistoryTrainingRow`、`HistoryTrainingPoint` 是读取后形成的程序对象，不是数据库表名。路径以 `config/runtime.json` 的 `data_dir=data` 举例。
 
 | 数据库/对象 | 字段 | 中文意思及训练作用 |
 | --- | --- | --- |

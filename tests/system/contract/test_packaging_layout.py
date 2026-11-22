@@ -122,7 +122,9 @@ def test_project_whitelists_only_portable_model_heads() -> None:
         "data/training/models/v2/active-profile.json": True,
         "data/training/samples/v2/complete.json": True,
         "data/recommendation/v3/freeze.sqlite3": True,
-        "data/market/history/catalog.sqlite3": True,
+        "data/history/catalog.sqlite3": True,
+        "data/metadata/industry.sqlite3": True,
+        "data/daily_window.sqlite3": True,
     }
     for relative, ignored in cases.items():
         result = subprocess.run(

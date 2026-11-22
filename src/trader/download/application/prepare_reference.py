@@ -81,7 +81,7 @@ def PrepareReference(
         industries = ()
         _report(
             report, "当前行业",
-            "行业下载库结构不兼容；仅清理 market/reference/industry.sqlite3 及配套文件后重新下载行业资料，其他资料同步继续",
+            "行业下载库结构不兼容。请将 metadata/industry.sqlite3 及配套文件移至备份后重新下载行业资料。其他资料同步继续。",
             ProgressLevel.WARNING,
             source=dependencies.sources.industry,
             state="失败",

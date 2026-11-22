@@ -365,6 +365,7 @@ def _validate_audit_outputs(options: HistoryOptions, report: str) -> None:
     if not outputs:
         return
     from trader.infra.settings import LoadRuntimeSettings
+    from trader.infra.settings.data_paths import DataPaths
 
     directories = [options.runtime_config.parent.resolve()]
     if options.history_root is not None:
@@ -391,7 +392,7 @@ def _validate_audit_outputs(options: HistoryOptions, report: str) -> None:
         root = options.history_root if options.history_root is not None else settings.data_paths.history
         root = root.resolve()
         directories.append(root)
-        reference = root.parent / "reference" / "company_st.sqlite3"
+        reference = DataPaths(root.parent).reference_database
         catalog = root / "catalog.sqlite3"
         if catalog.is_symlink():
             BuildParser(options.action_identity).error("audit source/output separation cannot use a linked catalog")

@@ -55,8 +55,8 @@ def _history_report(root: Path, checkpoint: Path | None = None):
 
 
 def _seed_qfq(root: Path, *, closed_day: date | None = None) -> tuple[Path, Path]:
-    path = root / "market" / "daily_window.sqlite3"
-    reference_path = root / "reference" / "company_st.sqlite3"
+    path = root / "daily_window.sqlite3"
+    reference_path = root / "metadata" / "company_st.sqlite3"
     window = qfq_window("600001")
     window = replace(window, cells=tuple(cell for cell in window.cells if cell.trade_date != closed_day) if closed_day is not None else window.cells[-251:])
     dates = tuple(cell.trade_date for cell in window.cells)
@@ -596,10 +596,15 @@ def test_qfq_missing_dates_keep_confirmed_inferred_and_unexplained_separate(tmp_
 def test_deep_audit_cli_wires_budget_checkpoint_and_rejects_report_collision(tmp_path, identity):
     checkpoint = tmp_path / "checkpoint.json"
     arguments = [*SelectionArguments(identity), "--price-field-audit", "--audit-checkpoint", str(checkpoint), "--audit-budget-seconds", "20", "--command-timeout-seconds", "30"]
+    qfq_database = tmp_path / "data/daily_window.sqlite3"
+    if identity == "qfq-sqlite":
+        arguments.extend(("--qfq-database", str(qfq_database)))
     options = ParseBusinessOptions(ParseToolArguments(arguments))
     command, = BuildToolCommands(options)
     assert "--price-field-audit" in command.argv and str(checkpoint) in command.argv
     assert command.argv[command.argv.index("--audit-budget-seconds") + 1] == "20.0"
+    if identity == "qfq-sqlite":
+        assert command.argv[command.argv.index("--database") + 1] == str(qfq_database)
     with pytest.raises(SystemExit):
         ParseToolArguments([*arguments, "--report", str(checkpoint)])
 
@@ -608,9 +613,9 @@ def test_deep_audit_cli_wires_budget_checkpoint_and_rejects_report_collision(tmp
     ("history-publication", "history", "--report"),
     ("history-publication", "reference", "--report"),
     ("history-publication", "reference", "--audit-checkpoint"),
-    ("qfq-sqlite", "market", "--report"),
+    ("qfq-sqlite", "data", "--report"),
     ("qfq-sqlite", "reference", "--report"),
-    ("qfq-sqlite", "market", "--audit-checkpoint"),
+    ("qfq-sqlite", "data", "--audit-checkpoint"),
     ("qfq-sqlite", "config", "--report"),
 ))
 @pytest.mark.parametrize("invalid_budget", (False, True))
@@ -624,8 +629,8 @@ def test_public_audit_rejects_new_output_in_external_sources_before_execution(tm
     with sqlite3.connect(history / "catalog.sqlite3") as connection:
         connection.execute("CREATE TABLE schema_contract(reference_file TEXT)")
         connection.execute("INSERT INTO schema_contract VALUES('../custom-reference/company_st.sqlite3')")
-    market = tmp_path / "data" / "market"
-    reference = market / "reference"
+    data = tmp_path / "data"
+    reference = data / "metadata"
     reference.mkdir(parents=True)
     if directory == "history":
         source_directory = history
@@ -634,12 +639,12 @@ def test_public_audit_rejects_new_output_in_external_sources_before_execution(tm
     elif directory == "config":
         source_directory = configuration
     else:
-        source_directory = market
+        source_directory = data
     output = source_directory / "new-audit.json"
     arguments = [*SelectionArguments(identity), "--price-field-audit", "--runtime-config", str(configuration / "runtime.json"), option, str(output)]
     if invalid_budget:
         arguments.extend(("--audit-budget-seconds", "50", "--command-timeout-seconds", "30"))
-    arguments.extend(["--history-root", str(history)] if identity == "history-publication" else ["--qfq-database", str(market / "daily_window.sqlite3")])
+    arguments.extend(["--history-root", str(history)] if identity == "history-publication" else ["--qfq-database", str(data / "daily_window.sqlite3")])
 
     def unexpected(*_arguments, **_keywords):
         pytest.fail("an unsafe output path must be rejected before executing diagnostics")

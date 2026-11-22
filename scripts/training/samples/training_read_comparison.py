@@ -150,7 +150,7 @@ def Main() -> int:
         fixture = LoadPublishedHistorySnapshot(args.history, sequence=1, sqlite_policy=sqlite_policy)
         industry = SyntheticIndustrySnapshot(tuple(item.code for item in fixture.universe.securities), observed_at)
     else:
-        industry = ReadIndustrySnapshot(args.history.resolve().parent / "reference", observed_at, sqlite_policy)
+        industry = ReadIndustrySnapshot(DataPaths(args.history.resolve().parent).reference, observed_at, sqlite_policy)
     report = MeasurePreparation(
         args.history, args.output, args.mode, industry_snapshot=industry, sqlite_policy=sqlite_policy,
     )

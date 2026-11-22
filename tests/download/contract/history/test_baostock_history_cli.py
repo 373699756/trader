@@ -300,7 +300,8 @@ def test_training_uses_configured_data_roots():
     from trader.infra.settings import LoadRuntimeSettings
 
     runtime = LoadRuntimeSettings(PROJECT_ROOT / "config/runtime.json")
-    assert runtime.data_paths.history == PROJECT_ROOT / "data/market/history"
+    assert runtime.data_paths.history == PROJECT_ROOT / "data/history"
+    assert runtime.data_paths.reference_database == PROJECT_ROOT / "data/metadata/company_st.sqlite3"
     assert runtime.data_paths.models == PROJECT_ROOT / "data/training/models"
 
 

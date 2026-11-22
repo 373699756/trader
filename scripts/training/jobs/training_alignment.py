@@ -31,6 +31,7 @@ from scripts.training.output_paths import RequireIndependentOutput
 from scripts.training.resources.execution_selection import (
     CpuCandidate, ExecutionCandidate, ExecutionComponent, FanoutCandidate, ParseExecutionComponents,
 )
+from trader.infra.settings.data_paths import DataPaths
 
 if TYPE_CHECKING:
     from scripts.training.resources.execution_candidates import TrainingExecutionExperiment
@@ -82,12 +83,14 @@ def PrepareTrainingHistoryCopy(
         raise ValueError("training_history_copy_destination_invalid")
     started = time.monotonic()
     _require_history_copy_reference(source, sqlite_policy)
+    source_reference = DataPaths(source.parent).reference
+    target_reference = DataPaths(destination).reference
     observed_at = datetime.now(ZoneInfo("Asia/Shanghai"))
-    industry = ReadIndustrySnapshot(source.parent / "reference", observed_at, sqlite_policy)
+    industry = ReadIndustrySnapshot(source_reference, observed_at, sqlite_policy)
     snapshot = SQLiteHistoryTrainingInputSnapshot.open(source, industry_snapshot=industry, sqlite_policy=sqlite_policy).snapshot
     files = ((source / "catalog.sqlite3", Path("history/catalog.sqlite3")), *(
         (path, Path("history") / path.name) for path in sorted(source.glob("prices_*.sqlite3"))
-    ), *((source.parent / "reference" / name, Path("reference") / name)
+    ), *((source_reference / name, target_reference.relative_to(destination) / name)
          for name in ("company_st.sqlite3", "industry.sqlite3")))
     if len(files) < 4 or any(path.is_symlink() or not path.is_file() for path, _relative in files):
         raise ValueError("training_history_copy_source_incomplete")
@@ -127,8 +130,8 @@ def PrepareTrainingHistoryCopy(
         print(f"训练历史副本 | 已备份 {number}/{len(files)} 个数据库", file=sys.stderr, flush=True)
     _require_history_copy_reference(destination / "history", sqlite_policy)
     _require_history_copy_reference(source, sqlite_policy)
-    copied_industry = ReadIndustrySnapshot(destination / "reference", observed_at, sqlite_policy)
-    after_industry = ReadIndustrySnapshot(source.parent / "reference", observed_at, sqlite_policy)
+    copied_industry = ReadIndustrySnapshot(target_reference, observed_at, sqlite_policy)
+    after_industry = ReadIndustrySnapshot(source_reference, observed_at, sqlite_policy)
     copied = SQLiteHistoryTrainingInputSnapshot.open(
         destination / "history", industry_snapshot=industry, sqlite_policy=sqlite_policy,
     ).snapshot
@@ -162,7 +165,7 @@ def _require_history_copy_reference(history: Path, sqlite_policy: SqliteIoPolicy
     from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
 
     catalog = history / "catalog.sqlite3"
-    reference = history.parent / "reference" / "company_st.sqlite3"
+    reference = DataPaths(history.parent).reference_database
     if catalog.is_symlink() or reference.is_symlink() or reference.parent.is_symlink():
         raise ValueError("training_history_copy_reference_invalid")
     with SqliteSession(catalog, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as connection:
@@ -170,7 +173,7 @@ def _require_history_copy_reference(history: Path, sqlite_policy: SqliteIoPolicy
     if row is None or not isinstance(row[0], str):
         raise ValueError("training_history_copy_reference_invalid")
     binding = Path(row[0])
-    if (binding.is_absolute() or binding != Path("../reference/company_st.sqlite3")
+    if (binding.is_absolute() or binding != Path("..") / reference.relative_to(history.parent)
             or (history / binding).resolve() != reference.resolve()
             or not reference.resolve().is_relative_to(history.parent)):
         raise ValueError("training_history_copy_reference_invalid")
@@ -274,7 +277,7 @@ def _probe(
     if work.is_relative_to(runtime.data_paths.root.resolve()) or work.is_relative_to(runtime.project_root.resolve()):
         raise ValueError("training_alignment_requires_external_output")
     source_files = _published_input_signature(history) if published_history_read_only else ()
-    industry = ReadIndustrySnapshot(history.parent / "reference", datetime.now(ZoneInfo("Asia/Shanghai")), sqlite_policy)
+    industry = ReadIndustrySnapshot(DataPaths(history.parent).reference, datetime.now(ZoneInfo("Asia/Shanghai")), sqlite_policy)
     source = SQLiteHistoryTrainingInputSnapshot.open(history, industry_snapshot=industry, sqlite_policy=sqlite_policy)
     identity = source.snapshot.snapshot_hash
     training_identity = source.snapshot.training_input_hash
@@ -435,10 +438,10 @@ def _write_workload_checkpoint(
 
 
 def _published_input_signature(history: Path) -> tuple[tuple[str, int, int, int, int, int], ...]:
+    data_paths = DataPaths(history.parent)
     files = (
         history / "catalog.sqlite3", *sorted(history.glob("prices_*.sqlite3")),
-        history.parent / "reference/company_st.sqlite3",
-        history.parent / "reference/industry.sqlite3",
+        data_paths.reference_database, data_paths.reference / "industry.sqlite3",
     )
     paths = tuple(
         path for file in files

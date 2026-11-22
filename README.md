@@ -11,7 +11,7 @@
 | 浏览器 | 当前稳定版Chrome、Edge、Firefox桌面版 |
 | 默认地址 | http://127.0.0.1:5000 |
 | 持久数据 | data_dir，默认data/ |
-| 锁、日志和临时产物 | runtime_dir，默认.runtime/trader/ |
+| 服务锁、日志和临时产物 | runtime_dir，默认.runtime/trader/ |
 
 不需要Redis、Celery、Node或外部数据库。依赖和公开入口以[pyproject.toml](pyproject.toml)为准。
 
@@ -70,6 +70,8 @@ train只使用本地已发布资料，不下载资料，也不是普通启动的
 
 每个下载命令都会准备公共参考，只缺某类资料时使用对应命令。train不准备在线参考，不更新历史、在线短窗口或公司资料。
 同一业务的写入受锁保护，冲突会拒绝执行。训练与 `sync history` 共享历史锁，公司资料使用独立的锁。
+
+默认数据根目录 `data/` 下，完整历史位于 `history/`，证券、ST、日历和行业参考位于 `metadata/`。独立 QFQ 短窗文件 `daily_window.sqlite3` 与对应的 `daily_window.lock` 位于数据根目录。
 
 跨日重跑会重新检查参考和已有断点。History 将旧批次的缺口与新增日期合并补齐。Company 保留日期片和页码，安排新增日期、近期复查及正文待补。完成条件和复查窗口见[下载设计](docs/d_下载设计.md)。
 

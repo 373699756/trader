@@ -483,7 +483,6 @@ def _annual_history_configuration(checkout: Path, root: Path, history: Path) -> 
     return replace(
         LoadHistorySyncConfiguration(checkout, DataPaths(root)),
         history_root=history,
-        reference_root=root / "reference",
         sessions=2000,
         minimum_free_bytes=0,
     )

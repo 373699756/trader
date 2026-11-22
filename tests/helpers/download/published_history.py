@@ -63,7 +63,7 @@ def publish_history_fixture(
         prices.initialize()
         prices.save_revisions(tuple(revisions))
         partitions.append(prices.seal())
-    reference_path = root.parent / "reference" / "company_st.sqlite3"
+    reference_path = root.parent / "metadata" / "company_st.sqlite3"
     publication_id = PublishHistoryReferenceFixture(
         reference_path,
         reference,

@@ -118,7 +118,7 @@ def _probe(source: Path, work: Path, *, sample_settings: TrainingSampleSettings,
     from trader.bootstrap import ReadIndustrySnapshot
 
     industry_snapshot = ReadIndustrySnapshot(
-        source.parent / "reference", datetime.now(ZoneInfo("Asia/Shanghai")), sqlite_policy,
+        DataPaths(source.parent).reference, datetime.now(ZoneInfo("Asia/Shanghai")), sqlite_policy,
     ).project(tuple(sorted(item.code for item in state.universe.securities)))
     groups: dict[str, set[str]] = defaultdict(set)
     for member in industry_snapshot.members:

@@ -53,7 +53,7 @@ ST状态同时保留来源、检查时间和发布身份。仅凭unknown或未�
 
 下表中其余资料在第2层ST及其他静态资格通过后才预加载，并在首轮采集前完成；不是第1层先把所有股票资料读完。
 
-证券和ST取自 `data/market/reference/company_st.sqlite3`。日历按已发布参考及历史身份读取，行业采用已发布当前分类，训练每轮固定同一份最新有效映射。历史来自 `data/market/history/catalog.sqlite3` 与年度 `prices_<year>.sqlite3`，公司资料来自 `data/company/company_published.sqlite3`。模型来自 `data/training/models/<档位>/<策略>/model.json` 和 `metadata.json`。配置来自 `config/runtime.json` 及b第7章列出的各业务JSON文件。上述路径以 `data_dir=data` 举例。
+证券和ST取自 `data/metadata/company_st.sqlite3`。日历按已发布参考及历史身份读取，行业采用已发布当前分类，训练每轮固定同一份最新有效映射。历史来自 `data/history/catalog.sqlite3` 与年度 `prices_<year>.sqlite3`，公司资料来自 `data/company/company_published.sqlite3`。模型来自 `data/training/models/<档位>/<策略>/model.json` 和 `metadata.json`。配置来自 `config/runtime.json` 及b第7章列出的各业务JSON文件。上述路径以 `data_dir=data` 举例。
 
 | 加载内容 | 来源 | 保留什么 | 不做什么 |
 | --- | --- | --- | --- |
@@ -78,7 +78,7 @@ ST状态同时保留来源、检查时间和发布身份。仅凭unknown或未�
 
 不要在这里把盘中缺报价、模型缺失当作永久淘汰。ST 历史证据、当前报价 ST 标志、上市特殊交易日属于不同事实，分别记录来源和作用。可逆公司事件不得错误存成永久黑名单。
 
-来源：证券身份和ST取自 `data/market/reference/company_st.sqlite3` 的 `security`、`security_st_evidence` 及对应发布关系；黑名单和资格参数来自 `config/filter.json`。当前报价名称/ST来自腾讯或新浪；上市交易日龄、交易限制和规则身份由程序依据参考与交易规则生成。下表是内存输入字段，不是同一数据库表的原列清单。
+来源：证券身份和ST取自 `data/metadata/company_st.sqlite3` 的 `security`、`security_st_evidence` 及对应发布关系；黑名单和资格参数来自 `config/filter.json`。当前报价名称/ST来自腾讯或新浪；上市交易日龄、交易限制和规则身份由程序依据参考与交易规则生成。下表是内存输入字段，不是同一数据库表的原列清单。
 
 | 字段 | 中文意思与来源 | 作用 | 未知怎么办 |
 | --- | --- | --- | --- |
@@ -182,7 +182,7 @@ flowchart TD
 
 这里列清“原始量”和“转换后的分数”，同名近似不表示可互换。小数收益0.03表示3%；百分点3也表示3%，禁止混用。完整登记及实际消费者边界逐项见第16章。
 
-来源：历史量价取自 `data/market/history/prices_<year>.sqlite3`，通过 `catalog.sqlite3` 固定发布版本；与本轮腾讯/新浪报价、分钟及公司正式事实的内存视图结合计算。公式定义见 `config/features.json`，评分转换和权重见 `config/scoring.json`，财务输入所在库见下一节。这些派生字段在本轮内存计算，不是年度价格表里同名的物理列。
+来源：历史量价取自 `data/history/prices_<year>.sqlite3`，通过 `catalog.sqlite3` 固定发布版本；与本轮腾讯/新浪报价、分钟及公司正式事实的内存视图结合计算。公式定义见 `config/features.json`，评分转换和权重见 `config/scoring.json`，财务输入所在库见下一节。这些派生字段在本轮内存计算，不是年度价格表里同名的物理列。
 
 | 字段 | 中文说明/来源与计算 | 使用层与作用 |
 | --- | --- | --- |
@@ -238,7 +238,7 @@ flowchart TD
 
 以下辅助字段也要列清用途，不能因为“程序有算”就当作新增生产权重：
 
-历史输入来自 `data/market/history/prices_<year>.sqlite3`，公司输入来自 `data/company/company_published.sqlite3`，实时输入来自本轮报价和分钟数据。新闻使用有来源和时间的独立研究证据。字段定义见 `config/features.json`，转换参数见 `config/scoring.json` 及实际消费者。
+历史输入来自 `data/history/prices_<year>.sqlite3`，公司输入来自 `data/company/company_published.sqlite3`，实时输入来自本轮报价和分钟数据。新闻使用有来源和时间的独立研究证据。字段定义见 `config/features.json`，转换参数见 `config/scoring.json` 及实际消费者。
 
 | 字段 | 中文说明/来源与计算 | 作用和缺失 |
 | --- | --- | --- |
@@ -313,7 +313,7 @@ Tomorrow 工件按档位和目标加载，D25 按档加载收益工件和与之�
 
 ### 7.1 模型输入明细
 
-来源：原始量价在 `data/market/history/prices_<year>.sqlite3`，发布和日历身份在 `catalog.sqlite3`；训练行业由 `data/market/reference/industry.sqlite3` 的最新有效当前发布固定，所有历史样本共用本轮映射；实时锚点来自本轮腾讯/新浪报价。字段定义和顺序由 `config/features.json` 与各档特征合同约束，窗口及模型参数来自 `config/training.json`；已发布模型列合同保存在 `data/training/models/<档位>/<策略>/metadata.json`。下表为模型输入计算字段，不能按名称直接查询某张表。
+来源：原始量价在 `data/history/prices_<year>.sqlite3`，发布和日历身份在 `catalog.sqlite3`；训练行业由 `data/metadata/industry.sqlite3` 的最新有效当前发布固定，所有历史样本共用本轮映射；实时锚点来自本轮腾讯/新浪报价。字段定义和顺序由 `config/features.json` 与各档特征合同约束，窗口及模型参数来自 `config/training.json`；已发布模型列合同保存在 `data/training/models/<档位>/<策略>/metadata.json`。下表为模型输入计算字段，不能按名称直接查询某张表。
 
 | 字段族 | 定义和来源 | 使用档位 |
 | --- | --- | --- |
@@ -356,7 +356,7 @@ V2/V3/V5的残差计算总体先按当日特征可建性确定，不能提前按
 
 V5 的全部序列坐标用 `t=0..59`、以下6个通道明确表示，共360项，不抄360行相同解释。`t=0` 是61日窗口第二天，`t=59` 是信号日前最近完整日，顺序由旧到新。
 
-来源：下面6个通道由 `data/market/history/prices_<year>.sqlite3` 中已发布的qfq价格和模型合同量额计算；训练时写入 `data/training/samples/` 下V5样本库，在线从已预加载历史生成。60步、列序及单位由V5特征合同和 `config/training.json` 约束，不来自实时分钟数据库。
+来源：下面6个通道由 `data/history/prices_<year>.sqlite3` 中已发布的qfq价格和模型合同量额计算；训练时写入 `data/training/samples/` 下V5样本库，在线从已预加载历史生成。60步、列序及单位由V5特征合同和 `config/training.json` 约束，不来自实时分钟数据库。
 
 | 字段模式 | 每一步含义 | 来源与单位 |
 | --- | --- | --- |
@@ -391,7 +391,7 @@ base_score = clamp(signal_score - quality_penalty, 0, 100)
 local_score = clamp(base_score - local_risk_penalty, 0, 100)
 ```
 
-来源：下表使用本轮腾讯/新浪报价、从 `data/market/history/prices_<year>.sqlite3` 预加载的历史量价及证券规则派生，依赖字段的公式见 `config/features.json`。风险触发和扣分配置来自 `config/risk.json`，后续动作限制来自 `config/selection.json`；这些是内存风险字段，不是独立风险数据库的物理列。
+来源：下表使用本轮腾讯/新浪报价、从 `data/history/prices_<year>.sqlite3` 预加载的历史量价及证券规则派生，依赖字段的公式见 `config/features.json`。风险触发和扣分配置来自 `config/risk.json`，后续动作限制来自 `config/selection.json`；这些是内存风险字段，不是独立风险数据库的物理列。
 
 | 风险字段 | 当前依据 | 作用 |
 | --- | --- | --- |

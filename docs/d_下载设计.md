@@ -90,7 +90,9 @@ company失败沿既有诊断owner生成完整证据块，统一终端呈现：�
 
 ### 2.2 通过后准备哪些资料
 
-证券、ST和日历参考在 `data/market/reference/company_st.sqlite3`，行业参考在 `data/market/reference/industry.sqlite3`。完整历史在 `data/market/history/catalog.sqlite3` 和年度价格库，独立短窗在 `data/market/daily_window.sqlite3`。公司正式事实在 `data/company/company_published.sqlite3`。各模块的范围、频率和采集参数由 `config/download.json` 控制。数据库路径以 `config/runtime.json` 的 `data_dir=data` 举例。
+证券、ST和日历参考在 `data/metadata/company_st.sqlite3`，行业参考在 `data/metadata/industry.sqlite3`。完整历史在 `data/history/catalog.sqlite3` 和同目录年度价格库。独立短窗的 `daily_window.sqlite3` 与 `daily_window.lock` 位于数据根目录。公司正式事实在 `data/company/company_published.sqlite3`。各模块的范围、频率和采集参数由 `config/download.json` 控制。数据库路径以 `config/runtime.json` 的 `data_dir=data` 举例。
+
+搬动已有历史和基础资料目录时，先关闭使用这些库的进程并保留原目录库及封签。在目录库副本上将 `schema_contract.reference_file` 绑定到 `../metadata/company_st.sqlite3`，重新封签，核对原发布序号和摘要、历史分区与参考绑定后再切换。年度价格文件及配套封签整体移动。
 
 | 资料 | 当前来源 | 关键字段 | 荐股/训练用途 | 更新条件 |
 | --- | --- | --- | --- | --- |
@@ -108,7 +110,7 @@ company失败沿既有诊断owner生成完整证据块，统一终端呈现：�
 
 ### 2.3 当前不可变参考对象与资格消费者
 
-下表来自 `download/domain/prepared_reference.py` 的 `PreparedReference`，是程序对象，不能把其字段名当成数据库原列。持久化对应 `data/market/reference/company_st.sqlite3` 的证券、ST、日历及发布表；SQL定义在 `reference_schema.py`，日期、时间及摘要由 `reference_index.py` 和SQLite codec编码。
+下表来自 `download/domain/prepared_reference.py` 的 `PreparedReference`，是程序对象，不能把其字段名当成数据库原列。持久化对应 `data/metadata/company_st.sqlite3` 的证券、ST、日历及发布表；SQL定义在 `reference_schema.py`，日期、时间及摘要由 `reference_index.py` 和SQLite codec编码。
 
 | 对象字段 | 类型、单位与空值 | 原始来源及含义 | 写入与实际消费者 |
 | --- | --- | --- | --- |
@@ -141,7 +143,7 @@ ST进度分别显示已核验和真正已保存的数量，64股检查点的持�
 
 | 消费者 | 当前输入及派发约束 | 仍需区分的边界 |
 | --- | --- | --- |
-| `application/prepare_reference.py` | 先取ST证据并核对完整性，无合格者不取日历/行业、不发布完整参考 | 参考库结构不兼容返回`preparation_ReferenceDatabaseIncompatibleError`，CLI明确提示清理`market/reference/company_st.sqlite3`及配套文件后重下；锁定或其它数据库异常不归为结构不兼容 |
+| `application/prepare_reference.py` | 先取ST证据并核对完整性，无合格者不取日历/行业、不发布完整参考 | 参考库结构不兼容返回`preparation_ReferenceDatabaseIncompatibleError`，CLI明确提示清理`metadata/company_st.sqlite3`及配套文件后重下；锁定或其它数据库异常不归为结构不兼容 |
 | `infra/history_supplier_router.py` | `load_context`将`eligible_universe`交给价格准备，沿同一参考绑定日历和资格 | 价格截止日可以是恢复的旧日，资格仍来自本次准备的参考；不再准备历史行业区间 |
 | 组合根中的market供应商构造 | 既有`load_universe`回调返回`reference.eligible_universe`，日历沿同一参考 | 普通与补缺共用；公共组合根仍由A拥有，B不另建入口 |
 | `bootstrap.ExecuteCompanySync`、`domain/company_sync.py` | 从已准备参考的合格证券形成固定代码／截止时点的类型化轮次 | 逐股任务与当前合格总体求交 |
@@ -174,7 +176,7 @@ ST进度分别显示已核验和真正已保存的数量，64股检查点的持�
 
 正常行业日志在阶段开始立即显示配置上限、SQLite行预算、有效单批上限及2MiB正文预算；汇总显示实际最大／最近个股批量、已收到／已保存／未保存原件及保存批次。完整发布缓存复用与个股原件复用分别计数，未命中区分无原件、窗口不足、超过刷新期限；每次长操作前先报告当前操作与股票。分段累计使用单调时钟，分别标为缓存准备/读取、接口获取（含解析）、原件保存及完整发布；它们不是物理HTTP次数、纯网络或纯commit耗时。开始、完整缓存复用和最终汇总即时输出，批次结束不冒充整个阶段完成；缓存读取期间收到取消时不报告行业完成。
 
-`SQLiteIndustryQueryIndex`仍是唯一行业持久化owner。`industry_source_document`以`(request_key,received_at,content_hash)`保留各次原件，BLOB正文的SHA与绑定请求键／窗口／收到时间的receipt摘要分别验证，刷新不覆盖旧原件；`current_industry_query`保存当前完整切片及显式缺股，不再创建旧半年锚点`industry_query`。旧行业库结构明确拒绝，须按实际提示仅删除并重下`market/reference/industry.sqlite3`及配套文件；本批程序不迁移或清空，也不删除历史价格、模型、冻结记录或预算。
+`SQLiteIndustryQueryIndex`仍是唯一行业持久化owner。`industry_source_document`以`(request_key,received_at,content_hash)`保留各次原件，BLOB正文的SHA与绑定请求键／窗口／收到时间的receipt摘要分别验证，刷新不覆盖旧原件；`current_industry_query`保存当前完整切片及显式缺股，不再创建旧半年锚点`industry_query`。旧行业库结构明确拒绝，须按实际提示仅删除并重下`metadata/industry.sqlite3`及配套文件；本批程序不迁移或清空，也不删除历史价格、模型、冻结记录或预算。
 
 正常`sync history`保留前置当前行业公共参考准备，历史上下文只接价格、日历和资格，不再调用`OfficialIndustryHistory`或`PrepareHistoricalIndustries`准备历史行业区间，也不因缺少历史行业覆盖而待补。价格下载、修复、校验及发布规则不变，已有价格和旧历史参考不重建、不改写。
 
@@ -184,7 +186,7 @@ ST进度分别显示已核验和真正已保存的数量，64股检查点的持�
 
 显式历史审计保留官方证据链：只采用同一原生分类的八列全表，从完整PDF解析股票、大类代码和名称，不使用旧分类映射。区间表达当时已经公开可见的最近一次官方分类结果：日期精度公告从披露次日起使用，遇下一次官方发布时结束；最新一段仅延续至本次观察次日。统计期末、附件迁站时间、巨潮`VARYDATE`均不作为更早可用日期。区间按上市／退市边界裁剪；相邻同类可合并，矛盾归属不得静默覆盖。候选与覆盖诊断只属于该审计，不作为正常价格同步或最新行业训练的行业覆盖门。
 
-唯一持久化owner仍是`SQLiteIndustryQueryIndex`，物理文件仍为`data/market/reference/industry.sqlite3`，不增加表或自定义格式编号。`industry_source_document`明确区分巨潮原件、官方目录／公告／PDF及由完整原件派生的解析缓存；原件保留原字节和各次回执，解析缓存须绑定原PDF与实际解析实现摘要，不能用部分已导入证券冒充整份全表处理完成。官方HTML／公告最多2MiB、主bundle8MiB、PDF及解析缓存32MiB；官方大件仅单件事务，不扩大巨潮2MiB合批预算。请求、完整准备及取消均有界。
+唯一持久化owner仍是`SQLiteIndustryQueryIndex`，物理文件为`data/metadata/industry.sqlite3`，不增加表或自定义格式编号。`industry_source_document`明确区分巨潮原件、官方目录／公告／PDF及由完整原件派生的解析缓存；原件保留原字节和各次回执，解析缓存须绑定原PDF与实际解析实现摘要，不能用部分已导入证券冒充整份全表处理完成。官方HTML／公告最多2MiB、主bundle8MiB、PDF及解析缓存32MiB；官方大件仅单件事务，不扩大巨潮2MiB合批预算。请求、完整准备及取消均有界。
 
 `official_industry_evidence`保存从完整官方原件派生的当前区间投影。新codec只接受`code/source_url/document_sha256/disclosed_on/effective_from/effective_to/received_at/page/excerpt/native_category/native_name/announcement_url/announcement_sha256`；原生大类形成`capco:`身份，旧人工映射材料不解释成新记录。物理`disclosed_at`列保留ISO披露日期精度，不伪造日内时刻；`received_at`仍为真实上海时区收到时间。相同官方原件／证券的观察边界调整在同一事务内替换派生行，不覆盖原件或旧历史参考；跨来源冲突拒绝整批。
 
@@ -844,6 +846,8 @@ local_only候选的持久路径若已失效，仅从本轮本地选择中排除�
 
 可下载数据库只支持当前结构；结构不兼容时按整套相关下载资料删除后重新下载恢复，不维护格式版本或升级兼容路径。读取、同步失败不会自动清空文件；模型、正式冻结记录和DeepSeek请求预算不属于可重下资料，不能跟随下载数据库批量删除。
 
+以下沿用该次移除冗余格式标记时的文件路径，现行目录见第8.1节。
+
 本次移除冗余格式标记涉及的具体结构是：`market/reference/company_st.sqlite3`去掉纯标记表，`company/raw/company_collection.sqlite3`去掉纯标记表；`market/history/catalog.sqlite3`只保留实际`reference_file`，各`market/history/prices_<year>.sqlite3`只保留实际`calendar_year`。完整当前DDL与字段校验会明确拒绝旧结构，不忽略旧编号、补表、改列、清空或自动迁移。这里只列受影响资料，没有执行删除或重新下载；历史catalog与年度发布分区须作为一致下载资料核对，不能单删一张表绕过检查。公司正式事实及规范输入的当前规则摘要另须核对，摘要失配不能补签旧证明；不由此泛化为删除整个`company/`。`company/company_sync.sqlite3`的来源请求账本、已有正文／风险原件、模型、冻结和研究记录均不属于本次删除范围。旧history-repack状态／激活报告也只接受当前完整字段与真实摘要，不升级旧报告。
 
 company在初始化写入及正文恢复前，只读检查当前三库结构及正式发布身份。CLI以`CompanyDatabaseIncompatibleError`明确异常范围。当前结构内的未确认发布可依精确正式回执恢复。
@@ -909,11 +913,11 @@ history已有完整命令中的年度回写及连接关闭等待证据，不能�
 
 | 数据库 | 唯一写入 owner、主要读消费者与事务／发布边界 |
 | --- | --- |
-| `market/reference/company_st.sqlite3` | `SQLiteReferenceIndex` 写证券、ST、日历和参考发布；`PrepareReference`、`HistoryControlIndex`、`PublishedReferences` 读固定 publication。一次参考事务切 current，保留原供应商检查日；见第2.3节 |
-| `market/reference/industry.sqlite3` | `SQLiteIndustryQueryIndex`写当前查询、官方证据和原件；`CurrentIndustryPublication`准备当前分类，`CurrentIndustryCache.snapshot`只读验证最新有效发布，训练投影后固定全历史分组。`OfficialIndustryHistory`及`PrepareHistoricalIndustries`保留显式历史证据审计，正常history不调用；见第2.5节 |
-| `market/history/catalog.sqlite3` | `HistoryControlIndex` 安装下载所需完整 schema，控制记录、下载任务、价格修复及推定停牌各 adapter 在调用方事务中写；`ReadPublishedHistoryUseCase`／快照 reader、训练和荐股预载读固定序号。下载断点与正式 published_snapshot 不是同一个完成标志 |
-| `market/history/prices_<year>.sqlite3` | `HistoryPricePartition`／`HistoryDirectPrices` 写价格修订和观察关系；同一历史端口供训练／荐股及显式审计读取。年库提交后才封存，catalog 固定可见序号；年／月逻辑分区不能当成多个物理库 |
-| `market/daily_window.sqlite3` | `SQLiteQfqWindowCache` 单 writer 写共享 raw/qfq 价格及两个档位视图，修复 adapter 复用其事务；训练／荐股历史端口的短窗实现及下载诊断读取。配对窗口、日历、成员和发布绑定同事务提交，再生成文件凭据 |
+| `metadata/company_st.sqlite3` | `SQLiteReferenceIndex` 写证券、ST、日历和参考发布；`PrepareReference`、`HistoryControlIndex`、`PublishedReferences` 读固定 publication。一次参考事务切 current，保留原供应商检查日；见第2.3节 |
+| `metadata/industry.sqlite3` | `SQLiteIndustryQueryIndex`写当前查询、官方证据和原件；`CurrentIndustryPublication`准备当前分类，`CurrentIndustryCache.snapshot`只读验证最新有效发布，训练投影后固定全历史分组。`OfficialIndustryHistory`及`PrepareHistoricalIndustries`保留显式历史证据审计，正常history不调用；见第2.5节 |
+| `history/catalog.sqlite3` | `HistoryControlIndex` 安装下载所需完整 schema，默认参考绑定为 `../metadata/company_st.sqlite3`。控制记录、下载任务、价格修复及推定停牌各 adapter 在调用方事务中写；`ReadPublishedHistoryUseCase`／快照 reader、训练和荐股预载读固定序号。下载断点与正式 published_snapshot 不是同一个完成标志 |
+| `history/prices_<year>.sqlite3` | `HistoryPricePartition`／`HistoryDirectPrices` 写价格修订和观察关系；同一历史端口供训练／荐股及显式审计读取。年库提交后才封存，catalog 固定可见序号；年／月逻辑分区不能当成多个物理库 |
+| `daily_window.sqlite3` | `SQLiteQfqWindowCache` 单 writer 写共享 raw/qfq 价格及两个档位视图，写锁为数据根目录的 `daily_window.lock`，修复 adapter 复用其事务；训练／荐股历史端口的短窗实现及下载诊断读取。配对窗口、日历、成员和发布绑定同事务提交，再生成文件凭据 |
 | `company/company_published.sqlite3` | `SQLiteCompanyFactsIndex`及字段发布器同事务写正式事实、字段结论和证据凭据。荐股、排除名单和公司预载经正式reader读取。文件封存与恢复见第5.13–5.15、6.1节。 |
 | `company/company_sources.sqlite3` | 目录和文档材料、财务规范观测、比例／年度营收观测及待发布状态共用来源库。来源状态经精确正式回执确认。 |
 
