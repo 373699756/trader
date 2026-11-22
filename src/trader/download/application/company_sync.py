@@ -83,6 +83,7 @@ def RunCompanySyncRound(
     activity: Callable[[CompanySyncFamily], AbstractContextManager[None]] | None = None,
     recover_directory: CompanyDirectoryRecovery | None = None,
     source_ready: Callable[[], bool] | None = None,
+    skip_news: bool = False,
 )->CompanySyncRoundResult:
     """Run bounded steps, retain accepted work and never reissue an unconfirmed request.
 
@@ -140,7 +141,17 @@ def RunCompanySyncRound(
                 break
             state=producer.state(scope)
             outstanding=journal.outstanding(round_id,family)
-            reconciled=outstanding is not None and (outstanding.source_required or outstanding.identity!=state.identity)
+            if skip_news and family is CompanySyncFamily.NEWS and state.source_required and outstanding is None:
+                item.deferred = True
+                if current is None:
+                    item.result = CompanySyncFamilyResult(family, 0, 0, 0, CompanySyncStepResult(
+                        False, True, gaps=("news_skipped_by_fill",), deferred=True))
+                else:
+                    item.result = replace(current, result=replace(current.result,
+                        gaps=(*current.result.gaps, "news_skipped_by_fill"), deferred=True))
+                continue
+            reconciled=outstanding is not None and (outstanding.source_required or state.source_required
+                or outstanding.identity!=state.identity)
             if reconciled and outstanding is not None:
                 with activity(family) if activity is not None else nullcontext():
                     result=_unconfirmed_source_result(journal,round_id,family,outstanding,state) or CompanySyncStepResult(
@@ -232,6 +243,8 @@ def _unconfirmed_source_result(
     outstanding: CompanySyncPhaseState, current: CompanySyncPhaseState,
 ) -> CompanySyncStepResult | None:
     if not outstanding.source_required:
+        if current.source_required and outstanding.identity == current.identity:
+            return CompanySyncStepResult(False, True, deferred=True)
         return None
     if outstanding.identity != current.identity:
         # A different selection can come from queue ordering alone.

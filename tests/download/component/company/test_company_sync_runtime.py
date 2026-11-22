@@ -9,7 +9,7 @@ from tests.helpers.download.configuration import CompanyEventPolicyFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDownloadStore, CompanyInputValidationFailure, Disclosure, DisclosurePage, DisclosurePartition, DisclosureQuery, StructuredCompanyPage, StructuredCompanyQuery
 from trader.download.domain.company_source_records import CompanyFinancialSourcePage
-from trader.download.domain.company_sync import CompanySyncBudget
+from trader.download.domain.company_sync import CompanySyncBudget, CompanySyncFamily
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
@@ -233,7 +233,7 @@ def test_next_day_refresh_keeps_the_old_exhausted_ledger_and_starts_a_dated_roun
     assert len(physical) == 2 and runtime.journal.source_calls(first.round_id) == runtime.journal.source_calls(second.round_id) == 1
 
 
-def test_news_only_requests_selected_published_codes_and_resume_keeps_original_selection(tmp_path):
+def test_fill_resumes_normal_round_and_leaves_frozen_news_for_normal_resume(tmp_path):
     runtime, reader, transport, physical = _runtime(tmp_path)
     codes = ("600001", "600002", "600003")
     runtime.initialize(codes, _SCOPE.cutoff)
@@ -249,11 +249,35 @@ def test_news_only_requests_selected_published_codes_and_resume_keeps_original_s
         first = runtime.run(codes, _SCOPE.cutoff, CompanySyncBudget(1, 20, 20, 10),
             cancel_requested=lambda: False, monotonic=lambda: 0, news_codes=("600001", "600009"))
         assert first.paused and not selected
+        filled = runtime.run(codes, _SCOPE.cutoff, CompanySyncBudget(100, 200, 20, 10),
+            cancel_requested=lambda: False, monotonic=lambda: 0, fill=True)
+        assert filled.round_id == first.round_id and filled.scope == first.scope
+        assert not selected and runtime.journal.active().max_source_calls == 20
+        skipped = next(item for item in filled.families if item.family is CompanySyncFamily.NEWS)
+        assert skipped.steps == 0 and skipped.result.gaps == ("news_skipped_by_fill",)
+        assert runtime.journal.family(first.round_id, CompanySyncFamily.NEWS) is None
+        calls_after_fill = runtime.journal.source_calls(first.round_id)
         result = runtime.run(codes, _SCOPE.cutoff, CompanySyncBudget(100, 20, 20, 10),
             cancel_requested=lambda: False, monotonic=lambda: 0, news_codes=("600002",))
-    assert result.processing_complete and selected == ["600001"]
+    assert result.round_id == first.round_id and result.processing_complete and selected == ["600001"]
     assert physical.count("https://example.test/news") == 1
+    assert runtime.journal.source_calls(first.round_id) == calls_after_fill + 1
     assert runtime.inputs.freeze_news_codes(result.scope.identity, ()) == ("600001",)
+
+
+def test_normal_resume_keeps_news_excluded_from_a_round_started_by_fill(tmp_path):
+    runtime, _, transport, physical = _runtime(tmp_path)
+    runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
+    with transport:
+        first = runtime.run(_SCOPE.codes, _SCOPE.cutoff, CompanySyncBudget(1, 20, 20, 10),
+            cancel_requested=lambda: False, monotonic=lambda: 0, fill=True)
+        resumed = runtime.run(_SCOPE.codes, _SCOPE.cutoff, CompanySyncBudget(100, 200, 20, 10),
+            cancel_requested=lambda: False, monotonic=lambda: 0, news_codes=_SCOPE.codes)
+    assert resumed.round_id == first.round_id and resumed.processing_complete
+    assert runtime.journal.active().max_source_calls == 20
+    assert "https://example.test/news" not in physical
+    news = next(item for item in resumed.families if item.family is CompanySyncFamily.NEWS)
+    assert news.result.gaps == ("news_skipped_by_fill",)
 
 
 @pytest.mark.parametrize("rows,days", ((51, 0), (1, 8)))

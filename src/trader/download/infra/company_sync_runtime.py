@@ -173,6 +173,12 @@ class CompanySyncRuntime:
         self._execution_scope = scope
         eligible_codes = tuple(code for code in scope.codes if code in codes)
         news_codes = self.inputs.freeze_news_codes(scope.identity, tuple(code for code in news_codes if code in scope.codes))
+        news_excluded = fill
+        if active is not None:
+            news_excluded = any(
+                plan.family is CompanySyncFamily.NEWS and "news_skipped_by_fill" in plan.qualification_gaps
+                for plan in active.plans
+            )
         population_gaps = tuple(reason for changed, reason in (
             (eligible_codes != scope.codes, "population_members_became_ineligible"),
             (any(code not in scope.codes for code in codes), "new_population_members_wait_for_refresh"),
@@ -200,7 +206,8 @@ class CompanySyncRuntime:
             CompanyRatioProducer(self.inputs, self._ratio_source, StructuredCompanyQuery("unlock", scope.cutoff.date(), scope.cutoff.date() + timedelta(days=min(180, self._event_policy.unlock_days))), current_codes=eligible_codes),
             announcements,
             CompanyAnnualIncomeProducer(self.inputs, self._annual_source, annual_facts, current_codes=eligible_codes),
-            CompanyNewsProducer(self.inputs, self.material, self._news_source, news_codes=news_codes, fill=fill, current_codes=eligible_codes),
+            CompanyNewsProducer(self.inputs, self.material, self._news_source, news_codes=news_codes,
+                excluded_from_scope=news_excluded, current_codes=eligible_codes),
             fields,
         )
         plans = tuple(producer.plan for producer in producers)
@@ -240,7 +247,7 @@ class CompanySyncRuntime:
         try:
             result = RunCompanySyncRound(self.journal, producers, scope, budget, monotonic=monotonic,
                 cancel_requested=cancel_requested, observe=self._observe, activity=self._activity,
-                recover_directory=announcements.recover_directory, source_ready=self._source_ready)
+                recover_directory=announcements.recover_directory, source_ready=self._source_ready, skip_news=fill)
         except CompanySyncInterrupted:
             return CompanySyncRoundResult(round_id, scope, (), cancel_requested(), not cancel_requested(), "")
         if population_gaps:
