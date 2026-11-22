@@ -168,6 +168,70 @@ def test_committed_event_trace_survives_restart_and_replays_idempotently(tmp_pat
     assert first.status().duplicate == 1
 
 
+def test_hybrid_audit_requires_matching_persisted_parent_on_write_and_read(tmp_path) -> None:
+    local, hybrid = _paired_observations()
+    evidence = SQLiteFreezeTraceIndex(tmp_path, sqlite_policy=SqlitePolicyFixture())
+    evidence.record(local)
+    evidence.record(hybrid)
+    evidence.record(hybrid)
+
+    reopened = SQLiteFreezeTraceIndex(tmp_path, sqlite_policy=SqlitePolicyFixture())
+    original = _assert_original_observation(reopened.get(hybrid.event.freeze_version), hybrid)
+    assert not HasCompleteResearchEvidence(original.research_audit)
+    assert original in reopened.list_by_trade_date(local.event.trade_date)
+    assert evidence.status().duplicate == 1
+
+    database = tmp_path / "traces" / f"{local.event.trade_date.isoformat()}.sqlite3"
+    with SqliteSession(database) as connection, SqliteTransaction(connection):
+        connection.run("DELETE FROM committed_events WHERE freeze_id = ?", (local.event.freeze_version,))
+
+    without_parent = replace(original, research_audit=None)
+    assert reopened.get(hybrid.event.freeze_version) == without_parent
+    assert reopened.list_by_trade_date(hybrid.event.trade_date) == (without_parent,)
+
+
+@pytest.mark.parametrize("parent_state", ("missing", "without_audit", "different_population", "different_candidates"))
+def test_hybrid_event_survives_unverified_parent_and_repeats_first_wins(tmp_path, parent_state) -> None:
+    local, hybrid = _paired_observations()
+    evidence = SQLiteFreezeTraceIndex(tmp_path, sqlite_policy=SqlitePolicyFixture())
+    if parent_state == "without_audit":
+        evidence.record(replace(local, research_audit=None))
+    elif parent_state == "different_population":
+        population = (replace(local.research_audit.point_in_time_population[0], data_version="other-input"),)
+        evidence.record(replace(local, research_audit=replace(
+            local.research_audit, point_in_time_population=population,
+            point_in_time_population_hash=PointInTimePopulationHash(population),
+        )))
+    elif parent_state == "different_candidates":
+        candidates = (replace(local.research_audit.passed_candidates[0], candidate_score=85.0),)
+        evidence.record(replace(local, research_audit=replace(local.research_audit, passed_candidates=candidates)))
+
+    evidence.record(hybrid)
+    original = _assert_original_observation(
+        evidence.get(hybrid.event.freeze_version), replace(hybrid, research_audit=None),
+    )
+    if parent_state == "missing":
+        evidence.record(local)
+    evidence.record(hybrid)
+    assert evidence.get(hybrid.event.freeze_version) == original
+    assert evidence.status().duplicate == 1
+
+
+def _paired_observations() -> tuple[FreezeObservation, FreezeObservation]:
+    local = _persistent_event(freeze())
+    local_audit = _point_in_time_audit(local.freeze_version, local.freeze_hash, local.observed_at)
+    hybrid = _persistent_event(freeze(sequence=2, stage="hybrid", parent_version=local.freeze_version))
+    hybrid_audit = replace(
+        local_audit,
+        freeze_version=hybrid.freeze_version,
+        freeze_hash=hybrid.freeze_hash,
+        research_shadow=replace(local_audit.research_shadow, freeze_version=hybrid.freeze_version),
+        shadow_mode="reused_facts",
+        point_in_time_population=(),
+    )
+    return FreezeObservation(local, local_audit), FreezeObservation(hybrid, hybrid_audit)
+
+
 def test_saved_missing_population_is_read_only_and_ineligible_for_current_training(tmp_path) -> None:
     historical = _original_historical_observation("legacy_event")
     audit = historical.research_audit

@@ -18,6 +18,7 @@ from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.recommendation.application.pipeline.final_selection.freeze_projection import (
     BuildScoredHybrid,
     BuildScoredLocal,
+    PrepareScoredReviewDraft,
     ScoredProjectionInputs,
     _model_eligible_features,
 )
@@ -62,7 +63,7 @@ from trader.recommendation.infra.persistence.freeze_record_codec import (
 
 from trader.recommendation.infra.policy_settings import BuildRecommendationPolicy
 
-from trader.training.application.research_audit import BuildCommittedResearchAudit
+from trader.training.application.research_audit import BuildCommittedResearchAudit, PrepareResearchAuditInput
 
 from tests.helpers.recommendation.publication.tomorrow_projection import (
     EVALUATED_AT,
@@ -202,7 +203,8 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     assert all(item.setup_type is not None for item in projection.local.items)
     assert all(item.downside is not None for item in projection.local.items)
     assert all(item.research_coverage is not None for item in projection.local.items)
-    audit = BuildCommittedResearchAudit(projection, projection.local)
+    audit_source = PrepareResearchAuditInput(projection)
+    audit = BuildCommittedResearchAudit(audit_source, projection.local)
     assert audit.freeze_hash == projection.local.content_hash
     assert audit.deepseek_request_delta == 0
     assert audit.shadow_mode == "control_copy"
@@ -213,7 +215,7 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     code = projection.review_candidates[0].code
     applied = replace(review(code, 100.0), completed_at=EVALUATED_AT + timedelta(seconds=5))
     hybrid = BuildScoredHybrid(
-        projection,
+        PrepareScoredReviewDraft(projection),
         policy,
         {code: applied},
         review_deadline=EVALUATED_AT.replace(hour=14, minute=48),
@@ -224,6 +226,13 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     hybrid = hybrid.freeze
     assert hybrid.parent_version == projection.local.version
     assert hybrid.input_versions == projection.local.input_versions
+    hybrid_audit = BuildCommittedResearchAudit(audit_source, hybrid)
+    assert hybrid_audit.freeze_hash == hybrid.content_hash
+    assert hybrid_audit.shadow_mode == "reused_facts"
+    assert hybrid_audit.production_local == audit.production_local
+    assert hybrid_audit.passed_candidates == audit.passed_candidates
+    assert hybrid_audit.point_in_time_population == ()
+    assert hybrid_audit.point_in_time_population_hash == audit.point_in_time_population_hash
     local_scores = {item.code: item.final_score for item in projection.local.items}
     assert all(item.final_score == local_scores[item.code] for item in hybrid.items)
     record = CommittedFreezeRecord(FormalScoredFreeze(hybrid), EVALUATED_AT.replace(hour=15, minute=0), "scheduled")
@@ -281,7 +290,13 @@ def test_tomorrow_non_positive_utility_keeps_scores_but_cannot_enter_recommendat
     assert all(complete_status.stage_snapshots[index] is stage for index, stage in enumerate(input_stages))
     assert tuple(stage.stage for stage in complete_status.stage_snapshots) == tuple(PipelineStage)
     ValidateStageBatchContinuity(complete_status.stage_snapshots)
-    updated = UpdateSupplyStatusFreeze(complete_status, projection, projection.local, scored_stages=projection.stages)
+    updated = UpdateSupplyStatusFreeze(
+        complete_status,
+        PrepareScoredReviewDraft(projection),
+        projection.local,
+        scored_snapshots=projection.stages.snapshots,
+    )
+    assert updated == complete_status
     assert all(updated.stage_snapshots[index] is stage for index, stage in enumerate(input_stages))
     assert complete_status.stage_snapshots[-1].stage is PipelineStage.ACTION_PUBLISH
     assert complete_status.stage_snapshots[-1].state is StageState.READY
@@ -553,7 +568,7 @@ def test_d25_native_local_and_valid_facts_publish_one_parented_hybrid(
     code = projection.review_candidates[0].code
     applied = replace(review(code, 100.0), completed_at=EVALUATED_AT + timedelta(seconds=5))
     hybrid = BuildScoredHybrid(
-        projection,
+        PrepareScoredReviewDraft(projection),
         policy,
         {code: applied},
         review_deadline=EVALUATED_AT.replace(hour=14, minute=48),
@@ -774,7 +789,7 @@ def test_review_completed_after_1448_cannot_create_hybrid(application_feature_fa
     late = replace(review(code, 100.0), completed_at=deadline + timedelta(microseconds=1))
 
     result = BuildScoredHybrid(
-        projection,
+        PrepareScoredReviewDraft(projection),
         policy,
         {code: late},
         review_deadline=deadline,
@@ -796,7 +811,7 @@ def test_review_completed_at_1448_cannot_create_hybrid(application_feature_facto
     boundary_result = replace(review(code, 100.0), completed_at=deadline)
 
     result = BuildScoredHybrid(
-        projection,
+        PrepareScoredReviewDraft(projection),
         policy,
         {code: boundary_result},
         review_deadline=deadline,

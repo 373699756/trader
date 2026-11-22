@@ -12,7 +12,11 @@ from tests.helpers.download.qfq import QFQ_TENCENT_OPTIONS
 
 
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
+from trader.download.domain.history_sync import HistorySyncProgress, HistoryTencentSummary
+from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
+from trader.download.entrypoints.sync_progress import SyncProgress
 
+from trader.download.infra import tencent_daily
 from trader.download.infra.history_supplier_router import FetchTencentHistoryWindow
 from trader.download.infra.tencent_daily import DecodeTencentDailyRows, TencentDailyQuery
 
@@ -45,6 +49,53 @@ def test_pairs_preserve_units_and_leave_unavailable_facts_missing():
     assert cell.unadjusted.turnover == 1.2
     assert cell.unadjusted.preclose is None and cell.unadjusted.pct_change is None
     assert cell.qfq.turnover is None
+
+
+def test_daily_request_totals_distinguish_raw_retry_and_adjusted_http(monkeypatch):
+    now = [0.0]
+    attempted_modes = []
+    messages = []
+
+    class TimedHttp(_Http):
+        def get(self, url, **kwargs):
+            mode = kwargs["params"]["param"].rsplit(",", 1)[-1]
+            attempted_modes.append(mode)
+            now[0] += 2.0 if mode == "bfq" else 3.0
+            if len(attempted_modes) == 1:
+                raise HttpTimeout("fixture")
+            return super().get(url, **kwargs)
+
+    decode = tencent_daily.DecodeTencentDailyPayload
+
+    def decode_with_cost(response):
+        now[0] += 10.0
+        return decode(response)
+
+    monkeypatch.setattr(tencent_daily, "DecodeTencentDailyPayload", decode_with_cost)
+    http = TimedHttp()
+    progress = StderrHistorySyncProgress(report=SyncProgress(messages.append, lambda: now[0]), monotonic=lambda: now[0])
+    supplier = TencentQfqSupplier(
+        TencentQfqDependencies(
+            lambda: http,
+            lambda _as_of: (SECURITY,),
+            lambda: False,
+            monotonic=lambda: now[0],
+            progress=progress,
+        ),
+        replace(QFQ_TENCENT_OPTIONS, retries=1),
+    )
+    window = supplier.fetch_window(SECURITY, (DAY,))
+    assert window.cells[0].status == "complete"
+    assert attempted_modes == ["bfq", "bfq", "qfq"]
+    assert now[0] == 27.0
+    assert not messages
+
+    progress.publish(HistorySyncProgress(
+        "tencent_history", "completed", 1, 1, tencent_summary=HistoryTencentSummary(1, 1, 0, 0),
+    ))
+    fields = " | ".join(field.text for field in messages[-1].fields)
+    assert "未复权 HTTP累计 4.000秒 2次 失败1 同端重试1" in fields
+    assert "前复权 HTTP累计 3.000秒 1次 失败0 同端重试0" in fields
 
 
 def _one_price_http():

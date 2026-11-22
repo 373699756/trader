@@ -6,14 +6,14 @@ import hashlib
 import json
 import math
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Literal
 
 from trader.recommendation.application.pipeline.final_selection.freeze_projection import ScoredLocalProjection
 from trader.recommendation.domain.publication.freeze_identity import ScoredFreeze
-from trader.recommendation.domain.publication.models import ScoredDisposition
-from trader.recommendation.domain.risk.scored_fusion import ScoredFreezeEntry
+from trader.recommendation.domain.publication.models import ScoredDisposition, Strategy
 
 ShadowMode = Literal["control_copy", "reused_facts"]
 
@@ -227,11 +227,12 @@ class HistoricalResearchAudit:
 
 
 def HasCompleteResearchEvidence(audit: CommittedResearchAudit | HistoricalResearchAudit) -> bool:
-    """Validate saved point-in-time evidence without rebuilding or signing an audit.
+    """Validate the complete point-in-time population carried by a local audit."""
+    return audit.shadow_mode == "control_copy" and HasValidResearchAuditFields(audit)
 
-    Historical bytes and their hash are verified by their read codec. Missing
-    evidence stays unavailable; this predicate never upgrades a history object.
-    """
+
+def HasValidResearchAuditFields(audit: CommittedResearchAudit | HistoricalResearchAudit) -> bool:
+    """Validate fields carried by the audit itself, including a hybrid's population reference."""
     if (audit.input_observed_at is None or audit.point_in_time_population is None
         or audit.point_in_time_population_hash is None):
         return False
@@ -244,6 +245,26 @@ def HasCompleteResearchEvidence(audit: CommittedResearchAudit | HistoricalResear
     except ValueError:
         return False
     return aggregates == audit.hard_filter_aggregates and candidates == audit.passed_candidates and population == audit.point_in_time_population
+
+
+def MatchesResearchAuditParent(
+    audit: CommittedResearchAudit | HistoricalResearchAudit,
+    parent: HistoricalResearchAudit,
+) -> bool:
+    """Match a hybrid reference against a decoded and verified local audit."""
+    return (
+        audit.shadow_mode == "reused_facts"
+        and audit.point_in_time_population == ()
+        and parent.shadow_mode == "control_copy"
+        and bool(parent.point_in_time_population)
+        and audit.production_local.freeze_version == parent.freeze_version
+        and audit.production_local == parent.production_local
+        and audit.input_version == parent.input_version
+        and audit.input_observed_at == parent.input_observed_at
+        and audit.point_in_time_population_hash == parent.point_in_time_population_hash
+        and audit.hard_filter_aggregates == parent.hard_filter_aggregates
+        and audit.passed_candidates == parent.passed_candidates
+    )
 
 
 def _validate_audit_identity(audit: CommittedResearchAudit | HistoricalResearchAudit) -> None:
@@ -313,14 +334,16 @@ def _validate_population_evidence(
     passed_codes: set[str],
     population: tuple[ResearchPopulationAudit, ...],
 ) -> None:
+    if audit.shadow_mode == "reused_facts":
+        if population:
+            raise ValueError("research hybrid audit must reference rather than duplicate population")
+        return
     population_codes = {item.code for item in population}
     if not passed_codes.issubset(population_codes):
         raise ValueError("research passed candidates must belong to the point-in-time population")
     expected_hash = PointInTimePopulationHash(population)
     if audit.shadow_mode == "control_copy" and not population:
         raise ValueError("research local audit requires the complete point-in-time population")
-    if audit.shadow_mode == "reused_facts" and population:
-        raise ValueError("research hybrid audit must reference rather than duplicate population")
     if population and audit.point_in_time_population_hash != expected_hash:
         raise ValueError("research point-in-time population hash does not match evidence")
     cutoff = audit.input_observed_at
@@ -333,43 +356,95 @@ def _validate_population_evidence(
         raise ValueError("research population contains evidence after input_observed_at")
 
 
-def BuildCommittedResearchAudit(
-    projection: ScoredLocalProjection,
-    committed: ScoredFreeze,
-) -> CommittedResearchAudit:
-    if committed.strategy is not projection.local.strategy:
-        raise ValueError("research audit strategy must match committed freeze")
-    if committed.stage == "local" and committed.version != projection.local.version:
-        raise ValueError("research local audit must match the production local freeze")
-    if committed.stage == "hybrid" and committed.parent_version != projection.local.version:
-        raise ValueError("research hybrid must reference the production local freeze")
-    local_entries = {entry.code: entry for entry in projection.local_epoch.entries}
-    production_local = _freeze_set(projection.local, local_entries, reused_facts=False)
-    shadow = _freeze_set(committed, local_entries, reused_facts=committed.stage == "hybrid")
-    population = _population_audits(projection)
-    return CommittedResearchAudit(
-        freeze_version=committed.version,
-        freeze_hash=committed.content_hash,
+@dataclass(frozen=True, slots=True)
+class _ResearchSeat:
+    code: str
+    coverage: float
+    base_score: float
+    risk_codes: tuple[str, ...]
+    risk_penalty: float
+    board_rank: int
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchAuditInput:
+    strategy: Strategy
+    production_local: ResearchFreezeSetAudit
+    input_version: str
+    input_observed_at: datetime
+    hard_filter_aggregates: tuple[tuple[str, int], ...]
+    passed_candidates: tuple[ResearchCandidateAudit, ...]
+    population: tuple[ResearchPopulationAudit, ...]
+    seats: tuple[_ResearchSeat, ...]
+
+
+def PrepareResearchAuditInput(projection: ScoredLocalProjection) -> ResearchAuditInput:
+    seats = tuple(
+        _ResearchSeat(
+            code=entry.code,
+            coverage=round(entry.features.board_supported_weight, 6),
+            base_score=entry.score.base_score,
+            risk_codes=tuple(fact.risk_code for fact in entry.local_risk_facts),
+            risk_penalty=entry.score.local_risk_penalty,
+            board_rank=entry.board_rank,
+        )
+        for entry in projection.local_epoch.entries
+    )
+    return ResearchAuditInput(
+        strategy=projection.local.strategy,
+        production_local=_freeze_set(projection.local, {seat.code: seat for seat in seats}, reused_facts=False),
         input_version=projection.native_input.input_version,
+        input_observed_at=projection.native_input.evaluated_at,
         hard_filter_aggregates=_hard_filter_aggregates(projection),
         passed_candidates=_candidate_audits(projection),
-        production_local=production_local,
-        research_shadow=shadow,
-        shadow_mode="reused_facts" if committed.stage == "hybrid" else "control_copy",
-        input_observed_at=projection.native_input.evaluated_at,
-        point_in_time_population=population if committed.stage == "local" else (),
-        point_in_time_population_hash=PointInTimePopulationHash(population),
+        population=_population_audits(projection),
+        seats=seats,
     )
 
 
-def TryBuildCommittedResearchAudit(
+def BuildCommittedResearchAudit(source: ResearchAuditInput, committed: ScoredFreeze) -> CommittedResearchAudit:
+    if committed.strategy is not source.strategy:
+        raise ValueError("research audit strategy must match committed freeze")
+    if committed.stage == "local" and committed.version != source.production_local.freeze_version:
+        raise ValueError("research local audit must match the production local freeze")
+    if committed.stage == "hybrid" and committed.parent_version != source.production_local.freeze_version:
+        raise ValueError("research hybrid must reference the production local freeze")
+    seats = {seat.code: seat for seat in source.seats}
+    shadow = _freeze_set(committed, seats, reused_facts=committed.stage == "hybrid")
+    return CommittedResearchAudit(
+        freeze_version=committed.version,
+        freeze_hash=committed.content_hash,
+        input_version=source.input_version,
+        hard_filter_aggregates=source.hard_filter_aggregates,
+        passed_candidates=source.passed_candidates,
+        production_local=source.production_local,
+        research_shadow=shadow,
+        shadow_mode="reused_facts" if committed.stage == "hybrid" else "control_copy",
+        input_observed_at=source.input_observed_at,
+        point_in_time_population=source.population if committed.stage == "local" else (),
+        point_in_time_population_hash=PointInTimePopulationHash(source.population),
+    )
+
+
+def PrepareResearchAuditFactory(
     projection: ScoredLocalProjection,
-    committed: ScoredFreeze,
-) -> CommittedResearchAudit | None:
+) -> Callable[[ScoredFreeze], CommittedResearchAudit | None]:
     try:
-        return BuildCommittedResearchAudit(projection, committed)
+        source = PrepareResearchAuditInput(projection)
     except (TypeError, ValueError):
-        return None
+        return _unavailable_audit
+
+    def build(committed: ScoredFreeze) -> CommittedResearchAudit | None:
+        try:
+            return BuildCommittedResearchAudit(source, committed)
+        except (TypeError, ValueError):
+            return None
+
+    return build
+
+
+def _unavailable_audit(_committed: ScoredFreeze) -> None:
+    return None
 
 
 def _hard_filter_aggregates(projection: ScoredLocalProjection) -> tuple[tuple[str, int], ...]:
@@ -460,14 +535,14 @@ def _population_audits(projection: ScoredLocalProjection) -> tuple[ResearchPopul
 
 def _freeze_set(
     freeze: ScoredFreeze,
-    local_entries: dict[str, ScoredFreezeEntry],
+    seats: dict[str, _ResearchSeat],
     *,
     reused_facts: bool,
 ) -> ResearchFreezeSetAudit:
     candidates: list[ResearchFreezeCandidateAudit] = []
     for item in freeze.items:
-        entry = local_entries[item.code]
-        local_codes = tuple(fact.risk_code for fact in entry.local_risk_facts)
+        seat = seats[item.code]
+        local_codes = seat.risk_codes
         deepseek_codes = tuple(code for code in item.risk_codes if code not in set(local_codes))
         components = dict(item.score_components)
         fusion_applied = reused_facts and components.get("deepseek_score") is not None
@@ -475,10 +550,10 @@ def _freeze_set(
             ResearchFreezeCandidateAudit(
                 code=item.code,
                 components=tuple(item.score_components),
-                component_coverage_ratio=round(entry.features.board_supported_weight, 6),
-                base_score=entry.score.base_score,
+                component_coverage_ratio=seat.coverage,
+                base_score=seat.base_score,
                 local_risk_codes=local_codes,
-                local_risk_penalty=entry.score.local_risk_penalty,
+                local_risk_penalty=seat.risk_penalty,
                 local_score=item.local_score,
                 reused_deepseek_facts=fusion_applied,
                 fusion_applied=fusion_applied,
@@ -488,7 +563,7 @@ def _freeze_set(
                 action=item.action.value,
                 selected=item.selected,
                 rank=item.rank,
-                board_rank=entry.board_rank,
+                board_rank=seat.board_rank,
                 skip_reason=item.reason,
             )
         )
@@ -658,6 +733,8 @@ def _sha256(payload: bytes) -> str:
 __all__ = [
     "HistoricalResearchAudit",
     "HasCompleteResearchEvidence",
+    "HasValidResearchAuditFields",
+    "MatchesResearchAuditParent",
     "CommittedResearchAudit",
     "ResearchCandidateAudit",
     "ResearchFreezeCandidateAudit",
@@ -666,5 +743,6 @@ __all__ = [
     "ResearchRiskFactAudit",
     "BuildCommittedResearchAudit",
     "PointInTimePopulationHash",
-    "TryBuildCommittedResearchAudit",
+    "PrepareResearchAuditFactory",
+    "PrepareResearchAuditInput",
 ]

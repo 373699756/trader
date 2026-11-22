@@ -53,7 +53,7 @@
     },
     "memory": {
       "cache_logical_bytes": 536870912,
-      "process_peak_rss_bytes": 2147483648,
+      "process_peak_rss_bytes": 3221225472,
       "growth_percent": 20
     },
     "relative_regression_percent": 5

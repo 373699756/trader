@@ -217,33 +217,51 @@ class ScoredFreezeRequest:
     def __post_init__(self) -> None:
         _require_shanghai_time(self.observed_at, "freeze request observed_at")
         reviews = dict(self.reviews)
-        review_codes = _sorted_unique_codes(self.review_candidate_codes, "review_candidate_codes")
-        evaluations = {item.code: item for item in self.selection.scored_candidates}
-        if any(
-            code not in evaluations
-            or evaluations[code].disposition is not ScoredDisposition.PASS
-            or evaluations[code].local_score is None
-            or any(fact.veto for fact in evaluations[code].local_risk_facts)
-            for code in review_codes
-        ):
-            raise ValueError("review candidates must be scored pass candidates without veto")
-        if any(code != review.code for code, review in reviews.items()):
-            raise ValueError("DeepSeek review keys must match review codes")
-        for review in reviews.values():
-            _require_shanghai_time(review.completed_at, "DeepSeek review completed_at")
-            for fact in review.risk_facts:
-                _require_shanghai_time(fact.observed_at, "DeepSeek risk observed_at")
-        if any(code not in set(review_codes) for code in reviews):
-            raise ValueError("DeepSeek review is outside the review candidate set")
-        if self.projection_stage == "local" and reviews:
-            raise ValueError("local freeze cannot contain DeepSeek reviews")
-        if self.projection_stage == "hybrid" and not any(
-            review.outcome in {ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN} and review.completed_at <= self.observed_at
-            for review in reviews.values()
-        ):
-            raise ValueError("hybrid freeze requires a current usable DeepSeek review")
+        review_codes = ValidateScoredFreezeReviews(
+            self.review_candidate_codes,
+            self.selection.scored_candidates,
+            reviews,
+            observed_at=self.observed_at,
+            projection_stage=self.projection_stage,
+        )
         object.__setattr__(self, "reviews", MappingProxyType(reviews))
         object.__setattr__(self, "review_candidate_codes", review_codes)
+
+
+def ValidateScoredFreezeReviews(
+    review_candidate_codes: tuple[str, ...],
+    scored_candidates: tuple[ScoredStockEvaluation, ...],
+    reviews: Mapping[str, DeepSeekReview],
+    *,
+    observed_at: datetime,
+    projection_stage: Literal["local", "hybrid"],
+) -> tuple[str, ...]:
+    review_codes = _sorted_unique_codes(review_candidate_codes, "review_candidate_codes")
+    evaluations = {item.code: item for item in scored_candidates}
+    if any(
+        code not in evaluations
+        or evaluations[code].disposition is not ScoredDisposition.PASS
+        or evaluations[code].local_score is None
+        or any(fact.veto for fact in evaluations[code].local_risk_facts)
+        for code in review_codes
+    ):
+        raise ValueError("review candidates must be scored pass candidates without veto")
+    if any(code != review.code for code, review in reviews.items()):
+        raise ValueError("DeepSeek review keys must match review codes")
+    for review in reviews.values():
+        _require_shanghai_time(review.completed_at, "DeepSeek review completed_at")
+        for fact in review.risk_facts:
+            _require_shanghai_time(fact.observed_at, "DeepSeek risk observed_at")
+    if not all(code in review_codes for code in reviews):
+        raise ValueError("DeepSeek review is outside the review candidate set")
+    if projection_stage == "local" and reviews:
+        raise ValueError("local freeze cannot contain DeepSeek reviews")
+    if projection_stage == "hybrid" and not any(
+        review.outcome in {ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN} and review.completed_at <= observed_at
+        for review in reviews.values()
+    ):
+        raise ValueError("hybrid freeze requires a current usable DeepSeek review")
+    return review_codes
 
 
 def _validate_freeze_weights(weights: Mapping[str, float]) -> None:
@@ -805,4 +823,5 @@ __all__ = [
     "ScoredReviewCandidate",
     "BuildScoredFreezeEpoch",
     "SelectScoredReviewCandidates",
+    "ValidateScoredFreezeReviews",
 ]

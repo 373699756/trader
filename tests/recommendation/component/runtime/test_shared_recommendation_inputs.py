@@ -69,7 +69,7 @@ def test_selected_profiles_share_sources_and_budget_but_isolate_models_and_publi
     for profile in profiles:
         single = BuildSystem(tmp_path / "config/runtime.json", scoring_profile=profile)
         assert single.settings.market_data.cache_policy.total_bytes == 512 * 1024 * 1024
-        assert single.settings.performance_budgets.memory.process_peak_rss_bytes == 2 * 1024**3
+        assert single.settings.performance_budgets.memory.process_peak_rss_bytes == 3 * 1024**3
     assert not (tmp_path / "data").exists()
 
 

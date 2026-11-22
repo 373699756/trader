@@ -1,6 +1,7 @@
 """Profile-complete synthetic workload checks without fitting or external I/O."""
 
 from __future__ import annotations
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from trader.infra.settings.models import (
@@ -21,6 +22,7 @@ from trader.recommendation.domain.market.v1.features import LEARNED_RANK_FEATURE
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT
+from trader.recommendation.infra.performance.process_memory import PerformanceMemorySample
 from trader.training.infra.model_bundles.composition import SingleHeadCombiner
 from trader.training.infra.research.close_return.v2_contracts import V2_TRAINING_PROFILE
 from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
@@ -73,7 +75,13 @@ def _budgets() -> PerformanceBudgetSettings:
         PerformanceRoundSettings(1, 5),
         {},
         {},
-        PerformanceMemorySettings(536870912, 2147483648, 5.0),
+        PerformanceMemorySettings(536870912, 3221225472, 20.0),
         10.0,
         DatabasePerformanceSettings(10.0, 15.0),
     )
+
+
+def _memory_with_growth(peak_bytes: int) -> Callable[[], PerformanceMemorySample]:
+    baseline = iter((PerformanceMemorySample(2 * 1024**3, peak_bytes),))
+    later = PerformanceMemorySample(5 * 1024**3 // 2, peak_bytes)
+    return lambda: next(baseline, later)

@@ -17,11 +17,13 @@
   function freezePayloadCompatibility(payload) {
     if (!payload || !["tomorrow", "d25", "long"].includes(payload.strategy)
       || !["ready", "not_ready", "not_applicable"].includes(payload.status)
-      || !["current", "live", "official", "history"].includes(payload.view)
-      || typeof payload.frozen !== "boolean" || !Array.isArray(payload.items)) {
+      || !Array.isArray(payload.items)) {
       return { compatible: false, reason: "freeze_shape_invalid" };
     }
-    return { compatible: true, reason: "" };
+    const validView = payload.strategy === "long"
+      ? payload.view === "current" && payload.score_status === "not_applicable" && !Object.hasOwn(payload, "frozen")
+      : ["current", "live", "official", "history"].includes(payload.view) && typeof payload.frozen === "boolean";
+    return validView ? { compatible: true, reason: "" } : { compatible: false, reason: "freeze_shape_invalid" };
   }
 
   function mismatchError(reason) {

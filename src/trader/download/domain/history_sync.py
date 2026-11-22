@@ -191,9 +191,19 @@ class HistoryRepairSummary:
     attempted: int
     repaired: int
     skipped: int
+    supplier_seconds: float = 0.0
+    price_read_seconds: float = 0.0
+    price_write_seconds: float = 0.0
 
     def __post_init__(self) -> None:
-        if not 0 <= self.repaired <= self.attempted or self.skipped < 0:
+        if (
+            not 0 <= self.repaired <= self.attempted
+            or self.skipped < 0
+            or any(
+                not math.isfinite(seconds) or seconds < 0.0
+                for seconds in (self.supplier_seconds, self.price_read_seconds, self.price_write_seconds)
+            )
+        ):
             raise ValueError("history_repair_summary_invalid")
 
 

@@ -483,8 +483,9 @@ tbody tr.is-unavailable td.negative {
 
 .score-stack span {
   min-width: 0;
-  white-space: normal;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .score-stack b {

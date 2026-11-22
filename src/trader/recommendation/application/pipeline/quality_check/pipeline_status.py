@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import math
 from collections import Counter
+from dataclasses import replace
 
-from trader.recommendation.application.pipeline.final_selection.freeze_projection import ScoredLocalProjection
+from trader.recommendation.application.pipeline.final_selection.freeze_projection import ScoredLocalProjection, ScoredReviewDraft
 from trader.recommendation.application.pipeline.final_selection.scored_stage_chain import ScoredStageChain
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import ScoredInputQuality
 from trader.recommendation.application.pipeline.stage_output import StageOutput
@@ -50,7 +51,6 @@ def BuildSupplyStatus(
     diagnostics = published_freeze.selection_diagnostics
     if diagnostics is None:
         raise ValueError("scored input status requires selection diagnostics")
-    freeze_items = published_freeze.items
     scored_chain = scored_stages or projection.stages
     snapshots = JoinStageSnapshots(input_stages, scored_chain.snapshots) if input_stages else ()
     pipeline = ProjectPipelineFacts(
@@ -67,8 +67,7 @@ def BuildSupplyStatus(
             reasons[item.candidate_audit_pruning_reason] += 1
         if item.selection_skip_reason:
             reasons[item.selection_skip_reason] += 1
-    reasons.update(item.reason for item in freeze_items if item.reason)
-    reasons.update(risk for item in freeze_items for risk in item.risk_codes)
+    reasons.update(_freeze_supply_reasons(published_freeze))
     return InputQualityStatus(
         strategy=projection.local.strategy,
         status=quality.status,
@@ -202,20 +201,41 @@ def ProjectPipelineFacts(
 
 def UpdateSupplyStatusFreeze(
     current: InputQualityStatus,
-    projection: ScoredLocalProjection,
+    draft: ScoredReviewDraft,
     freeze: ScoredFreeze,
     *,
-    scored_stages: ScoredStageChain,
+    scored_snapshots: tuple[PipelineStageSnapshot, ...],
 ) -> InputQualityStatus:
-    scoring_keys = {snapshot.stage for snapshot in scored_stages.snapshots}
-    return BuildSupplyStatus(
-        projection,
-        projection.selection.stage_counts,
-        candidate_quote_eligible=current.candidate_feature_count,
+    if draft.stage_counts is None:
+        raise ValueError("scored input status requires immutable candidate stage facts")
+    diagnostics = freeze.selection_diagnostics
+    if diagnostics is None:
+        raise ValueError("scored input status requires selection diagnostics")
+    scoring_keys = {snapshot.stage for snapshot in scored_snapshots}
+    prior = tuple(snapshot for snapshot in current.stage_snapshots if snapshot.stage not in scoring_keys)
+    snapshots = JoinStageSnapshots(prior, scored_snapshots) if prior else ()
+    pipeline = ProjectPipelineFacts(
+        snapshots or scored_snapshots,
         freeze=freeze,
-        input_stages=tuple(snapshot for snapshot in current.stage_snapshots if snapshot.stage not in scoring_keys),
-        scored_stages=scored_stages,
+        quality=draft.input_quality,
+        stage_counts=draft.stage_counts,
     )
+    reasons = Counter(dict(current.supply_reason_counts)) - _freeze_supply_reasons(draft.local)
+    reasons.update(_freeze_supply_reasons(freeze))
+    return replace(
+        current,
+        summary=replace(current.summary, highest_final_score=max((item.final_score for item in freeze.items), default=None)),
+        pipeline=pipeline,
+        stage_snapshots=snapshots,
+        supply_reason_counts=tuple(reasons.items()),
+        primary_blocker=_primary_supply_blocker(draft.input_quality, pipeline, empty_reason=diagnostics.empty_reason),
+    )
+
+
+def _freeze_supply_reasons(freeze: ScoredFreeze) -> Counter[str]:
+    reasons = Counter(item.reason for item in freeze.items if item.reason)
+    reasons.update(risk for item in freeze.items for risk in item.risk_codes)
+    return reasons
 
 
 def _supply_summary(projection: ScoredLocalProjection, *, freeze: ScoredFreeze | None = None) -> SupplySummary:

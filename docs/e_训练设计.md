@@ -726,6 +726,8 @@ CPU/内存预约、队列与源批读已有第6.4节计量，但真实全量分�
 
 长作业在显式`work-root/workload-checkpoints/`逐段原子保存`initial.json`、`all_artifacts_reuse.json`、`sample_preparation.json`、`sample_refit.json`及`sample_reuse.json`，只写实际已返回的步骤；后续中断不删除已保存结果。初训未完成时不生成复用文件，V1仍没有样本重拟合步骤。每份使用`training-workload-checkpoint`，`audit_state`始终为`pending_final_source_and_reuse_audit`，性能/生产授权均为false；它保留局部事实，不替代整轮最终报告。审核须同时绑定该作业冻结清单、配置/输入/模型身份和最终源稳定性、数值及零扫描复用核对；缺最终报告时继续保留未验。目录/文件符号链接及既有同名报告会被拒绝，不覆盖旧证据。原子落盘发生在对应训练/准备返回之后，工具总墙钟包含其开销，比较仍须统一工具版本和计量口径。
 
+已注册的 `scripts.training.jobs.training_alignment` worker 可显式加 `--measure-sample-components`。封样检查点逐档报告窗口特征、截面与标签、SQLite 样本追加、准备索引及提交的墙钟和线程 CPU。SQLite 追加包含样本编码和统计，封存仍读原封存阶段。各档并发，耗时分别解释。此开关用于定位，正式性能对照使用默认计量。
+
 ### 9.2 P61训练检测清单与A交接
 
 下表保留训练工具的用途和消费者清点；当前路径与公共命令以scripts/README及b第9章为准。公共入口、报告白名单、Makefile与README由A拥有；训练参数、校验、不可变TrainingOptions和命令构造由scripts/training持有，core不再保存全业务DiagnosticOptions。公开选择统一为tools.py的business/module/action，训练内部worker仍由同一入口限定调用；迁移不改变训练输出schema或性能验收结论。

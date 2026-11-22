@@ -153,7 +153,7 @@ from trader.recommendation.infra.scoring import profile_factory
 from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
 from trader.recommendation.infra.scoring.profile_factory import LoadD25UtilityProfile, ScoringModelsUnavailableError
 from trader.recommendation.infra.status_projection import RuntimeStatus as _runtime_status
-from trader.training.application.research_audit import TryBuildCommittedResearchAudit
+from trader.training.application.research_audit import PrepareResearchAuditFactory
 from trader.training.application.research_runtime import ResearchRuntime
 from trader.training.domain.training_reminder import TrainingReminderStatus
 from trader.training.domain.v1.learned_rank import V1TrainingSettings
@@ -456,7 +456,11 @@ def ExecuteHistoryDownload(
             )
             prices = TencentQfqSupplier(
                 TencentQfqDependencies(
-                    http_pool.borrow, lambda _as_of: reference.eligible_universe, cancel_requested, reference.calendar,
+                    http_pool.borrow,
+                    lambda _as_of: reference.eligible_universe,
+                    cancel_requested,
+                    reference.calendar,
+                    progress=progress,
                 ),
                 TencentQfqOptions(
                     timeout_seconds=configuration.tencent_timeout_seconds,
@@ -748,7 +752,7 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
             ShanghaiClock(now).now,
             model_scoring,
             local_scoring,
-            TryBuildCommittedResearchAudit,
+            PrepareResearchAuditFactory,
             monotonic=time.monotonic,
             next_sequence=lambda: run_scope.next_sequence(
                 lambda: persistence.sequence.allocate(width=2, minimum=publication.tomorrow_index.next_scored_sequence)

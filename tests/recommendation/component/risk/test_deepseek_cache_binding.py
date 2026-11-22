@@ -17,6 +17,7 @@ from tests.helpers.recommendation.publication.tomorrow_projection import _native
 from trader.infra.http_contracts import HttpTimeout
 from trader.recommendation.application.pipeline.final_selection.freeze_projection import (
     BuildScoredHybrid,
+    PrepareScoredReviewDraft,
     ValidateReviewManifests,
 )
 from trader.recommendation.application.pipeline.local_score.base_scoring import LocalScoringService
@@ -50,9 +51,9 @@ def test_reused_review_binds_current_input_without_rewriting_request_manifest(ap
     assert rebound is not None and rebound.evidence_binding is not None
     assert rebound.evidence_manifest_hash == review.evidence_manifest_hash != BuildReviewManifestHash(current)
     expected = {current.quote.code: BuildReviewManifestHash(current)}
-    assert ValidateReviewManifests(projection, {current.quote.code: rebound}, expected)
+    assert ValidateReviewManifests(projection.review_candidates, {current.quote.code: rebound}, expected)
     hybrid = BuildScoredHybrid(
-        projection,
+        PrepareScoredReviewDraft(projection),
         policy,
         {current.quote.code: rebound},
         review_deadline=projection.native_input.evaluated_at + timedelta(minutes=1),
@@ -63,7 +64,7 @@ def test_reused_review_binds_current_input_without_rewriting_request_manifest(ap
     )
     for field in ("original_manifest_hash", "current_manifest_hash"):
         tampered = replace(rebound, evidence_binding=replace(rebound.evidence_binding, **{field: "f" * 64}))
-        assert not ValidateReviewManifests(projection, {current.quote.code: tampered}, expected)
+        assert not ValidateReviewManifests(projection.review_candidates, {current.quote.code: tampered}, expected)
     late = replace(
         rebound,
         evidence_binding=replace(rebound.evidence_binding, bound_at=current.observed_at + timedelta(seconds=60)),

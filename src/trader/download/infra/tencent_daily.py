@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from decimal import Decimal, InvalidOperation
+from time import monotonic as monotonic_seconds
 from typing import Literal
 
 from trader.download.domain.price_review import PriceReviewRequestBudget
@@ -71,19 +72,29 @@ def FetchTencentDailyRows(
     cancel_requested: Callable[[], bool] | None = None,
     observe_suspension: Callable[[date], None] | None = None,
     request_budget: PriceReviewRequestBudget | None = None,
+    observe_request: Callable[[float, bool], None] | None = None,
+    monotonic: Callable[[], float] = monotonic_seconds,
 ) -> tuple[TencentDailyRow, ...]:
+    """Report the HTTP call and status check before decoding qualified rows."""
     url, params = TencentDailyRequest(query, host)
     if request_budget is not None:
         timeout_seconds = request_budget.reserve_request(timeout_seconds)
     try:
-        response = transport.get(
-            url,
-            params=params,
-            timeout=timeout_seconds,
-            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
-            cancel_requested=cancel_requested,
-        )
-        response.raise_for_status()
+        started = monotonic() if observe_request is not None else None
+        succeeded = False
+        try:
+            response = transport.get(
+                url,
+                params=params,
+                timeout=timeout_seconds,
+                headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
+                cancel_requested=cancel_requested,
+            )
+            response.raise_for_status()
+            succeeded = True
+        finally:
+            if observe_request is not None and started is not None:
+                observe_request(monotonic() - started, succeeded)
         payload = DecodeTencentDailyPayload(response.text)
         rows = _daily_rows(payload, query)
         if observe_suspension is not None and not any(row.day == query.end for row in rows):

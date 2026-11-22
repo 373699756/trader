@@ -277,24 +277,20 @@
     };
   }
 
-  function targetLabel(target) {
-    if (!target || !Number.isInteger(target.threshold_bps) || target.threshold_bps < 0) return "";
-    const period = { tomorrow: "次日涨幅", d25: "第2–5个交易日平均涨幅" }[target.strategy];
-    return period ? `${period} ≥${target.threshold_bps / 100}%` : "";
-  }
-
   function scorePresentation(snapshot) {
     const versions = snapshot && snapshot.input_versions || {};
     const learnedRank = Boolean(snapshot && snapshot.strategy !== "long"
       && ["learned_rank_percentile_0_100", "model_prediction_percentile_0_100"].includes(versions.score_scale));
     const tomorrowProbability = Boolean(snapshot && snapshot.strategy === "tomorrow"
       && versions.score_scale === "tomorrow_close_gain_probability_0_100");
+    const d25Probability = Boolean(snapshot && snapshot.strategy === "d25" && snapshot.prediction_target);
     return {
       learnedRank,
       tomorrowProbability,
+      d25Probability,
       shadow: Boolean(snapshot && snapshot.strategy !== "long" && versions.execution_mode === "shadow"),
       preview: Boolean(snapshot && snapshot.run_mode === "preview"),
-      finalLabel: tomorrowProbability ? `${targetLabel(snapshot.prediction_target) || "次日目标"}概率`
+      finalLabel: tomorrowProbability ? "达标概率"
         : learnedRank ? "模型排序分" : "最终评分",
     };
   }
@@ -302,7 +298,8 @@
   function currentTable(snapshot) {
     const presentation = scorePresentation(snapshot);
     const scoreLabel = presentation.tomorrowProbability
-      ? presentation.finalLabel
+      ? "达标概率 / 本地评分"
+      : presentation.d25Probability ? `${presentation.finalLabel} / 达标概率`
       : presentation.learnedRank ? "本地评分 / 模型排名" : "最终评分 / 加减分";
     return {
       columns: [
@@ -364,7 +361,7 @@
   }
 
   function row(item, historical, snapshot) {
-    return historical ? historyRow(item, snapshot) : currentRow(item, snapshot);
+    return historical ? historyRow(item) : currentRow(item, snapshot);
   }
 
   function stock(item, includeContext = true) {
@@ -393,15 +390,21 @@
     const rowClass = action === "unavailable" ? "is-unavailable" : "";
     const review = reviewStatus(item);
     const presentation = scorePresentation(snapshot);
-    const primaryScore = presentation.learnedRank
+    const primaryScore = presentation.learnedRank && !presentation.d25Probability
       ? `<span aria-label="本地评分 / 模型排名百分位" title="模型分是同轮排名百分位，不是上涨概率；动作仍由本地分和风险条件决定"><b>本地/模型：${number(scores.local_score, 2)}/${number(scores.final_score, 2)}</b></span>`
       : `<span aria-label="${presentation.finalLabel}"><b>${presentation.finalLabel} ${number(scores.final_score, 2)}${presentation.tomorrowProbability && hasValue(scores.final_score) ? "%" : ""}</b></span>`;
     const ledger = scores.ledger;
     const scoreDetail = ledger
       ? `基础 ${number(ledger.weighted_base_score, 2)} · +${number(ledger.applied_bonus, 2)} · −${number(ledger.applied_risk_penalty, 2)}`
       : "旧记录无加减分明细";
-    const d25Probability = snapshot && snapshot.strategy === "d25" && hasValue(scores.target_probability)
-      ? `<span>达标概率 ${number(scores.target_probability * 100, 2)}%</span>` : "";
+    let secondaryScore = scoreDetail;
+    if (presentation.tomorrowProbability) {
+      secondaryScore = `本地评分 ${number(scores.local_score, 2)}`;
+    } else if (presentation.d25Probability || (snapshot && snapshot.strategy === "d25" && hasValue(scores.target_probability))) {
+      const probability = hasValue(scores.target_probability) ? valuePercent(scores.target_probability * 100) : "-";
+      secondaryScore = `达标概率 ${probability}`;
+    }
+    const detailTitle = ledger && secondaryScore !== scoreDetail ? ` title="${escapeHtml(scoreDetail)}"` : "";
     return `<tr class="${rowClass}" tabindex="0" data-code="${escapeHtml(item.code)}">
       <td>${number(item.rank, 0)}</td>
       <td>${tierTag(item)}</td>
@@ -412,7 +415,7 @@
       <td>${valuePercent(item.turnover_rate) || "-"}</td>
       <td>${compact(item.amount)}</td>
       <td>${compact(item.market_cap)}</td>
-      <td><div class="score-stack">${primaryScore}${d25Probability}<span aria-label="加减分明细">${scoreDetail}</span></div></td>
+      <td><div class="score-stack"${detailTitle}>${primaryScore}<span>${secondaryScore}</span></div></td>
       <td class="reason-cell"><div class="reason-stack"><span class="reason-tag">${escapeHtml(actionReason(item.action_reason))}</span><span class="review-status" aria-label="风险复核">风险复核：${review}</span></div></td>
     </tr>`;
   }
@@ -462,7 +465,7 @@
     return 11;
   }
 
-  function historyRow(item, snapshot) {
+  function historyRow(item) {
     const anchorChange = pct(item.anchor_daily_return_pct);
     const todayChange = pct(item.pct_change);
     const anchorToNow = pct(item.anchor_to_now_pct);
@@ -471,10 +474,11 @@
     const sourceDay = item.source_time ? String(item.source_time).slice(0, 10) : "";
     const quoteNote = item.quote_status === "retained" || sourceDay && sourceDay !== window.TraderSelection.shanghaiDate()
       ? `<span class="stock-code">${item.quote_status === "retained" ? "保留行情 · " : "最近交易日 · "}${escapeHtml(sourceDay)}</span>` : "";
-    const status = { hit: "命中", miss: "未命中", pending: "待结算" }[item.tomorrow_outcome || item.d25_outcome];
-    const target = targetLabel(snapshot && snapshot.prediction_target);
-    const realized = hasValue(item.actual_return_pct) ? `实测 ${pct(item.actual_return_pct).text}` : "";
-    const outcome = status ? [target, status, realized].filter(Boolean).join(" ") : "";
+    const label = item.tomorrow_outcome || item.d25_outcome;
+    const status = { hit: "命中", miss: "未命中", pending: "待结算" }[label];
+    const realized = (label === "hit" || label === "miss") && hasValue(item.actual_return_pct)
+      ? `实测 ${pct(item.actual_return_pct).text}` : "";
+    const outcome = status ? [status, realized].filter(Boolean).join(" ") : "";
     return `<tr tabindex="0" data-code="${escapeHtml(item.code)}">
       <td>${number(item.rank, 0)}</td>
       <td>${tierTag(item)}${outcome ? `<span class="stock-code">${outcome}</span>` : ""}</td>
@@ -501,8 +505,8 @@
       : [
         ["推荐动作", ACTION_LABELS[action] || "动作状态未知"],
         ["入池状态", item.selected === false ? "未入池" : "已入池"],
-        [presentation.finalLabel, presentation.tomorrowProbability && hasValue(scores.final_score)
-          ? `${number(scores.final_score, 2)}%` : valueNumber(scores.final_score, 2)],
+        [presentation.finalLabel, presentation.tomorrowProbability
+          ? valuePercent(scores.final_score) : valueNumber(scores.final_score, 2)],
         ["当前排名", hasValue(item.rank) ? `第 ${number(item.rank, 0)} 名` : null],
         ["入场形态", SETUP_LABELS[item.setup && item.setup.type] || "形态信息暂不可用"],
         ["下行保护", downside ? (downside.status === "pass" ? "通过" : "转观察") : null],
@@ -562,7 +566,8 @@
       ["评分版本", hasValue(scoreVersion) ? scoreVersion : null],
       ["本地评分", valueNumber(scores.local_score, 2)],
       ["模型相对信号分", valueNumber(scores.model_signal_score, 2)],
-      ["目标达标概率", hasValue(scores.target_probability) ? `${number(scores.target_probability * 100, 2)}%` : null],
+      ["达标概率", !presentation.tomorrowProbability && hasValue(scores.target_probability)
+        ? valuePercent(scores.target_probability * 100) : null],
       ["预测超额收益", valuePct(scores.predicted_excess_return_pct)],
       ["估算交易成本", valuePct(scores.estimated_cost_pct)],
       ["预测成本后净超额", valuePct(scores.predicted_net_excess_pct)],
@@ -701,15 +706,17 @@
   }
 
   function reviewResult(item, snapshot) {
-    const learnedRank = scorePresentation(snapshot).learnedRank;
-    const preserved = learnedRank ? "模型排序分保持不变" : "最终评分仍为本地分";
-    const unreviewed = learnedRank ? "模型排序分保持不变" : "最终评分为本地分";
+    const { learnedRank, tomorrowProbability } = scorePresentation(snapshot);
+    const preserved = tomorrowProbability ? "席位按达标概率排序"
+      : learnedRank ? "模型排序分保持不变" : "最终评分仍为本地分";
+    const unreviewed = tomorrowProbability || learnedRank ? preserved : "最终评分为本地分";
     const outcome = item.review_outcome;
     if (outcome) return ({
       applied: `结构化风险复核已完成；${preserved}`,
       abstain: `风险复核弃权；${preserved}`,
       late: "风险复核结果迟到，未参与本次决策",
-      rejected: learnedRank ? "风险复核未生效，保留模型排序结果" : "风险复核未生效，保留本地决策",
+      rejected: tomorrowProbability ? `风险复核未生效，${preserved}`
+        : learnedRank ? "风险复核未生效，保留模型排序结果" : "风险复核未生效，保留本地决策",
     })[outcome] || `复核结果未知；${unreviewed}`;
     if (item.research_coverage && item.research_coverage.review_eligible === false) {
       return `未进入本次 DeepSeek 复核候选；${unreviewed}`;
@@ -843,6 +850,5 @@
     statusErrorLabel,
     sourceLabel,
     scorePresentation,
-    targetLabel,
   };
 })();

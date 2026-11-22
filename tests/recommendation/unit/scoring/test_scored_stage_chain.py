@@ -29,6 +29,7 @@ from tests.helpers.recommendation.publication.tomorrow_projection import (
 from trader.recommendation.application.pipeline.final_selection.freeze_projection import (
     BuildScoredHybrid,
     BuildScoredLocal,
+    PrepareScoredReviewDraft,
     ScoredProjectionInputs,
 )
 from trader.recommendation.application.pipeline.freeze_publish.runtime_adapters import DeepSeekAdapter
@@ -121,7 +122,10 @@ def test_full_population_places_former_121st_input_third_and_veto_never_refills(
     )
     reviewed = replace(review("600120", 100), completed_at=EVALUATED_AT, risk_facts=(fact,))
     hybrid = BuildScoredHybrid(
-        projection, policy, {"600120": reviewed}, review_deadline=EVALUATED_AT + timedelta(minutes=1)
+        PrepareScoredReviewDraft(projection),
+        policy,
+        {"600120": reviewed},
+        review_deadline=EVALUATED_AT + timedelta(minutes=1),
     )
     assert hybrid is not None and hybrid.freeze is not None
     assert hybrid.stages.fixed_selection is projection.stages.fixed_selection
@@ -224,7 +228,7 @@ def test_hybrid_reuses_local_scoring_and_adds_vendor_elapsed_only_to_review(appl
     assert local.review_candidates
     ticks = count()
     result = BuildScoredHybrid(
-        local,
+        PrepareScoredReviewDraft(local),
         _policy(),
         {
             item.code: replace(review(item.code, 100), completed_at=evaluated_at + timedelta(seconds=5))
@@ -236,7 +240,7 @@ def test_hybrid_reuses_local_scoring_and_adds_vendor_elapsed_only_to_review(appl
     )
     assert result is not None and result.freeze is not None
     assert local.local.preview_context is result.freeze.preview_context is context
-    assert result.stages.local_score is local.stages.local_score
+    assert result.stages.prior_snapshots[1] is local.stages.local_score.snapshot
     assert result.stages.risk_review.snapshot.latency_ms == 1073
     assert result.stages.fixed_selection is local.stages.fixed_selection
     assert result.stages.action_publish.snapshot.latency_ms == 1000
@@ -310,7 +314,7 @@ def test_non_trading_day_real_adapters_predict_and_register_review_after_15(appl
     assert local.trade_date == observed_at.date() and local.observed_at == observed_at
     assert predictor.codes and set(predictor.codes).issubset({feature.quote.code for feature in features})
     projection = adapter.freezes.projection(local.version)
-    assert projection is not None and projection.native_input.phase == "before_close"
+    assert projection is not None and projection.phase == "before_close"
     assert len(VisibleScoredSeats(local)) == 6
     assert all(item.model_diagnostics is not None for item in local.items)
     assert all(item.model_diagnostics.estimated_cost_pct > 0 for item in local.items if item.model_diagnostics)
@@ -406,7 +410,9 @@ def test_unusable_reviews_leave_real_degraded_observation_without_new_freeze(app
             for item in local.review_candidates
         }
     )
-    result = BuildScoredHybrid(local, _policy(), reviews, review_deadline=deadline, review_latency_ms=73)
+    result = BuildScoredHybrid(
+        PrepareScoredReviewDraft(local), _policy(), reviews, review_deadline=deadline, review_latency_ms=73,
+    )
     assert result is not None and result.freeze is None
     snapshot = result.stages.risk_review.snapshot
     assert snapshot.state is StageState.DEGRADED

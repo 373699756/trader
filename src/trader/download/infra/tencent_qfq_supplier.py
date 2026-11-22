@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import date, timedelta
+from functools import partial
 from queue import Queue
 from typing import Literal
 
@@ -20,7 +21,7 @@ from trader.download.domain.baostock_daily import (
     DailyCellStatus,
 )
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError, HistorySupplierPendingReason
-from trader.download.domain.history_sync import HistorySupplierContext
+from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncProgress, HistorySyncProgressPort
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistorySide, PublishedHistoryWindow
 from trader.download.domain.qfq_window import MAX_QFQ_WINDOW_SESSIONS
 from trader.download.domain.price_review import PriceReviewBudgetExhausted, PriceReviewRequestBudget
@@ -61,6 +62,7 @@ class TencentQfqDependencies:
     calendar: Callable[[date, int], BaoStockCalendar] | None = None
     failures: DownloadFailurePort | None = None
     monotonic: Callable[[], float] = time.monotonic
+    progress: HistorySyncProgressPort | None = None
 
 
 @dataclass(frozen=True)
@@ -501,11 +503,13 @@ class TencentQfqSupplier:
             try:
                 if session is not None:
                     return self._request_once(
-                        session, query, host or self._options.history_host, observe_suspension, request_budget
+                        session, query, host or self._options.history_host, observe_suspension, request_budget,
+                        attempt=attempt + 1,
                     )
                 with self._dependencies.session_factory() as owned_session:
                     return self._request_once(
-                        owned_session, query, host or self._options.history_host, observe_suspension, request_budget
+                        owned_session, query, host or self._options.history_host, observe_suspension, request_budget,
+                        attempt=attempt + 1,
                     )
             except HttpCancelled:
                 raise
@@ -531,7 +535,14 @@ class TencentQfqSupplier:
         host: Literal["proxy", "direct"],
         observe_suspension: Callable[[date], None] | None,
         request_budget: PriceReviewRequestBudget | None,
+        *,
+        attempt: int,
     ) -> tuple[TencentDailyRow, ...]:
+        observer = (
+            partial(self._publish_daily_request, query, attempt)
+            if self._dependencies.progress is not None and request_budget is None and query.symbol != "sh000001"
+            else None
+        )
         rows = FetchTencentDailyRows(
             session,
             query,
@@ -540,9 +551,30 @@ class TencentQfqSupplier:
             cancel_requested=self._dependencies.cancel_requested,
             observe_suspension=observe_suspension,
             request_budget=request_budget,
+            observe_request=observer,
+            monotonic=self._dependencies.monotonic,
         )
         self._check_cancel()
         return rows
+
+    def _publish_daily_request(self, query: TencentDailyQuery, attempt: int, seconds: float, succeeded: bool) -> None:
+        progress = self._dependencies.progress
+        if progress is None:
+            return
+        try:
+            progress.publish(HistorySyncProgress(
+                "supplier_daily_raw" if query.mode == "bfq" else "supplier_daily_qfq",
+                "completed" if succeeded else "failed",
+                int(succeeded),
+                1,
+                supplier_source="tencent",
+                requested_sessions=query.count,
+                call_elapsed_seconds=seconds,
+                attempt=attempt,
+                max_attempts=self._options.retries + 1,
+            ))
+        except OSError:
+            pass
 
     def _check_cancel(self) -> None:
         if self._dependencies.cancel_requested():

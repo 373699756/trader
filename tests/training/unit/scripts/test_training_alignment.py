@@ -634,7 +634,7 @@ def test_real_published_history_training_never_persists_due_observations(tmp_pat
     from trader.download.infra.history_snapshot_inspection import LoadPublishedHistorySnapshot
     from trader.infra.settings import LoadRuntimeSettings
     from trader.infra.settings.data_paths import DataPaths
-    from trader.training.infra import selected_training
+    from trader.training.infra import engine, sample_builder, selected_training
     from trader.training.infra.training_settings import LoadD25TrainingSettings
 
     project = Path(__file__).resolve().parents[4]
@@ -651,6 +651,9 @@ def test_real_published_history_training_never_persists_due_observations(tmp_pat
     # This checks file protection and report boundaries; host-pressure guards have dedicated tests.
     monkeypatch.setattr("trader.training.infra.memory_admission.FittingMemoryCapacity", lambda _settings: 512 * 1024**2)
     before = training_alignment._published_input_signature(history)
+    original_builder = engine.BuildTrainingSamples
+    original_features = sample_builder._pending_sample
+    measure_sample_components = computation_candidate == "baseline"
     report = training_alignment._probe(
         history,
         tmp_path / "output",
@@ -659,6 +662,7 @@ def test_real_published_history_training_never_persists_due_observations(tmp_pat
         published_history_read_only=True,
         sample_cache_transfer="hardlink",
         computation_candidate=computation_candidate,
+        measure_sample_components=measure_sample_components,
     )
     assert report["status"] == "passed", report
     summary = report["summary"]
@@ -680,7 +684,27 @@ def test_real_published_history_training_never_persists_due_observations(tmp_pat
     assert all(item["performance_acceptance"] is item["production_authority"] is False for item in saved.values())
     assert saved["initial"]["result"]["execution"]["history_scan_passes"] == 1
     assert saved["all_artifacts_reuse"]["result"]["execution"]["history_scan_passes"] == 0
-    assert saved["sample_preparation"]["result"]["fault_injected"] is True
+    preparation = saved["sample_preparation"]["result"]
+    assert preparation["fault_injected"] is True
+    assert engine.BuildTrainingSamples is original_builder
+    assert sample_builder._pending_sample is original_features
+    if measure_sample_components:
+        timing = preparation["sample_components"]
+        assert timing == summary["sample_reuse"]["preparation"]["sample_components"]
+        assert timing["instrumented"] and timing["performance_acceptance"] is False
+        profile, = timing["profiles"]
+        assert profile["profile"] == "v3" and profile["completed"]
+        assert profile["total"]["calls"] == 1
+        assert set(profile["components"]) == {
+            "window_features", "cross_section_and_labels", "sqlite_append", "index_and_commit",
+        }
+        assert profile["components"]["index_and_commit"]["calls"] == 1
+        for name in ("wall_seconds", "thread_cpu_seconds"):
+            components = tuple(item[name] for item in profile["components"].values())
+            assert all(seconds > 0 for seconds in components)
+            assert sum(components) <= profile["total"][name]
+    else:
+        assert "sample_components" not in preparation
     assert saved["sample_refit"]["result"]["execution"]["history_scan_passes"] == 0
     assert not saved["sample_reuse"]["result"]["failures"]
 

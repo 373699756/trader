@@ -14,6 +14,7 @@ import shutil
 import sys
 import time
 from collections import Counter
+from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext, redirect_stdout
 from dataclasses import asdict
 from datetime import datetime
@@ -54,6 +55,7 @@ class _MeasurementOptions(TypedDict, total=False):
     cpu_candidate: CpuCandidate
     execution_components: tuple[ExecutionComponent, ...]
     fanout_candidate: FanoutCandidate
+    measure_sample_components: bool
 
 
 def PrepareTrainingHistoryCopy(
@@ -242,6 +244,7 @@ def _probe(
     cpu_candidate: CpuCandidate = "baseline",
     execution_components: tuple[ExecutionComponent, ...] = (),
     fanout_candidate: FanoutCandidate = "baseline",
+    measure_sample_components: bool = False,
 ) -> dict[str, object]:
     # Load diagnostic types only after main selects the measured product checkout.
     from scripts.training.jobs.training_performance import TrainingReuseFailures
@@ -335,7 +338,16 @@ def _probe(
         if repeat is not None:
             _write_workload_checkpoint(work, "all_artifacts_reuse", repeat)
         sample_reuse = (
-            _sample_reuse(runtime, history, work, profiles, initial, industry_snapshot=industry, transfer=sample_cache_transfer)
+            _sample_reuse(
+                runtime,
+                history,
+                work,
+                profiles,
+                initial,
+                industry_snapshot=industry,
+                transfer=sample_cache_transfer,
+                measure_sample_components=measure_sample_components,
+            )
             if initial["complete"] else None
         )
         if sample_reuse is not None:
@@ -454,6 +466,7 @@ def _sample_reuse(
     *,
     industry_snapshot: CurrentIndustrySnapshot,
     transfer: Literal["copy", "hardlink"] = "copy",
+    measure_sample_components: bool = False,
 ) -> dict[str, object]:
     from scripts.training.jobs.training_performance import TrainingSamplePreparationFailures
     from scripts.training.jobs.training_performance import TrainingSampleReuseFailures
@@ -484,7 +497,14 @@ def _sample_reuse(
     try:
         if target.exists() or target.is_symlink():
             raise ValueError("training_sample_probe_output_exists")
-        preparation = _prepare_sample_reuse(runtime, history, preparation_root, selected, industry_snapshot=industry_snapshot)
+        preparation = _prepare_sample_reuse(
+            runtime,
+            history,
+            preparation_root,
+            selected,
+            industry_snapshot=industry_snapshot,
+            measure_sample_components=measure_sample_components,
+        )
         _write_workload_checkpoint(work, "sample_preparation", preparation)
         result["preparation"] = preparation
         failures = TrainingSamplePreparationFailures(initial, preparation, selected)
@@ -587,7 +607,9 @@ def _prepare_sample_reuse(
     history: Path,
     work: Path,
     profiles: tuple[ScoringProfileId, ...],
-    *, industry_snapshot: CurrentIndustrySnapshot,
+    *,
+    industry_snapshot: CurrentIndustrySnapshot,
+    measure_sample_components: bool = False,
 ) -> dict[str, object]:
     """Exercise the normal failed-fit cache retention path in an isolated preparation run."""
     from scripts.training.jobs.training_performance import SAMPLE_PREPARATION_CONTROLLED_CAUSE
@@ -617,9 +639,18 @@ def _prepare_sample_reuse(
 
     captured = io.StringIO()
     started = time.monotonic()
+    timing_scope: AbstractContextManager[Callable[[], dict[str, object]] | None] = nullcontext(None)
+    if measure_sample_components:
+        from scripts.training.samples.sample_component_timing import MeasureSampleComponents
+
+        timing_scope = MeasureSampleComponents()
     try:
         engine.FitIndustryModels = stop_before_fit
-        with TrainingProcessMeasurement(disk_root=work) as measurement, redirect_stdout(captured):
+        with (
+            timing_scope as project_timing,
+            TrainingProcessMeasurement(disk_root=work) as measurement,
+            redirect_stdout(captured),
+        ):
             code = ExecuteSelectedTraining(
                 runtime, profiles, history_root=history, training_root=work, industry_snapshot=industry_snapshot,
                 report_output=TrainingReportOutput(json_output=True), strategy=Strategy.D25,
@@ -627,7 +658,7 @@ def _prepare_sample_reuse(
     finally:
         engine.FitIndustryModels = original_fit
     reports = ReadJsonReports(captured.getvalue())
-    return {
+    report: dict[str, object] = {
         "method": "controlled_failure_before_fit",
         "fault_injected": True,
         "scope": "isolated_sample_preparation_only; not_a_training_workload_result",
@@ -642,6 +673,9 @@ def _prepare_sample_reuse(
         "execution": next((item for item in reports if "profiles" in item and "training_status" in item), None),
         "cache_conditions": "preparation_scans_history_and_warms_operating_system_cache",
     }
+    if project_timing is not None:
+        report["sample_components"] = project_timing()
+    return report
 
 
 def _sample_signatures(
@@ -930,6 +964,7 @@ def Main() -> int:
     parser.add_argument("--product-checkout", type=Path)
     parser.add_argument("--published-history-read-only", action="store_true")
     parser.add_argument("--sample-cache-transfer", choices=("copy", "hardlink"), default="copy")
+    parser.add_argument("--measure-sample-components", action="store_true")
     parser.add_argument("--scheduling-candidate", choices=("baseline", "fixed", "long_task_first", "borrowing"), default="baseline")
     parser.add_argument("--scheduling-evidence", type=Path)
     parser.add_argument("--execution-candidate", choices=("baseline", "resources", "ram_matrices", "shared_validation", "normalized_tcn", "combined", "selected"), default="baseline")
@@ -945,6 +980,8 @@ def Main() -> int:
     )
     args = parser.parse_args()
     try:
+        if args.measure_sample_components and (args.inputs_only or args.benchmark_mode is not None):
+            raise ValueError("sample_component_measurement_requires_diagnostic_training_mode")
         components = ParseExecutionComponents(args.execution_components) if args.execution_components is not None else ()
         if (args.execution_candidate == "selected") != bool(components):
             raise ValueError("training_execution_components_require_selected")
@@ -988,6 +1025,8 @@ def Main() -> int:
                 measurement_options["fanout_candidate"] = args.fanout_candidate
             if args.cpu_candidate != "baseline":
                 measurement_options["cpu_candidate"] = args.cpu_candidate
+            if args.measure_sample_components:
+                measurement_options["measure_sample_components"] = True
             report = _probe(
                 args.history_root, args.work_root, profiles, runtime_config=runtime_config, sqlite_policy=sqlite_policy,
                 require_reuse=args.benchmark_mode not in {"baseline_before", "baseline_after"},

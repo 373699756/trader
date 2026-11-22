@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 
 from trader.download.application.history_ports import (
@@ -12,6 +13,7 @@ from trader.download.application.history_ports import (
     HistorySyncDependencies, HistorySyncIoError,
 )
 from trader.download.application.history_progress import PublishHistoryProgress
+from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_control import HistorySnapshot, HistorySourceIdentity, HistorySyncCheckpoint
 from trader.download.domain.history_download import (
     BuildHistoryControlIdentities, HistoryBatchInput, HistoryDownloadBatch, HistoryDownloadTask,
@@ -51,6 +53,7 @@ class DownloadHistoryUseCase:
     progress: HistorySyncProgressPort | None
     dependencies: HistorySyncDependencies
     price_review_budget: PriceReviewBudget | None = None
+    monotonic: Callable[[], float] = field(default=time.monotonic, kw_only=True)
 
     def execute(self) -> HistoryMaintenanceStatus:
         PublishHistoryProgress(self.progress, "initializing", "started")
@@ -374,6 +377,16 @@ class DownloadHistoryUseCase:
             batch_id = self.dependencies.maintenance.new_repair_identity()
             selected = tuple(item for item in inputs.context.universe if item.code in gaps)
             attempted = repaired = 0
+            supplier_seconds = price_read_seconds = price_write_seconds = 0.0
+
+            def fetch_repair(security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
+                nonlocal supplier_seconds
+                started = self.monotonic()
+                try:
+                    return self.supplier.fetch_baostock_window(security, dates)
+                finally:
+                    supplier_seconds += self.monotonic() - started
+
             PublishHistoryProgress(self.progress, "baostock_repair", "started", (0, len(selected)))
             for completed, security in enumerate(selected, 1):
                 if self.cancel():
@@ -388,11 +401,13 @@ class DownloadHistoryUseCase:
                 attempted += 1
                 failure = None
                 previous = None
+                read_started = self.monotonic()
                 if prices.repair_source(security.code, inputs.batch.sequence) == "baostock":
                     previous = PublishedHistoryWindow(
                         security.code,
                         tuple(ProjectHistoryCell(cell) for cell in prices.read_prices(security.code, dates)),
                     )
+                price_read_seconds += self.monotonic() - read_started
                 try:
                     candidate = None
                     if previous is not None:
@@ -400,12 +415,12 @@ class DownloadHistoryUseCase:
                         missing = tuple(day for day in dates if day not in obtained)
                         tail_dates = dates[-max(5, len(missing) + 3):]
                         if len(missing) <= 5 and set(missing).issubset(tail_dates):
-                            tail = self.supplier.fetch_baostock_window(security, tail_dates)
+                            tail = fetch_repair(security, tail_dates)
                             if self.cancel():
                                 raise KeyboardInterrupt
                             candidate = MergeDailyTail(previous, tail, dates)
                     if candidate is None:
-                        candidate = self.supplier.fetch_baostock_window(security, dates)
+                        candidate = fetch_repair(security, dates)
                         if self.cancel():
                             raise KeyboardInterrupt
                     QualifyReplacementWindow(dates, PublishedHistoryWindow(security.code, ()), candidate)
@@ -415,6 +430,7 @@ class DownloadHistoryUseCase:
                 except (OSError, RuntimeError, ValueError) as exc:
                     failure = self.dependencies.maintenance.download_failure(exc)
                 else:
+                    write_started = self.monotonic()
                     try:
                         prices.replace_repair(security, dates, candidate, inputs.batch.sequence)
                     except HistoryPriceQualificationError as exc:
@@ -423,6 +439,8 @@ class DownloadHistoryUseCase:
                         failure = self.dependencies.maintenance.download_failure(exc)
                     else:
                         repaired += 1
+                    finally:
+                        price_write_seconds += self.monotonic() - write_started
                 if failure is not None:
                     prices.fail_repair(security.code, batch_id, failure)
                     if self.progress is not None:
@@ -434,7 +452,14 @@ class DownloadHistoryUseCase:
             if self.progress is not None:
                 self.progress.publish(HistorySyncProgress(
                     "baostock_repair", "completed", len(selected), len(selected),
-                    repair_summary=HistoryRepairSummary(attempted, repaired, len(selected) - attempted),
+                    repair_summary=HistoryRepairSummary(
+                        attempted,
+                        repaired,
+                        len(selected) - attempted,
+                        supplier_seconds=supplier_seconds,
+                        price_read_seconds=price_read_seconds,
+                        price_write_seconds=price_write_seconds,
+                    ),
                 ))
             PublishHistoryProgress(self.progress, "preparing_publication", "started")
             with prices.publication_activity():

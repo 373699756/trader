@@ -69,6 +69,22 @@ class ScoredStageChain:
         )
 
 
+@dataclass(frozen=True)
+class ScoredReviewStages:
+    prior_snapshots: tuple[PipelineStageSnapshot, ...]
+    fixed_selection: PipelineStageOutput[ScoredStockEvaluation]
+    risk_review: PipelineStageOutput[ReviewedScoredEvaluation]
+    action_publish: PipelineStageOutput[ScoredFreezeEntry]
+
+    @property
+    def snapshots(self) -> tuple[PipelineStageSnapshot, ...]:
+        return (*self.prior_snapshots, self.fixed_selection.snapshot, self.risk_review.snapshot, self.action_publish.snapshot)
+
+    @property
+    def entries(self) -> tuple[ScoredFreezeEntry, ...]:
+        return self.action_publish.records
+
+
 def ReasonAggregates(counts: Counter[str]) -> tuple[StageReasonAggregate, ...]:
     return tuple(
         StageReasonAggregate(code, code.replace("_", " "), count, Severity.WARNING)
@@ -77,13 +93,11 @@ def ReasonAggregates(counts: Counter[str]) -> tuple[StageReasonAggregate, ...]:
     )
 
 
-def CompleteScoredStages(
-    model_filter: PipelineStageOutput[FeatureSnapshot],
-    local_score: PipelineStageOutput[ScoredStockEvaluation],
-    local_risk: PipelineStageOutput[ScoredStockEvaluation],
+def CompleteReviewStages(
+    prior_snapshots: tuple[PipelineStageSnapshot, ...],
     request: ScoredStageContext,
     monotonic: Callable[[], float],
-) -> ScoredStageChain:
+) -> ScoredReviewStages:
     source = request.fixed_selection
     review_latency_ms = request.review_latency_ms
     review_attempted = request.review_attempted
@@ -170,7 +184,7 @@ def CompleteScoredStages(
         started,
         monotonic,
     )
-    return ScoredStageChain(model_filter, local_score, local_risk, source, risk, action, entries)
+    return ScoredReviewStages(prior_snapshots, source, risk, action)
 
 
 def FixScoredSeats(

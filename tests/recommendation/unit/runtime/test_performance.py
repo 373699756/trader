@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.helpers.recommendation.runtime.performance_fixtures import _budgets
+from tests.helpers.recommendation.runtime.performance_fixtures import _budgets, _memory_with_growth
 from tests.helpers.recommendation.scoring.performance_models import _install_performance_models
 
 from trader.entrypoints import performance
@@ -117,12 +117,17 @@ def test_offline_tomorrow_counts_actual_v5_batches_without_changing_scoring_stat
 def test_steady_only_uses_existing_100_tick_measurement_without_claiming_pipeline_latency(monkeypatch, tmp_path):
     settings = replace(performance.LoadRuntimeSettings(Path("config/runtime.json")), performance_budgets=_budgets())
     monkeypatch.setattr(performance, "LoadRuntimeSettings", lambda _: settings)
+    peak = settings.performance_budgets.memory.process_peak_rss_bytes
+    monkeypatch.setattr(performance, "ReadPerformanceMemory", _memory_with_growth(peak))
     monkeypatch.setattr(performance, "_operations", lambda *_: pytest.fail("steady-only must not run cold pipeline probes"))
     report = performance.Run(Path("config/runtime.json"), scoring_profile="v1,v2,v3,v5", steady_only=True)
+    assert report["status"] == "passed"
     assert report["workload"]["tick_count"] == 100
     assert report["workload"]["model_heads"] == 8
     assert all(set(result["models"]) == {"tomorrow", "d25"} for result in report["profile_results"].values())
-    assert report["memory"]["rss_before_bytes"] > 0
+    assert report["memory"]["peak_rss_bytes"] == peak
+    assert report["memory"]["growth_percent"] == 25
+    assert report["memory"]["growth_reference_percent"] == 20
     assert report["measurements"] == {}
     assert report["hot_path_baseline"]["status"] == "unverified"
     baseline = tmp_path / "steady.json"
@@ -148,6 +153,8 @@ def test_full_four_profile_report_runs_real_scoring_and_never_claims_unmeasured_
     original = performance.LoadRuntimeSettings(Path("config/runtime.json").resolve())
     settings = replace(original, performance_budgets=_budgets())
     monkeypatch.setattr(performance, "LoadRuntimeSettings", lambda _path: settings)
+    peak = settings.performance_budgets.memory.process_peak_rss_bytes
+    monkeypatch.setattr(performance, "ReadPerformanceMemory", _memory_with_growth(peak))
     if skip_pipeline:
         measure = performance.MeasureModelWorkload
 
@@ -162,14 +169,16 @@ def test_full_four_profile_report_runs_real_scoring_and_never_claims_unmeasured_
         monkeypatch.setattr(performance, "MeasureModelWorkload", skipped)
     report = performance.Run(Path("config/runtime.json"), scoring_profile="v1,v2,v3,v5")
     assert report["status"] == ("failed" if skip_pipeline else "passed")
-    if skip_pipeline:
-        assert "quote_to_draft:model_population_not_exercised" in report["failures"]
+    assert report["failures"] == (["quote_to_draft:model_population_not_exercised"] if skip_pipeline else [])
     assert report["network_calls"] == 0
     assert report["workload"]["model_heads"] == 8
     assert report["workload"]["tick_count"] == 100
     assert report["workload"]["execution_mode"] == "concurrent_heads_same_process"
     assert report["hot_path_baseline"]["status"] == "unverified"
     assert report["memory"]["sampling"] == "current_rss_each_tick_and_process_peak"
+    assert report["memory"]["peak_rss_bytes"] == peak
+    assert report["memory"]["growth_percent"] == 25
+    assert report["memory"]["growth_reference_percent"] == 20
     for name, scenario in report["model_workload"].items():
         assert len(scenario["heads"]) == 8
         if not skip_pipeline or name != "quote_to_draft":

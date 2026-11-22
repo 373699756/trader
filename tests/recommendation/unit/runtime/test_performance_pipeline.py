@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.helpers.recommendation.runtime.performance_fixtures import _budgets, _history_sessions
+from tests.helpers.recommendation.runtime.performance_fixtures import _budgets, _history_sessions, _memory_with_growth
 from tests.helpers.recommendation.scoring.performance_models import _install_performance_models, _workload
 from trader.entrypoints import performance
 from trader.infra.cache import BoundedLruCache
@@ -343,17 +343,25 @@ def test_combined_continuous_chain_preserves_independent_heads_and_one_shared_by
         assert len(scenario["rounds"][0]["profiles"]) == 4
 
 
-def test_replay_entrypoint_does_not_run_old_microbenchmarks_or_access_network(monkeypatch):
+@pytest.mark.parametrize("excess_bytes", (0, 1))
+def test_replay_entrypoint_does_not_run_old_microbenchmarks_or_access_network(monkeypatch, excess_bytes):
     def forbidden(*args, **kwargs):
         raise AssertionError("unexpected network or old benchmark")
 
-    settings = LoadRuntimeSettings(Path("config/runtime.json"))
-    monkeypatch.setattr(performance, "LoadRuntimeSettings", lambda _: replace(settings, performance_budgets=_budgets()))
+    settings = replace(LoadRuntimeSettings(Path("config/runtime.json")), performance_budgets=_budgets())
+    monkeypatch.setattr(performance, "LoadRuntimeSettings", lambda _: settings)
+    peak = settings.performance_budgets.memory.process_peak_rss_bytes
+    monkeypatch.setattr(performance, "ReadPerformanceMemory", _memory_with_growth(peak + excess_bytes))
     _install_performance_models(monkeypatch)
     monkeypatch.setattr(performance, "_operations", forbidden)
     monkeypatch.setattr(socket.socket, "connect", forbidden)
     report = performance.Run(Path("config/runtime.json"), scoring_profile="v3", replay_ticks=1, replay_rows=6)
-    assert report["status"] == "passed"
+    assert report["status"] == ("failed" if excess_bytes else "passed")
+    assert report["failures"] == (["process_peak_rss:absolute_budget"] if excess_bytes else [])
+    assert report["memory"]["peak_rss_bytes"] == peak + excess_bytes
+    assert report["memory"]["peak_budget_bytes"] == peak
+    assert report["memory"]["growth_percent"] == 25
+    assert report["memory"]["growth_reference_percent"] == 20
     assert report["network_calls"] == 0
     assert report["identity"]["replay_ticks"] == 1
     assert report["workload"]["market_rows"] == 6

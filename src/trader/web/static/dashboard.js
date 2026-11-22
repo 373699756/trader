@@ -925,8 +925,7 @@
       : shadow
       ? `Shadow 仅观察 · 关注 ${counts.watch} · 回避 ${counts.avoid}`
       : `推荐 ${counts.recommend} · 关注 ${counts.watch} · 回避 ${counts.avoid}`;
-    const target = window.TraderRender.targetLabel(payload.prediction_target);
-    els.sixSeatMeta.textContent = target ? `${target} · ${summary}` : summary;
+    els.sixSeatMeta.textContent = summary;
   }
   function renderOutcomeSummary(payload) {
     if (!els.outcomeSummary) return;
@@ -935,14 +934,15 @@
     els.outcomeSummary.hidden = !historical;
     if (!historical) return;
     const summaries = Array.isArray(payload.outcome_summaries) ? payload.outcome_summaries : [];
-    const lines = summaries.map((item) => {
+    const targetIdentity = payload.prediction_target?.identity;
+    const lines = summaries.filter((item) => !item.target || item.target.identity === targetIdentity).map((item) => {
       const label = item.tier === "recommend" ? "推荐" : item.tier === "selected" ? "全部入席" : "关注";
       const complete = Number(item.complete_count) || 0;
       const total = Number(item.sample_count) || 0;
       if (item.target) {
         const hits = Number(item.hit_count) || 0;
         const rate = complete ? `${(hits / complete * 100).toFixed(1)}%` : "—";
-        return `${label} ${window.TraderRender.targetLabel(item.target)}：已结算 ${complete}/${total} · 命中 ${hits} · 命中率 ${rate}`;
+        return `${label}：已结算 ${complete}/${total} · 命中 ${hits} · 命中率 ${rate}`;
       }
       const positive = Number(item.positive_count) || 0;
       const average = item.average_net_excess_pct;
@@ -1139,8 +1139,8 @@
 
   function renderReleaseMismatch(reason) {
     if (els.outcomeSummary) els.outcomeSummary.hidden = true;
-    els.sixSeatStatus.textContent = "版本不一致";
-    els.sixSeatMeta.textContent = "请重启服务";
+    els.sixSeatStatus.textContent = "数据结构不一致";
+    els.sixSeatMeta.textContent = "请刷新页面";
     state.releaseMismatch = true;
     state.statusPayload = null;
     state.runtimePhase = "";
@@ -1148,13 +1148,13 @@
       diagnostics.runtimeDiagnostics,
       `release_contract_mismatch:${reason || "unknown"}`,
     );
-    els.runtimeStatus.textContent = "需重启";
+    els.runtimeStatus.textContent = "待检查";
     els.runtimeDot.dataset.state = "error";
     els.streamStatus.textContent = "已阻止";
     if (state.stream) state.stream.close();
     state.stream = null;
-    stateRenderer.renderTableState("服务版本不一致，请重启");
-    stateRenderer.setNotice("页面资源已更新，但后台仍是旧版本；正常停止旧服务后重新执行 ./run.sh serve", "error");
+    stateRenderer.renderTableState("服务数据结构不一致，请刷新页面");
+    stateRenderer.setNotice("请刷新页面。若提示仍出现，请检查后台服务", "error");
   }
 
   function renderHealth(statusPayload) {
@@ -1403,7 +1403,7 @@
       freezePayloadCompatibility: mismatch,
       statusPayloadCompatibility: mismatch,
       mismatchError: (reason) => {
-        const error = new Error("页面资源与后台服务版本不一致");
+        const error = new Error("页面无法验证后台数据结构");
         error.code = "release_contract_mismatch";
         error.reason = reason;
         return error;

@@ -13,6 +13,7 @@ from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.application.pipeline.final_selection.freeze_projection import (
     BuildScoredHybrid,
     BuildScoredLocal,
+    PrepareScoredReviewDraft,
     ScoredProjectionInputs,
 )
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
@@ -281,7 +282,7 @@ def test_production_rank_allows_qualified_actions_and_review_preserves_ranking(
     code = projection.review_candidates[0].code
     applied = replace(review(code, 0.0), completed_at=EVALUATED_AT + timedelta(seconds=5))
     hybrid = BuildScoredHybrid(
-        projection,
+        PrepareScoredReviewDraft(projection),
         policy,
         {code: applied},
         review_deadline=EVALUATED_AT.replace(hour=14, minute=48),

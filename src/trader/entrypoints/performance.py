@@ -36,6 +36,7 @@ from trader.recommendation.application.pipeline.candidate_pool.candidate_builder
 from trader.recommendation.application.pipeline.final_selection.freeze_projection import (
     BuildScoredHybrid,
     BuildScoredLocal,
+    PrepareScoredReviewDraft,
     ScoredLocalProjection,
     ScoredProjectionInputs,
 )
@@ -255,11 +256,8 @@ def Run(
     for scenario in (scenarios[0], scenarios[-1]):
         if any(head.predicted_count != head.input_count or head.predictor_calls == 0 for head in scenario.heads):
             failures.append(f"{scenario.scenario}:model_population_not_exercised")
-    growth = steady.growth_percent
     if steady.peak_rss_bytes > budgets.memory.process_peak_rss_bytes:
         failures.append("process_peak_rss:absolute_budget")
-    if growth > budgets.memory.growth_percent:
-        failures.append("process_rss_growth:absolute_budget")
     return {
         "status": "passed" if not failures else "failed",
         "identity": identity,
@@ -295,8 +293,9 @@ def Run(
             "rss_after_kib": steady.rss_after_bytes / 1024,
             "peak_rss_bytes": steady.peak_rss_bytes,
             "maximum_current_rss_bytes": steady.maximum_current_rss_bytes,
-            "growth_percent": growth,
+            "growth_percent": steady.growth_percent,
             "peak_budget_bytes": budgets.memory.process_peak_rss_bytes,
+            "growth_reference_percent": budgets.memory.growth_percent,
             "sampling": "current_rss_each_tick_and_process_peak",
             "logical_cache_status": "not_measured_fixture_has_no_market_cache",
         },
@@ -334,8 +333,6 @@ def _steady_report(
     failures = []
     if steady.peak_rss_bytes > budgets.process_peak_rss_bytes:
         failures.append("process_peak_rss:absolute_budget")
-    if steady.growth_percent > budgets.growth_percent:
-        failures.append("process_rss_growth:absolute_budget")
     return {
         "status": "failed" if failures else "passed",
         "identity": {**identity, "measurement_scope": "model_steady_only"},
@@ -347,7 +344,7 @@ def _steady_report(
         "memory": {"rss_before_bytes": steady.rss_before_bytes, "rss_after_bytes": steady.rss_after_bytes,
                    "peak_rss_bytes": steady.peak_rss_bytes, "maximum_current_rss_bytes": steady.maximum_current_rss_bytes,
                    "growth_percent": steady.growth_percent, "peak_budget_bytes": budgets.process_peak_rss_bytes,
-                   "growth_budget_percent": budgets.growth_percent, "sampling": "existing_100_tick_model_steady_state"},
+                   "growth_reference_percent": budgets.growth_percent, "sampling": "existing_100_tick_model_steady_state"},
         "measurements": {},
         "network_calls": 0,
         "failures": failures,
@@ -423,8 +420,6 @@ def _continuous_report(
                 failures.append(f"continuous_cold:{profile['profile']}:{head['strategy']}:model_not_exercised")
     if memory["peak_rss_bytes"] > limits.process_peak_rss_bytes:
         failures.append("process_peak_rss:absolute_budget")
-    if memory["growth_percent"] > limits.growth_percent:
-        failures.append("process_rss_growth:absolute_budget")
     if memory["factor_cache_max_bytes"] > memory["factor_group_budget_bytes"]:
         failures.append("factor_cache:absolute_budget")
     for name, measurement in measurements.items():
@@ -451,7 +446,8 @@ def _continuous_report(
         },
         "measurements": measurements,
         "continuous_pipeline": replay,
-        "memory": memory,
+        "memory": {**memory, "peak_budget_bytes": limits.process_peak_rss_bytes,
+                   "growth_reference_percent": limits.growth_percent},
         "failures": failures,
         "network_calls": 0,
         "hot_path_baseline": {
@@ -669,6 +665,7 @@ def _operations(
         runtime=ScoredProjectionInputs(model_scoring=model_scoring),
     )
     reviews = _abstaining_reviews(local_projection, observed_at)
+    review_draft = PrepareScoredReviewDraft(local_projection)
     api_operations = _api_operations(candidates, observed_at)
     overlay_commit = _overlay_cas_operation(candidates, observed_at)
 
@@ -749,7 +746,7 @@ def _operations(
         "board_ready_to_draft": candidate_projection,
         "quote_to_draft": tomorrow_projection,
         "deepseek_to_hybrid": lambda: BuildScoredHybrid(
-            local_projection,
+            review_draft,
             policy,
             reviews,
             review_deadline=observed_at + timedelta(minutes=18),

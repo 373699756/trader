@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
+from functools import partial
 
 from trader.recommendation.application.pipeline.data_source.input_assembly import (
     BuildModelScoringContext as _model_scoring_context,
@@ -27,7 +28,9 @@ from trader.recommendation.application.pipeline.data_source.source_quality impor
     FreezeFailureCode as _freeze_failure_code,
 )
 from trader.recommendation.application.pipeline.final_selection.freeze_projection import (
+    PrepareScoredReviewDraft,
     ScoredLocalProjection,
+    ScoredReviewDraft,
     ScoredReviewProjection,
 )
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedFreezeDraftIndex
@@ -68,6 +71,9 @@ from trader.recommendation.domain.publication.freeze_identity import (
 from trader.recommendation.domain.publication.models import Strategy
 
 
+_BuildResearchAudit = Callable[[ScoredFreeze], ResearchAuditIdentity | None]
+
+
 @dataclass(frozen=True)
 class FreezeBuildDependencies:
     policy: RecommendationPolicy
@@ -77,9 +83,7 @@ class FreezeBuildDependencies:
     monotonic: Callable[[], float] = field(default=time.monotonic, kw_only=True)
     model_scoring: ModelScoringPort | None = None
     local_scoring: LocalScoringPort | None = None
-    research_audit_builder: Callable[[ScoredLocalProjection, ScoredFreeze], ResearchAuditIdentity | None] = (
-        lambda _projection, _freeze: None
-    )
+    research_audit_preparer: Callable[[ScoredLocalProjection], _BuildResearchAudit] | None = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +91,14 @@ class _ReviewInput:
     identity: ScoringInputIdentity
     session: SessionLease | None
     deadline: datetime
+
+
+@dataclass(frozen=True)
+class _RetainedDraft:
+    review: ScoredReviewDraft
+    freeze: ScoredFreeze
+    build_audit: _BuildResearchAudit | None
+    parent: _ReviewInput | None = None
 
 
 class LocalFreezeBuilder(FreezeBuilderPort):
@@ -105,13 +117,11 @@ class LocalFreezeBuilder(FreezeBuilderPort):
         self._draft_index = dependencies.draft_index
         self._now = dependencies.now
         self._monotonic = dependencies.monotonic
-        self._research_audit_builder = dependencies.research_audit_builder
+        self._prepare_research_audit = dependencies.research_audit_preparer
         self._model_scoring = dependencies.model_scoring
         self._local_scoring = dependencies.local_scoring or LocalScoringService(self._model_scoring)
         self._lock = threading.RLock()
-        self._projections: dict[str, ScoredLocalProjection] = {}
-        self._freezes: dict[str, ScoredFreeze] = {}
-        self._review_inputs: dict[str, _ReviewInput] = {}
+        self._drafts: dict[str, _RetainedDraft] = {}
         self._next_sequence = dependencies.next_sequence
 
     def has_local_draft(self, strategy: Strategy, trade_date: date) -> bool:
@@ -193,6 +203,27 @@ class LocalFreezeBuilder(FreezeBuilderPort):
             candidate_quote_eligible=batch.candidate_quote_eligible,
             input_stages=(*batch.input_stages[:-1], quality_stage.snapshot),
         )
+        projection = replace(
+            projection,
+            started_monotonic=batch.started_monotonic,
+            local=replace(
+                projection.local,
+                input_versions=(
+                    *projection.local.input_versions,
+                    ("session_generation", str(batch.quality_identity.generation)),
+                    ("source_revision", str(batch.quality_identity.source_revision)),
+                ),
+            ),
+        )
+        review_draft = None
+        build_audit = None
+        if projection.input_quality.publishable:
+            review_draft = PrepareScoredReviewDraft(projection)
+            prepare_audit = self._prepare_research_audit
+            build_audit = (
+                prepare_audit(projection)
+                if prepare_audit is not None and projection.local.preview_context is None else None
+            )
         quality_status = replace(
             quality_status,
             pipeline=replace(
@@ -204,64 +235,53 @@ class LocalFreezeBuilder(FreezeBuilderPort):
                 ),
             ),
         )
-        projection = replace(
-            projection,
-            started_monotonic=batch.started_monotonic,
-            local=replace(
-                projection.local,
-                input_versions=(
-                    *projection.local.input_versions,
-                    ("session_generation", str(batch.quality_identity.generation)),
-                    ("source_revision", str(batch.quality_identity.source_revision)),
-                ),
-                pipeline=quality_status.pipeline,
-            ),
-        )
+        freeze = replace(projection.local, pipeline=quality_status.pipeline)
         with SessionGuard(request.session), self._lock:
             accepted = self._inputs.replace_quality(
                 batch.quality_identity,
                 expected_quality,
                 quality_status,
-                parent_version=projection.local.version,
+                parent_version=freeze.version,
                 session=request.session,
             )
-            if not projection.input_quality.publishable:
+            if review_draft is None:
                 if accepted:
-                    self._draft_index.publish(projection.local)
+                    self._draft_index.publish(freeze)
                 raise FreezeUnavailableError(projection.input_quality.status)
-            self._projections[projection.local.version] = projection
-            self._freezes[projection.local.version] = projection.local
-            if accepted:
-                self._review_inputs[projection.local.version] = _ReviewInput(
-                    batch.quality_identity, request.session, request.review_deadline
-                )
+            self._drafts[freeze.version] = _RetainedDraft(
+                replace(review_draft, local=freeze),
+                freeze,
+                build_audit,
+                _ReviewInput(batch.quality_identity, request.session, request.review_deadline) if accepted else None,
+            )
             self._trim_research_sources()
-        return projection.local
+        return freeze
 
     def input_quality_status(self) -> tuple[InputQualityStatus, ...]:
         return self._inputs.input_quality_status()
 
-    def projection(self, version: str) -> ScoredLocalProjection | None:
+    def projection(self, version: str) -> ScoredReviewDraft | None:
         with self._lock:
-            return self._projections.get(version)
+            draft = self._drafts.get(version)
+            return draft.review if draft is not None else None
 
     def register_review(
         self,
-        projection: ScoredLocalProjection,
+        projection: ScoredReviewDraft,
         review: ScoredReviewProjection,
     ) -> ScoredFreeze | None:
         with self._lock:
-            context = self._review_inputs.get(projection.local.version)
-        if context is None:
+            draft = self._drafts.get(projection.local.version)
+        if draft is None or draft.parent is None:
             return None
         try:
-            with SessionGuard(context.session):
-                return self._register_current_review(projection, review, context)
+            with SessionGuard(draft.parent.session):
+                return self._register_current_review(projection, review, draft, draft.parent)
         except StaleSessionError:
             return None
 
     def _register_current_review(
-        self, projection: ScoredLocalProjection, review: ScoredReviewProjection, context: _ReviewInput
+        self, projection: ScoredReviewDraft, review: ScoredReviewProjection, draft: _RetainedDraft, context: _ReviewInput
     ) -> ScoredFreeze | None:
         at = ShanghaiNow(self._now())
         valid_before = (
@@ -285,7 +305,7 @@ class LocalFreezeBuilder(FreezeBuilderPort):
             current.quality,
             projection,
             freeze,
-            scored_stages=review.stages,
+            scored_snapshots=review.stages.snapshots,
         )
         quality = replace(
             quality,
@@ -311,25 +331,23 @@ class LocalFreezeBuilder(FreezeBuilderPort):
         if review.freeze is None:
             return None
         with self._lock:
-            self._projections[freeze.version] = projection
-            self._freezes[freeze.version] = freeze
+            self._drafts[freeze.version] = replace(draft, freeze=freeze, parent=None)
             self._trim_research_sources()
         return freeze
 
     def research_audit_factory(self, version: str) -> Callable[[], ResearchAuditIdentity | None]:
         with self._lock:
-            projection = self._projections.get(version)
-            freeze = self._freezes.get(version)
-        if projection is None or freeze is None:
+            draft = self._drafts.get(version)
+        if draft is None or draft.build_audit is None:
             return lambda: None
-        return lambda: self._research_audit_builder(projection, freeze)
+        return partial(draft.build_audit, draft.freeze)
 
     def research_intent(self, freeze: ScoredFreeze) -> ResearchIntent:
         with self._lock:
-            projection = self._projections.get(freeze.version)
-        if projection is None:
+            draft = self._drafts.get(freeze.version)
+        if draft is None:
             raise FreezeUnavailableError("research projection is unavailable")
-        candidates = projection.native_input.requested_codes
+        candidates = draft.review.requested_codes
         selected = sorted((item for item in freeze.items if item.selected), key=lambda item: item.rank)
         remaining = tuple(item for item in freeze.items if not item.selected)
         priority = tuple(dict.fromkeys(item.code for item in (*selected, *remaining)))
@@ -394,21 +412,16 @@ class LocalFreezeBuilder(FreezeBuilderPort):
         )
 
     def _trim_research_sources(self) -> None:
-        # Keep the preceding/current local cuts for each strategy. Running reviews
-        # and queued audit factories already own their immutable projection; a
-        # late hybrid alias must not extend an obsolete local cut's lifetime.
+        # A hybrid shares its local parent's retention window.
         retained: dict[Strategy, set[str]] = {}
-        for projection in sorted(self._projections.values(), key=lambda item: item.local.sequence, reverse=True):
-            versions = retained.setdefault(projection.local.strategy, set())
+        for draft in sorted(self._drafts.values(), key=lambda item: item.review.local.sequence, reverse=True):
+            local = draft.review.local
+            versions = retained.setdefault(local.strategy, set())
             if len(versions) < 2:
-                versions.add(projection.local.version)
-        for version, projection in tuple(self._projections.items()):
-            if projection.local.version not in retained[projection.local.strategy]:
-                self._projections.pop(version)
-                self._freezes.pop(version, None)
-                self._review_inputs.pop(version, None)
-        while len(self._freezes) > 64:
-            version = next(iter(self._freezes))
-            self._freezes.pop(version, None)
-            self._projections.pop(version, None)
-            self._review_inputs.pop(version, None)
+                versions.add(local.version)
+        for version, draft in tuple(self._drafts.items()):
+            local = draft.review.local
+            if local.version not in retained[local.strategy]:
+                self._drafts.pop(version)
+        while len(self._drafts) > 64:
+            self._drafts.pop(next(iter(self._drafts)))

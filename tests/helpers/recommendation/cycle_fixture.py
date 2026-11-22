@@ -46,9 +46,9 @@ class CycleFixtureDependencies:
     model_scoring: ModelScoringPort | None = None
     candidate_filtering: CandidateFilteringPort | None = None
     local_scoring: LocalScoringPort | None = None
-    research_audit_builder: Callable[[ScoredLocalProjection, ScoredFreeze], ResearchAuditIdentity | None] = (
-        lambda _projection, _freeze: None
-    )
+    research_audit_preparer: Callable[
+        [ScoredLocalProjection], Callable[[ScoredFreeze], ResearchAuditIdentity | None]
+    ] | None = None
 
 
 @dataclass(frozen=True)
@@ -80,7 +80,7 @@ def build_cycle_fixture(
             freeze_build.now,
             freeze_build.model_scoring,
             freeze_build.local_scoring,
-            freeze_build.research_audit_builder,
+            freeze_build.research_audit_preparer,
             monotonic=freeze_build.monotonic,
             next_sequence=count(1, 2).__next__,
         ),

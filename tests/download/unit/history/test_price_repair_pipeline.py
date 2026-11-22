@@ -66,10 +66,18 @@ def test_history_waits_for_tencent_and_replaces_entire_basis(tmp_path):
 @pytest.mark.parametrize("failure_mode", ("none", "read", "write", "supplier"))
 def test_history_reports_obtained_before_replacement_and_stops_on_database_failure(tmp_path, monkeypatch, failure_mode):
     import sqlite3
+    from itertools import count
 
     from tests.helpers.download.history.infra.history_sync import ProgressRecorder
+    from trader import bootstrap
     from trader.download.infra import history_sync_io
 
+    use_case = bootstrap.DownloadHistoryUseCase
+    clock = count(0.0)
+    monkeypatch.setattr(
+        bootstrap, "DownloadHistoryUseCase",
+        lambda *args, **kwargs: use_case(*args, **kwargs, monotonic=lambda: next(clock)),
+    )
     bao_calls = []
 
     class AllGapped(RepairHistory):
@@ -135,6 +143,9 @@ def test_history_reports_obtained_before_replacement_and_stops_on_database_failu
     summary = reports[-1].repair_summary
     assert reports[-1].state == "completed" and summary is not None
     assert (summary.attempted, summary.repaired, summary.skipped) == (2, 1 if failure_mode == "supplier" else 2, 0)
+    assert summary.supplier_seconds == 2.0
+    assert summary.price_read_seconds == 2.0
+    assert summary.price_write_seconds == (1.0 if failure_mode == "supplier" else 2.0)
 
 
 @pytest.mark.parametrize("field", ("amount", "volume", "close_price"))

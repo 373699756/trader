@@ -7,7 +7,7 @@ from trader.infra.sqlite_policy import SqliteIoPolicy
 import json
 import sqlite3
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Literal, cast
@@ -94,7 +94,8 @@ from trader.recommendation.infra.persistence.trace_schema import (
 from trader.training.application.research_audit import (
     CommittedResearchAudit,
     HistoricalResearchAudit,
-    HasCompleteResearchEvidence,
+    HasValidResearchAuditFields,
+    MatchesResearchAuditParent,
     ResearchCandidateAudit,
     ResearchFreezeCandidateAudit,
     ResearchFreezeSetAudit,
@@ -234,13 +235,27 @@ class SQLiteFreezeTraceIndex:
         _require_persistable_observation(observation)
         observation = observation.materialize()
         event = observation.event
-        if event.freeze_hash is None:
-            raise ValueError("freeze event requires a materialized hash")
         if (
             observation.research_audit is not None
             and not isinstance(observation.research_audit, CommittedResearchAudit)
         ):
             raise ValueError("historical research audit is read-only")
+        database = self._database_for(event.trade_date)
+        payload = None
+        if not _is_hybrid_audit(observation):
+            payload = self._prepare_payload(observation)
+            self.initialize()
+        with self._lock, self._writer_lock:
+            if payload is None:
+                parent_version = event.parent_version
+                parent_row = self._existing_row(parent_version, database) if parent_version is not None else None
+                if not _matches_research_parent(observation, self._verified_parent_row(parent_row)):
+                    observation = replace(observation, research_audit=None)
+                payload = self._prepare_payload(observation)
+                self.initialize()
+            self._record_locked(observation, database, payload)
+
+    def _prepare_payload(self, observation: FreezeObservation) -> tuple[bytes, bytes, str]:
         logical_payload = ObservationBytes(observation)
         if len(logical_payload) > self._maximum_decoded_payload_bytes:
             raise ResearchTraceCapacityError("research trace decoded payload capacity exhausted")
@@ -248,65 +263,75 @@ class SQLiteFreezeTraceIndex:
         payload_hash = Sha256(logical_payload)
         if len(payload) > self._maximum_payload_bytes:
             raise ResearchTraceCapacityError("research trace payload capacity exhausted")
-        self.initialize()
-        database = self._database_for(event.trade_date)
-        with self._lock, self._writer_lock:
-            existing = self._existing_row(event.freeze_version, event.trade_date, database)
-            if existing is not None:
-                existing_payload = bytes(existing["event_bytes"])
-                if (
-                    DecodeHash(existing["event_hash"]) == payload_hash
-                    and DecodedPayloadBytes(
-                        existing_payload,
-                        maximum_bytes=self._maximum_decoded_payload_bytes,
-                    )
-                    == logical_payload
-                ):
-                    self._duplicate += 1
-                    return
-                if observation.research_audit is None:
-                    original = _observation_from_bytes(existing_payload, DecodeHash(existing["event_hash"]),
-                                                       maximum_decoded_bytes=self._maximum_decoded_payload_bytes)
-                    persisted = json.loads(DecodedPayloadBytes(existing_payload, maximum_bytes=self._maximum_decoded_payload_bytes))
-                    proposed = json.loads(logical_payload)
-                    if (original.event.freeze_version == event.freeze_version
-                        and CanonicalDigest({key: value for key, value in persisted.items() if key != "research_audit"})
-                        == CanonicalDigest({key: value for key, value in proposed.items() if key != "research_audit"})):
-                        self._duplicate += 1
-                        return
-                raise ResearchTraceConflictError("research trace identity conflict")
-            summary = self._trace_index_summary()
-            if event.trade_date not in summary.trade_dates and len(summary.trade_dates) >= self._maximum_trade_dates:
-                raise ResearchTraceCapacityError("research trace trade-date capacity exhausted")
-            if summary.retained_bytes + len(payload) > self._maximum_total_bytes:
-                raise ResearchTraceCapacityError("research trace total capacity exhausted")
-            self._physical_budget.require(self._source_databases(), database, pending_bytes=65536)
-            self._initialize_database(database)
-            with SqliteSession(database, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
-                connection.run("PRAGMA cache_spill = OFF")
-                totals = connection.run("SELECT COUNT(*), COALESCE(SUM(LENGTH(event_bytes)), 0) FROM committed_events").require_one()
-                retained, retained_bytes = int(totals[0]), int(totals[1])
-                if retained >= self._capacity or retained_bytes + len(payload) > self._maximum_partition_bytes:
-                    raise ResearchTraceCapacityError("research trace partition capacity exhausted")
-                connection.run(
-                    """
-                    INSERT INTO committed_events (
-                        freeze_id, strategy, trade_date, observed_at,
-                        freeze_hash, event_hash, event_bytes
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        event.freeze_version,
-                        event.strategy.value,
-                        EncodeDate(event.trade_date),
-                        EncodeTime(event.observed_at),
-                        EncodeHash(event.freeze_hash),
-                        EncodeHash(payload_hash),
-                        payload,
-                    ),
-                )
-                self._physical_budget.require_commit(connection, self._source_databases(), database)
-            self._recorded += 1
+        return logical_payload, payload, payload_hash
+
+    def _record_locked(
+        self, observation: FreezeObservation, database: Path, prepared: tuple[bytes, bytes, str]
+    ) -> None:
+        event = observation.event
+        if event.freeze_hash is None:
+            raise ValueError("freeze event requires a materialized hash")
+        logical_payload, payload, payload_hash = prepared
+        existing = self._existing_row(event.freeze_version, database)
+        if existing is not None:
+            if self._repeat_matches(observation, existing, logical_payload, payload_hash):
+                self._duplicate += 1
+                return
+            raise ResearchTraceConflictError("research trace identity conflict")
+        summary = self._trace_index_summary()
+        if event.trade_date not in summary.trade_dates and len(summary.trade_dates) >= self._maximum_trade_dates:
+            raise ResearchTraceCapacityError("research trace trade-date capacity exhausted")
+        if summary.retained_bytes + len(payload) > self._maximum_total_bytes:
+            raise ResearchTraceCapacityError("research trace total capacity exhausted")
+        self._physical_budget.require(self._source_databases(), database, pending_bytes=65536)
+        self._initialize_database(database)
+        with SqliteSession(database, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
+            connection.run("PRAGMA cache_spill = OFF")
+            totals = connection.run("SELECT COUNT(*), COALESCE(SUM(LENGTH(event_bytes)), 0) FROM committed_events").require_one()
+            retained, retained_bytes = int(totals[0]), int(totals[1])
+            if retained >= self._capacity or retained_bytes + len(payload) > self._maximum_partition_bytes:
+                raise ResearchTraceCapacityError("research trace partition capacity exhausted")
+            connection.run(
+                """
+                INSERT INTO committed_events (
+                    freeze_id, strategy, trade_date, observed_at,
+                    freeze_hash, event_hash, event_bytes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.freeze_version,
+                    event.strategy.value,
+                    EncodeDate(event.trade_date),
+                    EncodeTime(event.observed_at),
+                    EncodeHash(event.freeze_hash),
+                    EncodeHash(payload_hash),
+                    payload,
+                ),
+            )
+            self._physical_budget.require_commit(connection, self._source_databases(), database)
+        self._recorded += 1
+
+    def _repeat_matches(
+        self, observation: FreezeObservation, existing: sqlite3.Row, logical_payload: bytes, payload_hash: str
+    ) -> bool:
+        existing_payload = bytes(existing["event_bytes"])
+        existing_hash = DecodeHash(existing["event_hash"])
+        if (existing_hash == payload_hash and DecodedPayloadBytes(
+            existing_payload, maximum_bytes=self._maximum_decoded_payload_bytes,
+        ) == logical_payload):
+            return True
+        if observation.research_audit is not None and observation.event.stage != "hybrid":
+            return False
+        original = _observation_from_bytes(existing_payload, existing_hash, maximum_decoded_bytes=self._maximum_decoded_payload_bytes)
+        if original.event.freeze_version != observation.event.freeze_version:
+            return False
+        if observation.research_audit is not None and original.research_audit is not None:
+            return False
+        persisted = json.loads(DecodedPayloadBytes(existing_payload, maximum_bytes=self._maximum_decoded_payload_bytes))
+        proposed = json.loads(logical_payload)
+        return CanonicalDigest({key: value for key, value in persisted.items() if key != "research_audit"}) == CanonicalDigest(
+            {key: value for key, value in proposed.items() if key != "research_audit"}
+        )
 
     def get(self, freeze_version: str) -> HistoricalFreezeObservation | None:
         with self._lock:
@@ -316,12 +341,20 @@ class SQLiteFreezeTraceIndex:
                         "SELECT * FROM committed_events WHERE freeze_id = ?",
                         (freeze_version,),
                     ).fetchone()
-                if row is None:
-                    continue
-                try:
-                    return _verified_event(row, maximum_decoded_bytes=self._maximum_decoded_payload_bytes)
-                except (TypeError, ValueError) as exc:
-                    raise ResearchTraceConflictError("research trace verification failed") from exc
+                    if row is None:
+                        continue
+                    try:
+                        observation = _verified_event(row, maximum_decoded_bytes=self._maximum_decoded_payload_bytes)
+                    except (TypeError, ValueError) as exc:
+                        raise ResearchTraceConflictError("research trace verification failed") from exc
+                    if _is_hybrid_audit(observation):
+                        parent_row = connection.run(
+                            "SELECT * FROM committed_events WHERE freeze_id = ?",
+                            (observation.event.parent_version,),
+                        ).fetchone()
+                        if not _matches_research_parent(observation, self._verified_parent_row(parent_row)):
+                            return replace(observation, research_audit=None)
+                    return observation
         return None
 
     def list_trade_dates(self, *, limit: int = 40) -> tuple[date, ...]:
@@ -387,6 +420,12 @@ class SQLiteFreezeTraceIndex:
                     if current is not None and current != observation:
                         raise ResearchTraceConflictError("research trace cross-partition identity conflict")
                     observations[version] = observation
+        for version, observation in observations.items():
+            parent_version = observation.event.parent_version
+            if _is_hybrid_audit(observation) and not _matches_research_parent(
+                observation, observations.get(parent_version) if parent_version is not None else None,
+            ):
+                observations[version] = replace(observation, research_audit=None)
         return tuple(
             sorted(
                 observations.values(),
@@ -442,19 +481,20 @@ class SQLiteFreezeTraceIndex:
                 databases.append(partition)
         return tuple(databases)
 
-    def _existing_row(self, freeze_version: str, trade_date: date, database: Path) -> sqlite3.Row | None:
-        for source in (database,):
-            if not source.is_file():
-                continue
-            with SqliteSession(source, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
-                EnsureSqliteSchema(connection, SCHEMA, exact=True)
-                row = connection.run(
-                    "SELECT event_hash, event_bytes FROM committed_events WHERE freeze_id = ?",
-                    (freeze_version,),
-                ).fetchone()
-            if row is not None:
-                return row
-        return None
+    def _existing_row(self, freeze_version: str, database: Path) -> sqlite3.Row | None:
+        if not database.is_file():
+            return None
+        with SqliteSession(database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
+            EnsureSqliteSchema(connection, SCHEMA, exact=True)
+            return connection.run("SELECT * FROM committed_events WHERE freeze_id = ?", (freeze_version,)).fetchone()
+
+    def _verified_parent_row(self, row: sqlite3.Row | None) -> HistoricalFreezeObservation | None:
+        if row is None:
+            return None
+        try:
+            return _verified_event(row, maximum_decoded_bytes=self._maximum_decoded_payload_bytes)
+        except (TypeError, ValueError):
+            return None
 
     def _trace_index_summary(self) -> TraceIndexSummary:
         retained = 0
@@ -492,6 +532,37 @@ class SQLiteFreezeTraceIndex:
 
     def _quarantine_row(self, connection: SqliteConnection, freeze_version: str, reason: str) -> None:
         QuarantineRow(connection, freeze_version, reason)
+
+
+def _is_hybrid_audit(observation: FreezeObservation | HistoricalFreezeObservation) -> bool:
+    audit = observation.research_audit
+    return isinstance(audit, (CommittedResearchAudit, HistoricalResearchAudit)) and (
+        observation.event.stage == "hybrid" or audit.shadow_mode == "reused_facts"
+    )
+
+
+def _matches_research_parent(
+    observation: FreezeObservation | HistoricalFreezeObservation, parent: HistoricalFreezeObservation | None,
+) -> bool:
+    audit = observation.research_audit
+    if parent is None or not isinstance(audit, (CommittedResearchAudit, HistoricalResearchAudit)):
+        return False
+    parent_audit = parent.research_audit
+    event = observation.event
+    return (
+        isinstance(parent_audit, HistoricalResearchAudit)
+        and event.stage == "hybrid"
+        and parent.event.stage == "local"
+        and event.parent_version == parent.event.freeze_version
+        and event.strategy is parent.event.strategy
+        and event.trade_date == parent.event.trade_date
+        and event.input_versions == parent.event.input_versions
+        and audit.input_observed_at is not None
+        and parent.event.observed_at.utcoffset() is not None
+        and event.observed_at.utcoffset() is not None
+        and audit.input_observed_at <= parent.event.observed_at <= event.observed_at
+        and MatchesResearchAuditParent(audit, parent_audit)
+    )
 
 
 def _verified_event(
@@ -604,7 +675,7 @@ def _audit(raw: dict[str, object]) -> HistoricalResearchAudit:
         point_in_time_population_hash=_text(raw, "point_in_time_population_hash") if recorded else None,
         content_hash=original_hash,
     )
-    if audit.deepseek_request_delta != 0 or (recorded and not HasCompleteResearchEvidence(audit)):
+    if audit.deepseek_request_delta != 0 or (recorded and not HasValidResearchAuditFields(audit)):
         raise ValueError("historical research evidence is invalid")
     return audit
 

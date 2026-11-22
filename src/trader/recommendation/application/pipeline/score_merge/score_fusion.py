@@ -10,7 +10,7 @@ from typing import Protocol
 
 from trader.recommendation.application.pipeline.final_selection.freeze_projection import (
     BuildScoredHybrid,
-    ScoredLocalProjection,
+    ScoredReviewDraft,
     ScoredReviewProjection,
     ValidateReviewManifests,
 )
@@ -23,7 +23,7 @@ class ScoreFusionPort(Protocol):
 
     def fuse(
         self,
-        projection: ScoredLocalProjection,
+        projection: ScoredReviewDraft,
         policy: RecommendationPolicy,
         reviews: Mapping[str, DeepSeekReview],
         *,
@@ -33,7 +33,7 @@ class ScoreFusionPort(Protocol):
 
     def manifests_match(
         self,
-        projection: ScoredLocalProjection,
+        projection: ScoredReviewDraft,
         reviews: Mapping[str, DeepSeekReview],
         expected: Mapping[str, str],
     ) -> bool: ...
@@ -47,7 +47,7 @@ class ScoreFusionService(ScoreFusionPort):
 
     def fuse(
         self,
-        projection: ScoredLocalProjection,
+        projection: ScoredReviewDraft,
         policy: RecommendationPolicy,
         reviews: Mapping[str, DeepSeekReview],
         *,
@@ -65,11 +65,11 @@ class ScoreFusionService(ScoreFusionPort):
 
     def manifests_match(
         self,
-        projection: ScoredLocalProjection,
+        projection: ScoredReviewDraft,
         reviews: Mapping[str, DeepSeekReview],
         expected: Mapping[str, str],
     ) -> bool:
-        return ValidateReviewManifests(projection, reviews, expected)
+        return ValidateReviewManifests(projection.review_candidates, reviews, expected)
 
 
 __all__ = ["ScoreFusionPort", "ScoreFusionService"]

@@ -6,7 +6,7 @@ from trader.infra.progress_format import ProgressDuration
 
 import time
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from threading import Lock
 
 from trader.download.application.progress_message import (
@@ -116,6 +116,25 @@ _LOCAL_PREPARATION_LABELS = {
 }
 
 
+@dataclass(frozen=True)
+class _TencentRequestTotals:
+    calls: int = 0
+    failures: int = 0
+    retries: int = 0
+    seconds: float = 0.0
+
+    def add(self, progress: HistorySyncProgress) -> _TencentRequestTotals:
+        return _TencentRequestTotals(
+            self.calls + 1,
+            self.failures + int(progress.state == "failed"),
+            self.retries + int(progress.attempt > 1),
+            self.seconds + progress.call_elapsed_seconds,
+        )
+
+    def summarize(self, label: str) -> str:
+        return f"{label} HTTP累计 {self.seconds:.3f}秒 {self.calls}次 失败{self.failures} 同端重试{self.retries}"
+
+
 def _reuse_summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
     if (
         progress.stage == "tencent_history"
@@ -182,7 +201,15 @@ def _download_summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
         )
     if progress.repair_summary is not None:
         repair = progress.repair_summary
-        return (f"已尝试 {ProgressNumber(repair.attempted)} 股", f"已修复 {ProgressNumber(repair.repaired)} 股", f"未修复 {ProgressNumber(repair.attempted - repair.repaired)} 股", f"旧缺口不重试 {ProgressNumber(repair.skipped)} 股")
+        return (
+            f"已尝试 {ProgressNumber(repair.attempted)} 股",
+            f"已修复 {ProgressNumber(repair.repaired)} 股",
+            f"未修复 {ProgressNumber(repair.attempted - repair.repaired)} 股",
+            f"旧缺口不重试 {ProgressNumber(repair.skipped)} 股",
+            f"供应商累计 {repair.supplier_seconds:.3f}秒",
+            f"旧价读库累计 {repair.price_read_seconds:.3f}秒",
+            f"价格及断点落库累计 {repair.price_write_seconds:.3f}秒",
+        )
     if progress.st_summary is not None:
         st_summary = progress.st_summary
         return (
@@ -219,6 +246,8 @@ class StderrHistorySyncProgress:
         self._industry_completion: HistorySyncProgress | None = None
         self._download_display = HistoryDownloadDisplay(monotonic)
         self._download_failures: set[tuple[str | None, str | None]] = set()
+        self._raw_requests = _TencentRequestTotals()
+        self._qfq_requests = _TencentRequestTotals()
         self._output.register_observer("history", self.heartbeat_message, task_key="prices")
 
     def heartbeat_message(self) -> ProgressMessage | None:
@@ -238,6 +267,12 @@ class StderrHistorySyncProgress:
             self._output.finish_owner("history")
 
     def _publish(self, progress: HistorySyncProgress) -> None:
+        if progress.stage in _DAILY_STAGES and progress.supplier_source == "tencent":
+            if progress.stage == "supplier_daily_raw":
+                self._raw_requests = self._raw_requests.add(progress)
+            else:
+                self._qfq_requests = self._qfq_requests.add(progress)
+            return
         if progress.stage == "loading_context":
             if progress.state == "started":
                 self._loading_context = True
@@ -463,6 +498,11 @@ class StderrHistorySyncProgress:
         if not compact_pipeline:
             parts.extend(_price_coverage_parts(progress))
         parts.extend(_summary_parts(progress))
+        if progress.tencent_summary is not None and (self._raw_requests.calls or self._qfq_requests.calls):
+            parts.extend((
+                self._raw_requests.summarize("未复权"),
+                self._qfq_requests.summarize("前复权"),
+            ))
         if (
             progress.stage in {"downloading_codes", "tencent_history"}
             and (

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import time as wall_time
 from datetime import datetime
@@ -22,11 +22,12 @@ from trader.recommendation.application.pipeline.final_selection.grouped_ranking 
     RankingSelectionService,
 )
 from trader.recommendation.application.pipeline.final_selection.scored_stage_chain import (
-    CompleteScoredStages,
+    CompleteReviewStages,
     FixScoredSeats,
     ReasonAggregates,
     ScoredStageChain,
     ScoredStageContext,
+    ScoredReviewStages,
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import (
@@ -51,7 +52,7 @@ from trader.recommendation.application.ports.loaded_profile import (
 from trader.recommendation.application.ports.scoring import ScoredNativeInput
 from trader.recommendation.domain.candidate.composition import WEIGHTED_EVIDENCE_SCORE_SCALE
 from trader.recommendation.domain.candidate.filters import ApplyFilters, DefaultFilterRules
-from trader.recommendation.domain.evidence.pipeline import PipelineStage
+from trader.recommendation.domain.evidence.pipeline import PipelineStage, PipelineStageSnapshot
 from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome
 from trader.recommendation.domain.market.history_alignment import HISTORY_INPUT_FAILURES
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
@@ -79,11 +80,13 @@ from trader.recommendation.domain.risk.downside import DownsideAssessment
 from trader.recommendation.domain.risk.scored_fusion import (
     BuildScoredFreezeEpoch,
     FreezeEpoch,
+    FreezeSelectionLimits,
     ScoredFreezeEntry,
     ScoredFreezePolicy,
     ScoredFreezeRequest,
     ScoredReviewCandidate,
     SelectScoredReviewCandidates,
+    ValidateScoredFreezeReviews,
 )
 from trader.recommendation.domain.scoring.profile_identity import MODEL_SELECTION_SCORE_SCALES, TOMORROW_PROBABILITY_SCORE_SCALE
 from trader.recommendation.domain.selection.scored_selection import (
@@ -119,9 +122,69 @@ class ScoredLocalProjection:
 
 
 @dataclass(frozen=True)
+class ScoredReviewDraft:
+    """The fixed seats and summaries needed after local scoring has returned."""
+
+    local: ScoredFreeze
+    local_epoch: FreezeEpoch
+    native_strategy: Strategy
+    phase: str
+    evaluated_at: datetime
+    input_version: str
+    requested_codes: tuple[str, ...]
+    prior_snapshots: tuple[PipelineStageSnapshot, ...]
+    fixed_selection: PipelineStageOutput[ScoredStockEvaluation]
+    review_candidates: tuple[ScoredReviewCandidate, ...]
+    input_quality: ScoredInputQuality
+    stage_counts: ScoredCandidateStageCounts | None
+    started_monotonic: float | None
+    model_diagnostics: tuple[tuple[str, ModelDiagnostics | TomorrowProbability], ...]
+    no_positive_model_utility: bool
+    downside_assessments: tuple[tuple[str, DownsideAssessment], ...]
+    score_model_version: str | None
+    cost_reference_version: str | None
+    score_scale: str
+    score_model_id: str | None
+    score_contract_hash: str | None
+    production_authority: bool
+    rank_population_version: str | None
+
+
+def PrepareScoredReviewDraft(projection: ScoredLocalProjection) -> ScoredReviewDraft:
+    source = projection.native_input
+    fixed = projection.stages.fixed_selection
+    seat_codes = frozenset(item.code for item in fixed.records)
+    return ScoredReviewDraft(
+        local=projection.local,
+        local_epoch=projection.local_epoch,
+        native_strategy=source.strategy,
+        phase=source.phase,
+        evaluated_at=source.evaluated_at,
+        input_version=source.input_version,
+        requested_codes=source.requested_codes,
+        prior_snapshots=projection.stages.snapshots[:3],
+        fixed_selection=fixed,
+        review_candidates=projection.review_candidates,
+        input_quality=projection.input_quality,
+        stage_counts=projection.selection.stage_counts,
+        started_monotonic=projection.started_monotonic,
+        model_diagnostics=tuple(pair for pair in projection.model_diagnostics if pair[0] in seat_codes),
+        no_positive_model_utility=_no_positive_model_utility(item for _, item in projection.model_diagnostics),
+        downside_assessments=projection.downside_assessments,
+        score_model_version=projection.score_model_version,
+        cost_reference_version=projection.cost_reference_version,
+        score_scale=projection.score_scale,
+        score_model_id=projection.score_model_id,
+        score_contract_hash=projection.score_contract_hash,
+        production_authority=projection.production_authority,
+        rank_population_version=projection.rank_population_version,
+    )
+
+
+@dataclass(frozen=True)
 class ScoredReviewProjection:
     freeze: ScoredFreeze | None
-    stages: ScoredStageChain
+    stages: ScoredReviewStages
 
 
 @dataclass(frozen=True)
@@ -133,6 +196,7 @@ class _FreezeProjectionContext:
     parent_version: str | None = None
     score_model_version: str | None = None
     model_diagnostics: Mapping[str, ModelDiagnostics | TomorrowProbability] | None = None
+    no_positive_model_utility: bool = False
     cost_reference_version: str | None = None
     score_scale: str = WEIGHTED_EVIDENCE_SCORE_SCALE
     score_model_id: str | None = None
@@ -434,10 +498,8 @@ def BuildScoredLocal(
         degraded_reasons=quality.degraded_reasons,
         policy=freeze_policy,
     )
-    stages = CompleteScoredStages(
-        model_stage,
-        scored_stage,
-        risk_stage,
+    reviewed = CompleteReviewStages(
+        (model_stage.snapshot, scored_stage.snapshot, risk_stage.snapshot),
         ScoredStageContext(
             freeze_policy,
             native_input.evaluated_at,
@@ -447,6 +509,9 @@ def BuildScoredLocal(
             fixed,
         ),
         runtime.monotonic,
+    )
+    stages = ScoredStageChain(
+        model_stage, scored_stage, risk_stage, fixed, reviewed.risk_review, reviewed.action_publish, reviewed.entries,
     )
     epoch = BuildScoredFreezeEpoch(freeze_request, entries=stages.entries)
     model_version = model_batch.model_version if model_batch is not None else None
@@ -467,6 +532,9 @@ def BuildScoredLocal(
                 downside_assessments=downside_assessments,
                 score_model_version=model_version,
                 model_diagnostics=model_batch.diagnostics if model_batch is not None else None,
+                no_positive_model_utility=(
+                    _no_positive_model_utility(model_batch.diagnostics.values()) if model_batch is not None else False
+                ),
                 cost_reference_version=model_batch.cost_reference_version if model_batch is not None else None,
                 score_scale=model_batch.score_scale if model_batch is not None else WEIGHTED_EVIDENCE_SCORE_SCALE,
                 score_model_id=model_batch.score_model_id if model_batch is not None else None,
@@ -581,7 +649,7 @@ def _market_population_watermark(features: tuple[FeatureSnapshot, ...]) -> datet
 
 
 def BuildScoredHybrid(
-    projection: ScoredLocalProjection,
+    projection: ScoredReviewDraft,
     policy: RecommendationPolicy,
     reviews: Mapping[str, DeepSeekReview],
     *,
@@ -590,9 +658,9 @@ def BuildScoredHybrid(
     review_latency_ms: int = 0,
 ) -> ScoredReviewProjection | None:
     strategy = projection.local.strategy
-    if projection.native_input.strategy is not strategy:
+    if projection.native_strategy is not strategy:
         return None
-    freeze_policy = BuildScoredFreezePolicy(policy, strategy, phase=projection.native_input.phase)
+    freeze_policy = BuildScoredFreezePolicy(policy, strategy, phase=projection.phase)
     candidates = {item.code for item in projection.review_candidates}
     if any(code not in candidates or review.code != code for code, review in reviews.items()):
         return None
@@ -606,7 +674,7 @@ def BuildScoredHybrid(
     }
     observed_at = max(
         (
-            projection.native_input.evaluated_at,
+            projection.evaluated_at,
             *(review.completed_at for review in normalized.values()),
             *(
                 review.evidence_binding.bound_at
@@ -615,17 +683,15 @@ def BuildScoredHybrid(
             ),
         )
     )
-    stages = CompleteScoredStages(
-        projection.stages.model_filter,
-        projection.stages.local_score,
-        projection.stages.local_risk,
+    stages = CompleteReviewStages(
+        projection.prior_snapshots,
         ScoredStageContext(
             freeze_policy,
             observed_at,
             tuple(item.code for item in projection.review_candidates),
             tuple(normalized.values()),
             f"review:{projection.local.sequence + 1}",
-            projection.stages.fixed_selection,
+            projection.fixed_selection,
             review_latency_ms=review_latency_ms,
             review_attempted=True,
         ),
@@ -633,21 +699,23 @@ def BuildScoredHybrid(
     )
     if not usable:
         return ScoredReviewProjection(None, stages)
-    freeze_request = ScoredFreezeRequest(
-        selection=projection.selection,
-        reviews=normalized,
+    review_codes = ValidateScoredFreezeReviews(
+        tuple(item.code for item in projection.review_candidates),
+        projection.fixed_selection.records,
+        normalized,
         observed_at=observed_at,
-        trade_date=projection.native_input.trade_date,
+        projection_stage="hybrid",
+    )
+    epoch = replace(
+        projection.local_epoch,
+        observed_at=observed_at,
         sequence=projection.local.sequence + 1,
-        config_version=projection.native_input.config_version,
         strategy_version=policy.strategy_version,
-
-        market_epoch_version=projection.local_epoch.market_epoch_version,
-        candidate_epoch_version=projection.local_epoch.candidate_epoch_version,
         research_epoch_version=None,
         projection_stage="hybrid",
         parent_freeze_version=projection.local_epoch.version,
-        review_candidate_codes=tuple(item.code for item in projection.review_candidates),
+        entries=stages.entries,
+        review_candidate_codes=review_codes,
         degraded_reasons=tuple(
             sorted(
                 {
@@ -656,28 +724,30 @@ def BuildScoredHybrid(
                 }
             )
         ),
-        policy=freeze_policy,
+        selection_limits=FreezeSelectionLimits(
+            freeze_policy.top_k, freeze_policy.observation_limit, freeze_policy.maximum_board_fraction,
+        ),
     )
-    epoch = BuildScoredFreezeEpoch(freeze_request, entries=stages.entries)
     local_versions = dict(projection.local.input_versions)
     target_identity = local_versions.get("prediction_target")
     freeze = _scored_freeze(
         epoch,
         _FreezeProjectionContext(
-            input_version=projection.native_input.input_version,
+            input_version=projection.input_version,
             downside_assessments=projection.downside_assessments,
             parent_version=projection.local.version,
             strategy=strategy,
             freeze_policy=freeze_policy,
             score_model_version=projection.score_model_version,
             model_diagnostics=dict(projection.model_diagnostics),
+            no_positive_model_utility=projection.no_positive_model_utility,
             cost_reference_version=projection.cost_reference_version,
             score_scale=projection.score_scale,
             score_model_id=projection.score_model_id,
             score_contract_hash=projection.score_contract_hash,
             production_authority=projection.production_authority,
             rank_population_version=projection.rank_population_version,
-            preview_context=projection.native_input.preview_context,
+            preview_context=projection.local.preview_context,
             prediction_target=ParsePredictionTargetIdentity(target_identity) if target_identity != TOMORROW_CLOSE_GAIN_TARGET else None,
             scoring_profile=local_versions.get("scoring_profile"),
         ),
@@ -827,14 +897,12 @@ def _selection_diagnostics(
     )
     observation_floor = max(0.0, policy.executable_threshold - policy.observation_margin)
     empty_reason = None
-    if _has_no_positive_model_utility(epoch, context):
+    if context.no_positive_model_utility:
         empty_reason = "no_positive_net_utility"
     elif not epoch.entries:
         empty_reason = "no_scored_candidates"
     elif not selected:
-        if _has_no_positive_model_utility(epoch, context):
-            empty_reason = "no_positive_net_utility"
-        elif maximum_action_score is not None and maximum_action_score < observation_floor:
+        if maximum_action_score is not None and maximum_action_score < observation_floor:
             empty_reason = "score_below_observation_floor"
         else:
             empty_reason = "risk_or_execution_blocked"
@@ -852,17 +920,13 @@ def _selection_diagnostics(
     )
 
 
-def _has_no_positive_model_utility(
-    epoch: FreezeEpoch,
-    context: _FreezeProjectionContext,
+def _no_positive_model_utility(
+    diagnostics: Iterable[ModelDiagnostics | TomorrowProbability],
 ) -> bool:
-    return (
-        context.model_diagnostics is not None
-        and bool(context.model_diagnostics)
-        and all(
-            isinstance(item, ModelDiagnostics) and item.predicted_net_excess_pct <= 0.0
-            for item in context.model_diagnostics.values()
-        )
+    items = iter(diagnostics)
+    first = next(items, None)
+    return isinstance(first, ModelDiagnostics) and first.predicted_net_excess_pct <= 0.0 and all(
+        isinstance(item, ModelDiagnostics) and item.predicted_net_excess_pct <= 0.0 for item in items
     )
 
 
@@ -909,17 +973,17 @@ def _freeze_quote(quote: MarketQuote) -> FreezeQuote:
 
 
 def ValidateReviewManifests(
-    projection: ScoredLocalProjection,
+    candidates: tuple[ScoredReviewCandidate, ...],
     reviews: Mapping[str, DeepSeekReview],
     expected: Mapping[str, str],
 ) -> bool:
-    candidates = {item.code: item.features for item in projection.review_candidates}
+    features = {item.code: item.features for item in candidates}
     return not any(
-        code not in candidates
+        code not in features
         or review.code != code
         or (
             review.outcome in {ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN}
-            and not _review_manifest_matches(review, expected.get(code), candidates[code].observed_at)
+            and not _review_manifest_matches(review, expected.get(code), features[code].observed_at)
         )
         for code, review in reviews.items()
     )
@@ -941,7 +1005,9 @@ def _review_manifest_matches(review: DeepSeekReview, expected: str | None, obser
 
 __all__ = [
     "ScoredLocalProjection",
+    "ScoredReviewDraft",
     "BuildScoredHybrid",
     "BuildScoredLocal",
+    "PrepareScoredReviewDraft",
     "ValidateReviewManifests",
 ]

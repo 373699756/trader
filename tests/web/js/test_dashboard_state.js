@@ -75,6 +75,15 @@ vm.runInNewContext(source.replace(suffix, `
     normalizeFreezePayload, configuredScoringProfile, state,
     applyRecommendationBatch, requestRecommendations,
     selectCurrentDate, toggleDateCalendar, updateDatePickerButton,
+    renderSettlementTest(payload) {
+      const elements = { sixSeatStatus: {}, sixSeatMeta: {}, outcomeSummary: {} };
+      const previous = Object.fromEntries(Object.keys(elements).map((key) => [key, els[key]]));
+      Object.assign(els, elements);
+      renderSixSeatSummary(payload, payload.items);
+      renderOutcomeSummary(payload);
+      Object.assign(els, previous);
+      return elements;
+    },
     configureDateTest(elements, load) {
       Object.assign(els, elements);
       updateHistoryWatch = () => {};
@@ -293,6 +302,76 @@ assert(!JSON.stringify(v5Notice).includes("Shadow"));
 assert.strictEqual(sandbox.window.TraderRender.scorePresentation({
   ...v5Snapshot, input_versions: { score_scale: "weighted_evidence_quality_0_100" },
 }).shadow, false, "profile name must not reinterpret historical V5 authority");
+const nextCloseSnapshot = {
+  strategy: "tomorrow",
+  scoring_profile: "v2",
+  prediction_target: { strategy: "tomorrow", threshold_bps: 500, identity: "next_close_gain_at_least_500_bps" },
+  input_versions: { score_scale: "tomorrow_close_gain_probability_0_100" },
+};
+const targetItem = {
+  ...v5Item,
+  scores: {
+    local_score: 81,
+    final_score: 64.32,
+    target_probability: 0.6432,
+    ledger: { weighted_base_score: 83, applied_bonus: 2, applied_risk_penalty: 4 },
+  },
+};
+const nextCloseRow = state.tableRows([targetItem], nextCloseSnapshot);
+const nextCloseScore = nextCloseRow.match(/class="score-stack"[\s\S]*?<\/div>/)[0];
+const nextCloseHeading = sandbox.window.TraderRender.tableDefinition(nextCloseSnapshot).head;
+assert.match(nextCloseHeading, /达标概率 \/ 本地评分/);
+assert.match(nextCloseScore, /<b>达标概率 64\.32%<\/b><\/span><span>本地评分 81\.00<\/span>/);
+assert.strictEqual((nextCloseScore.match(/<span\b/g) || []).length, 2);
+assert.match(nextCloseScore, /title="基础 83\.00 · \+2\.00 · −4\.00"/);
+assert.doesNotMatch(nextCloseHeading + nextCloseScore, /≥|实际涨幅/);
+const nextCloseDrawer = state.drawer(targetItem, nextCloseSnapshot);
+assert.match(nextCloseDrawer, /达标概率<\/span><strong>64\.32%/);
+assert.doesNotMatch(nextCloseDrawer, /涨幅目标|≥5%/);
+
+const d25Target = { strategy: "d25", threshold_bps: 125 };
+for (const [profile, scale, finalScore, scoreLabel] of [
+  ["v1", "learned_rank_percentile_0_100", 93.37, "模型排序分"],
+  ["v2", "weighted_evidence_quality_0_100", 81, "最终评分"],
+  ["v3", "weighted_evidence_quality_0_100", 81, "最终评分"],
+  ["v5", "model_prediction_percentile_0_100", 93.37, "模型排序分"],
+]) {
+  const d25Snapshot = { strategy: "d25", scoring_profile: profile, prediction_target: d25Target,
+    input_versions: { score_scale: scale } };
+  const item = { ...targetItem, scores: { ...targetItem.scores, final_score: finalScore } };
+  const row = state.tableRows([item], d25Snapshot);
+  const score = row.match(/class="score-stack"[\s\S]*?<\/div>/)[0];
+  const heading = sandbox.window.TraderRender.tableDefinition(d25Snapshot).head;
+  assert(heading.includes(`<th>${scoreLabel} / 达标概率</th>`));
+  assert(score.includes(`<b>${scoreLabel} ${finalScore.toFixed(2)}</b>`));
+  assert.match(score, /<span>达标概率 64\.32%<\/span>/);
+  assert.strictEqual((score.match(/<span\b/g) || []).length, 2);
+  assert.doesNotMatch(heading + score, /≥|实际涨幅|本地\/模型/);
+}
+
+const oldD25 = { ...v5Snapshot, strategy: "d25" };
+assert.match(sandbox.window.TraderRender.tableDefinition(oldD25).head, /本地评分 \/ 模型排名/);
+assert.match(state.tableRows([v5Item], oldD25), /<b>本地\/模型：80\.00\/95\.00<\/b>/);
+
+const settledItem = { ...targetItem, tomorrow_outcome: "hit", actual_return_pct: 5 };
+const settledSnapshot = { ...nextCloseSnapshot, historical: true, items: [settledItem], outcome_summaries: [
+  { tier: "recommend", target: nextCloseSnapshot.prediction_target, complete_count: 2, hit_count: 1, sample_count: 3 },
+  { tier: "recommend", target: { threshold_bps: 625, identity: "next_close_gain_at_least_625_bps" },
+    complete_count: 7, hit_count: 0, sample_count: 7 },
+] };
+const settledRow = state.tableRows([settledItem], settledSnapshot);
+assert.match(settledRow, /命中 实测 \+5\.00%/);
+assert.doesNotMatch(settledRow, /≥5%|涨幅目标/);
+const pendingRow = state.tableRows([{ ...settledItem, tomorrow_outcome: "pending" }], settledSnapshot);
+assert.match(pendingRow, /待结算/);
+assert.doesNotMatch(pendingRow, /实测/);
+const settledView = sandbox.window.TraderDashboardTest.renderSettlementTest(settledSnapshot);
+assert.match(settledView.outcomeSummary.textContent, /已结算 2\/3 · 命中 1 · 命中率 50\.0%/);
+assert.doesNotMatch(settledView.outcomeSummary.textContent, /涨幅目标|≥|已结算 7\/7/);
+assert.doesNotMatch(settledView.sixSeatMeta.textContent, /涨幅目标|≥/);
+const liveView = sandbox.window.TraderDashboardTest.renderSettlementTest({ ...nextCloseSnapshot, items: [targetItem] });
+assert.match(liveView.sixSeatMeta.textContent, /关注 1/);
+assert.doesNotMatch(liveView.sixSeatMeta.textContent, /涨幅目标|≥/);
 const rankPublication = summaryFixture();
 state.renderPublicationStatus(rankPublication, rankSnapshot, null);
 assert.strictEqual(rankPublication.publicationStatus.textContent, "Shadow 观察");
@@ -2480,6 +2559,27 @@ async function verifyAtomicBatchCache() {
   assert.strictEqual(ui.payloads, completeCache, "malformed HTTP batch must not replace any cache");
 }
 
+async function verifyLongCurrentQuote() {
+  const dashboard = sandbox.window.TraderDashboardTest;
+  const raw = {
+    status: "ready", strategy: "long", view: "current", score_status: "not_applicable", scoring_profile: "v2",
+    trade_date: "2026-07-26", publication_id: "long-publication", projection_version: "long-projection",
+    items: [{ code: "600001", name: "长期观察股票", quote: { price: 10.28, pct_change: 2.8 } }],
+  };
+  sandbox.fetch = async (url) => {
+    assert.strictEqual(url, "/api/freezes/long/current?profile=v2");
+    return { ok: true, status: 200, json: async () => raw, headers: { get: () => null } };
+  };
+  const current = await dashboard.requestRecommendations("long", "", "current");
+  assert.strictEqual(current.items[0].pct_change, 2.8);
+  assert.match(state.tableRows(current.items, current), /<td class="positive">\+2\.80%<\/td>/);
+  assert.strictEqual(state.freezePayloadCompatibility({ ...raw, frozen: true }).compatible, false);
+  assert.strictEqual(state.freezePayloadCompatibility({ ...raw, view: "history" }).compatible, false);
+  assert.strictEqual(state.freezePayloadCompatibility({ ...raw, score_status: "scored" }).compatible, false);
+  assert.strictEqual(state.freezePayloadCompatibility({ ...raw, strategy: "tomorrow" }).compatible, false);
+  assert.strictEqual(state.freezePayloadCompatibility({ ...raw, strategy: "d25", frozen: false }).compatible, true);
+}
+
 function verifyTodayNavigation() {
   const dashboard = sandbox.window.TraderDashboardTest;
   const ui = dashboard.state;
@@ -2519,7 +2619,7 @@ function verifyTodayNavigation() {
   assert.strictEqual(sandbox.window.TraderSelection.shanghaiDate(new Date("2026-12-31T16:01:00Z")), "2027-01-01");
 }
 
-verifyAtomicBatchCache().then(() => {
+verifyAtomicBatchCache().then(verifyLongCurrentQuote).then(() => {
   verifyTodayNavigation();
   console.log("dashboard state contract passed");
 }).catch((error) => {

@@ -1769,21 +1769,23 @@ def test_stale_candidate_quote_stays_pending_without_a_replacement(
     assert adapter.data._strategy_requested_codes[Strategy.TOMORROW] == ("600002", "600003", "600004")
 
 
-def test_old_projection_is_released_but_queued_audit_keeps_its_original_input(application_feature_factory) -> None:
+def test_complete_projection_is_released_while_queued_audit_retains_original_facts(application_feature_factory) -> None:
     import gc
     import weakref
 
-    observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
-    audited = []
+    from trader.training.application.research_audit import PrepareResearchAuditFactory
 
-    def audit(projection, freeze):
-        audited.append((projection.local.version, freeze.version))
-        return None
+    observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
+    full_projections = []
+
+    def prepare_audit(projection):
+        full_projections.append(weakref.ref(projection))
+        return PrepareResearchAuditFactory(projection)
 
     adapter = build_cycle_fixture(
         _Market((application_feature_factory("600001", observed_at),)),
         config_version="test-config",
-        freeze_build=replace(_freeze_build(), research_audit_builder=audit),
+        freeze_build=replace(_freeze_build(), research_audit_preparer=prepare_audit),
     )
     _prime_scoring_cache(adapter, observed_at)
 
@@ -1798,6 +1800,8 @@ def test_old_projection_is_released_but_queued_audit_keeps_its_original_input(ap
     first = build(Strategy.TOMORROW)
     reference = weakref.ref(adapter.freezes.projection(first.version))
     queued_audit = adapter.freezes.research_audit_factory(first.version)
+    gc.collect()
+    assert full_projections[0]() is None
     other = build(Strategy.D25)
     previous = build(Strategy.TOMORROW)
     current = build(Strategy.TOMORROW)
@@ -1805,12 +1809,13 @@ def test_old_projection_is_released_but_queued_audit_keeps_its_original_input(ap
     assert adapter.freezes.projection(previous.version) is not None
     assert adapter.freezes.projection(current.version) is not None
     assert adapter.freezes.projection(other.version) is not None
-    queued_audit()
-    assert audited == [(first.version, first.version)]
-    assert reference() is not None
-    del queued_audit
     gc.collect()
     assert reference() is None
+    assert all(item() is None for item in full_projections)
+    audit = queued_audit()
+    assert audit is not None
+    assert audit.freeze_version == first.version
+    assert audit.freeze_hash == first.content_hash
 
 
 def test_finished_scoring_input_releases_population_without_removing_replacement(

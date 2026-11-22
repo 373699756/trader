@@ -41,6 +41,7 @@ from trader.recommendation.application.pipeline.local_score.model_capability imp
 
 
 from trader.recommendation.application.pipeline.score_merge.score_fusion import ScoreFusionService
+from trader.recommendation.application.pipeline.final_selection.freeze_projection import PrepareScoredReviewDraft
 
 
 from trader.recommendation.application.ports.runtime import FreezeUnavailableError
@@ -124,7 +125,7 @@ def test_local_scoring_injects_risk_control(application_feature_factory) -> None
     code = scored.review_candidates[0].code
     candidate_review = replace(review(code, 100.0), completed_at=EVALUATED_AT + timedelta(seconds=5))
     fused = ScoreFusionService().fuse(
-        scored,
+        PrepareScoredReviewDraft(scored),
         policy,
         {code: candidate_review},
         review_deadline=EVALUATED_AT.replace(hour=14, minute=50, second=0),
@@ -169,8 +170,9 @@ def test_score_fusion_service_preserves_manifest_gate_and_parentage(application_
     candidate_review = replace(review(code, 100.0), completed_at=EVALUATED_AT + timedelta(seconds=5))
     service = ScoreFusionService()
 
-    assert service.manifests_match(projection, {code: candidate_review}, {code: f"manifest:{code}"})
-    fused = service.fuse(projection, policy, {code: candidate_review}, review_deadline=deadline)
+    draft = PrepareScoredReviewDraft(projection)
+    assert service.manifests_match(draft, {code: candidate_review}, {code: f"manifest:{code}"})
+    fused = service.fuse(draft, policy, {code: candidate_review}, review_deadline=deadline)
 
     assert fused is not None
     assert fused.freeze is not None
