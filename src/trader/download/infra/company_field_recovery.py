@@ -82,7 +82,9 @@ def RegisterCompanyMaterialDependencies(
         required = frozenset(
             (review.evidence_id, review.scope, review.reason_code)
             for review in fact.review_reasons
-            if review.evidence_id is not None and review.reason_code in _MATERIAL_REVIEW_REASONS
+            if review.evidence_id is not None and (
+                review.reason_code in _MATERIAL_REVIEW_REASONS or (review.scope, review.reason_code) == ("unlock", "window_incomplete")
+            )
         ) | field_required.get(fact.code, frozenset())
         for evidence_id, scope, reason in required:
             rows = collected.run(
@@ -199,7 +201,8 @@ def _field_material_source(formal: SqliteConnection, code: str, scope: str, evid
     if scope == "financial" and source in EVIDENCE_SOURCES:
         return formal.run(
             "SELECT 1 FROM company_input_receipt WHERE code=? AND source=? AND source_key=? "
-            "AND outcome='field_attempted' AND policy_id LIKE 'financial_source:%' LIMIT 1", (code, source, evidence_id),
+            "AND outcome='field_attempted' AND (policy_id LIKE 'financial_source:%' "
+            "OR policy_id LIKE 'financial_issuer_original:%') LIMIT 1", (code, source, evidence_id),
         ).fetchone() is not None
     if scope not in {"risk", "positive"} or source not in EVIDENCE_SOURCES:
         return False
@@ -227,8 +230,8 @@ def RestoreCompanyMaterialDependencies(collected: SqliteConnection, formal: Sqli
     reviews = formal.run(
         "SELECT v.code,v.scope,v.reason,r.source,r.source_key FROM company_review v "
         "JOIN company_evidence_ref r ON r.id=v.evidence_id "
-        f"WHERE v.reason IN ({placeholders}) ORDER BY v.code,r.source,r.source_key,v.scope,v.reason",
-        reasons,
+        f"WHERE v.reason IN ({placeholders}) OR (v.scope=? AND v.reason=?) ORDER BY v.code,r.source,r.source_key,v.scope,v.reason",
+        (*reasons, REVIEW_SCOPES["unlock"], REVIEW_REASONS["window_incomplete"]),
     )
     while batch := reviews.fetchmany(128):
         for review in batch:
@@ -265,7 +268,8 @@ def RestoreCompanyMaterialDependencies(collected: SqliteConnection, formal: Sqli
                 if scope == "financial":
                     sources.update(row[0] for row in formal.run(
                         "SELECT DISTINCT source FROM company_input_receipt WHERE code=? AND source_key=? "
-                        "AND outcome='field_attempted' AND policy_id LIKE 'financial_source:%'", (code, evidence_id),
+                        "AND outcome='field_attempted' AND (policy_id LIKE 'financial_source:%' "
+                        "OR policy_id LIKE 'financial_issuer_original:%')", (code, evidence_id),
                     ))
                 if scope == "positive":
                     sources.update(row[0] for row in formal.run(

@@ -2,15 +2,17 @@
 
 import hashlib
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 
 from trader.download.domain.company_announcement_normalization import NormalizeCompanyAnnouncementFacts
+from trader.download.domain.company_descriptions import CompanyReviewDescription
 from trader.download.domain.company_document_links import CompanyPublishedEvidenceLink
-from trader.download.domain.company_event_extraction import CompanyDocumentRiskRelevant
-from trader.download.domain.company_events import CompanyEventPolicy, CompanyEvidenceLink, CompanyReviewReason
-from trader.download.domain.company_evidence import CompanyDocument, EvidenceMarket
+from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview, CompanyDocumentRiskRelevant
+from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy, CompanyEvidenceLink, CompanyReviewReason
+from trader.download.domain.company_evidence import CompanyDocument, CompanyRatio, EvidenceMarket
 from trader.download.domain.company_facts import CompanyFacts
+from trader.download.domain.company_unlock_notice import ConfirmCompanyUnlockListing, IsCompanyUnlockListingNotice, IsCompanyUnlockListingRevision
 from trader.download.infra.company_announcement_links import LinkCompanyAnnouncementNumbers
 from trader.download.infra.company_fact_inputs import CompanyCoverageComplete, DecodeCompanyDisclosure
 from trader.download.infra.company_facts_index import CompanyInputReceipt
@@ -33,14 +35,24 @@ def PrepareCompanyAnnouncements(
     collected: SqliteConnection, formal: SqliteConnection, previous: CompanyFacts, *, cutoff: datetime,
     extraction_hash: bytes, rule_identity: bytes, event_policy: CompanyEventPolicy,
     read_document: Callable[[bytes], str], check: Callable[[], None],
+    unlock_observations: tuple[CompanyRatio, ...] = (),
 ) -> CompanyAnnouncementPreparation:
     """A source receipt validates its exact body, not risk population completeness."""
     check()
     start = cutoff.date() - timedelta(days=365)
     documents: list[CompanyDocument] = []
+    unlock_documents: list[CompanyDocument] = []
     reviews: list[CompanyReviewReason] = []
-    identities: list[tuple[str, str, str, bytes]] = []
+    identities: list[tuple[str, str, str, bytes, str]] = []
     pending_retained = 0
+    unlock_pending = 0
+    rule_id = rule_identity.hex()
+    unlock_end = cutoff.date() + timedelta(days=event_policy.unlock_days)
+    unlock_observations = tuple(item for item in unlock_observations if item.code == previous.code
+        and item.ratio_pct > 0 and cutoff.date() <= item.day <= unlock_end
+    ) if previous.unlock_state is not CompanyDataState.COMPLETE else ()
+    revision = _latest_unlock_revision(collected, previous.code, start.isoformat(), cutoff.isoformat()) if unlock_observations else None
+    unlock_policy = CanonicalDigest((rule_id, unlock_observations, revision)) if unlock_observations else None
     rows = collected.run("""SELECT d.*,c.code,x.payload_hash FROM disclosures d
         JOIN disclosure_codes c ON c.disclosure_id=d.id
         JOIN company_document_requirements required ON required.disclosure_id=d.id
@@ -51,6 +63,15 @@ def PrepareCompanyAnnouncements(
         ORDER BY d.published_at,d.source_key""", (previous.code, start.isoformat(), cutoff.isoformat()))
     for row in rows:
         check()
+        title = row["title"]
+        supplemental = not CompanyDocumentNeedsReview(title)
+        is_unlock = supplemental and IsCompanyUnlockListingNotice(title)
+        if is_unlock and (unlock_policy is None or revision is not None and row["published_at"] <= revision):
+            continue
+        if supplemental and IsCompanyUnlockListingRevision(title):
+            continue
+        proof_policy = unlock_policy if is_unlock and unlock_policy is not None else rule_id
+        selected = unlock_documents if is_unlock else documents
         body_hash, payload_hash = row["body_hash"], row["payload_hash"]
         if not isinstance(body_hash, bytes) or len(body_hash) != 32 or not isinstance(payload_hash, bytes) or len(payload_hash) != 32:
             raise ValueError("company_announcement_material_identity_invalid")
@@ -59,7 +80,7 @@ def PrepareCompanyAnnouncements(
             WHERE code=? AND source=? AND source_key=? AND record_hash=? AND extraction_hash=?
             AND published_at<=?""", (previous.code, item.source, item.identity, item.digest, extraction_hash, EncodeCompanyTime(cutoff))).fetchone()
         if receipt is not None and receipt[1] == body_hash and (
-            receipt[0] == "valid" or receipt[0] == "directory_observed" and receipt[2] == rule_identity.hex()
+            receipt[0] == "valid" or receipt[0] == "directory_observed" and receipt[2] == proof_policy
         ):
             continue
         if formal.run("""SELECT 1 FROM company_input_receipt WHERE code=? AND source=? AND source_key=?
@@ -68,25 +89,29 @@ def PrepareCompanyAnnouncements(
             scopes = tuple(scope for scope, events in (("risk", previous.risk_events), ("positive", previous.positive_events))
                 if any(item.identity in event.evidence_ids for event in events))
             if not scopes:
-                scopes = ("risk" if CompanyDocumentRiskRelevant(item.title) else "positive",)
+                scopes = ("unlock" if is_unlock else "risk" if CompanyDocumentRiskRelevant(item.title) else "positive",)
             reviews.extend(CompanyReviewReason(scope, "revision_pending", item.identity, cutoff,
                 "同来源公告内容变化，正式修订关系尚未核实") for scope in scopes)
-            identities.append((item.source, item.identity, item.digest, body_hash))
+            identities.append((item.source, item.identity, item.digest, body_hash, proof_policy))
             continue
-        if len(documents) >= 8:
-            pending_retained += 1
+        if len(selected) >= (2 if is_unlock else 8):
+            if is_unlock:
+                unlock_pending += 1
+            else:
+                pending_retained += 1
             continue
         text = read_document(body_hash)
         check()
         if hashlib.sha256(text.encode()).digest() != body_hash:
             raise ValueError("company_announcement_body_hash_mismatch")
-        documents.append(CompanyDocument(item, text, True))
-        identities.append((item.source, item.identity, item.digest, body_hash))
-    pending = collected.run("""SELECT COUNT(*) FROM disclosures d
+        selected.append(CompanyDocument(item, text, True))
+        identities.append((item.source, item.identity, item.digest, body_hash, proof_policy))
+    pending = sum(CompanyDocumentNeedsReview(row[0]) or not (IsCompanyUnlockListingNotice(row[0]) or IsCompanyUnlockListingRevision(row[0]))
+        for row in collected.run("""SELECT d.title FROM disclosures d
         JOIN disclosure_codes c ON c.disclosure_id=d.id
         JOIN company_document_requirements required ON required.disclosure_id=d.id
         WHERE c.code=? AND d.kind='announcement' AND d.published_at>=? AND d.published_at<=?
-        AND (d.body_checked=0 OR d.body_retained=0)""", (previous.code, start.isoformat(), cutoff.isoformat())).require_one()[0]
+        AND (d.body_checked=0 OR d.body_retained=0)""", (previous.code, start.isoformat(), cutoff.isoformat())))
     ranges = collected.run("SELECT start_date,end_date FROM coverage WHERE market=? ORDER BY start_date,end_date",
         (EvidenceMarket(previous.code),)).fetchall()
     candidates = []
@@ -108,19 +133,48 @@ def PrepareCompanyAnnouncements(
     linked_candidates = LinkCompanyAnnouncementNumbers(collected, previous.code, tuple(candidates))
     normalized = NormalizeCompanyAnnouncementFacts(previous, tuple(documents), cutoff, event_policy,
         candidates=linked_candidates, pending_count=pending + pending_retained, directory_complete=CompanyCoverageComplete(ranges, start, cutoff.date()),
-        input_identity=CanonicalDigest((tuple((source, key, record, body.hex()) for source, key, record, body in identities), cutoff)),
+        input_identity=CanonicalDigest((tuple((source, key, record, body.hex()) for source, key, record, body, policy in identities if policy == rule_id), cutoff)),
         revision_reviews=tuple(reviews), verified_candidate_ids=tuple(verified_candidate_ids))
+    facts, unlock_ids = _prepare_unlock_events(normalized.facts, unlock_documents, unlock_observations, cutoff)
+    verified_ids = frozenset((*normalized.verified_evidence_ids, *unlock_ids))
     receipts = tuple(CompanyInputReceipt(source, key, previous.code, record, extraction_hash, body, cutoff,
-        "valid" if key in normalized.verified_evidence_ids else "directory_observed", rule_identity.hex())
-        for source, key, record, body in identities)
-    referenced = {key for event in normalized.facts.risk_events + normalized.facts.positive_events for key in event.evidence_ids}
-    referenced.update(review.evidence_id for review in normalized.facts.review_reasons if review.evidence_id is not None)
+        "valid" if key in verified_ids else "directory_observed", policy)
+        for source, key, record, body, policy in identities)
+    referenced = {key for event in facts.risk_events + facts.positive_events for key in event.evidence_ids}
+    referenced.update(review.evidence_id for review in facts.review_reasons if review.evidence_id is not None)
     links = tuple(CompanyPublishedEvidenceLink(previous.code, document.disclosure.source, document.disclosure.digest,
         CompanyEvidenceLink(document.disclosure.identity, document.disclosure.title, document.disclosure.url,
-            document.disclosure.published_at, document.disclosure.identity in normalized.verified_evidence_ids))
-        for document in documents if document.disclosure.identity in referenced)
-    verified_documents = tuple(document for document in documents if document.disclosure.identity in normalized.verified_evidence_ids)
-    return CompanyAnnouncementPreparation(normalized.facts, verified_documents, receipts, links, pending_retained)
+            document.disclosure.published_at, document.disclosure.identity in verified_ids))
+        for document in (*documents, *unlock_documents) if document.disclosure.identity in referenced)
+    verified_documents = tuple(document for document in documents if document.disclosure.identity in verified_ids)
+    return CompanyAnnouncementPreparation(facts, verified_documents, receipts, links, pending_retained + unlock_pending)
+
+
+def _latest_unlock_revision(collected: SqliteConnection, code: str, start: str, cutoff: str) -> str | None:
+    rows = collected.run("""SELECT d.title,d.published_at FROM disclosures d
+        JOIN disclosure_codes c ON c.disclosure_id=d.id
+        JOIN company_document_requirements required ON required.disclosure_id=d.id
+        WHERE c.code=? AND d.source='cninfo' AND d.kind='announcement' AND d.published_at>=? AND d.published_at<=?
+        ORDER BY d.published_at DESC""", (code, start, cutoff))
+    return next((row[1] for row in rows if IsCompanyUnlockListingRevision(row[0])), None)
+
+
+def _prepare_unlock_events(
+    facts: CompanyFacts, documents: list[CompanyDocument], observations: tuple[CompanyRatio, ...], cutoff: datetime,
+) -> tuple[CompanyFacts, tuple[str, ...]]:
+    confirmed = tuple((document.disclosure.identity, event) for document in documents
+        if (event := ConfirmCompanyUnlockListing(document, observations, cutoff)) is not None)
+    existing_days = {item.day for item in facts.unlock_schedule}
+    accepted = tuple((evidence, event) for evidence, event in confirmed
+        if event.day not in existing_days and sum(other.day == event.day for _, other in confirmed) == 1)
+    if not accepted:
+        return facts, ()
+    reviews = tuple(CompanyReviewReason("unlock", "window_incomplete", evidence, cutoff, CompanyReviewDescription("window_incomplete"))
+        for evidence, _ in accepted)
+    return replace(facts, unlock_schedule=tuple(sorted((*facts.unlock_schedule, *(event for _, event in accepted)), key=lambda item: item.day)),
+        unlock_state=CompanyDataState.PARTIAL,
+        review_reasons=tuple(sorted((*facts.review_reasons, *reviews), key=lambda item: (item.scope, item.evidence_id or "", item.reason_code))),
+        published_at=cutoff), tuple(evidence for evidence, _ in accepted)
 
 
 __all__ = ["CompanyAnnouncementPreparation", "PrepareCompanyAnnouncements"]

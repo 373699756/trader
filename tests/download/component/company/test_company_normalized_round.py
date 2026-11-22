@@ -104,6 +104,8 @@ def test_financial_batch_coverage_counts_latest_observations_separately_from_pag
     assert (partial.accepted_pages, partial.expected_pages, partial.accepted_raw_rows) == (1, 2, 3)
     assert not partial.pages_complete
     assert partial.latest_complete_stocks == 2
+    assert index.financial_observation_watermark(query, codes, _CUTOFF) is None
+    assert index.latest_financial_observations(query, codes, _CUTOFF) == ()
 
     successor = index.cursor(query, codes, _CUTOFF)
     assert successor is not None
@@ -115,9 +117,23 @@ def test_financial_batch_coverage_counts_latest_observations_separately_from_pag
     assert (complete.population, complete.latest_observed_stocks, complete.latest_complete_stocks) == (3, 2, 1)
     assert complete.latest_profit_pair_stocks == 2
     assert tuple((name, count) for name, count in complete.missing_fields if count) == (("basic_eps", 1),)
+    closed = index.financial_observation_watermark(query, codes, _CUTOFF)
+    assert closed is not None
+    assert index.financial_observation_watermark(successor, codes, _CUTOFF) == closed
+    latest = index.latest_financial_observations(query, codes, _CUTOFF)
+    assert tuple((item.financial.code, item.financial.parent_net_profit) for item in latest) == (("600001", -2.0), ("600002", 0.0))
     assert reader.publication_identity() == before
     next_cutoff = _CUTOFF + timedelta(days=1)
     assert index.financial_batch(BuildCompanyFinancialRoundQuery(next_cutoff), codes, next_cutoff).expected_pages is None
+
+
+def test_latest_observation_does_not_fall_back_to_earlier_row_when_newest_was_filtered(tmp_path):
+    index, _ = _index(tmp_path)
+    index.accept(_QUERY, _page(_observation(period=date(2026, 6, 30)), pages=2, total=2), _CODES, _CUTOFF)
+    next_page = replace(_QUERY, page=2, received_rows=1, expected_rows=2)
+    index.accept(next_page, _page(_observation(), page=2, pages=2, total=2), _CODES, _CUTOFF, eligible_codes=())
+    assert index.financial_observation_watermark(_QUERY, _CODES, _CUTOFF) is not None
+    assert index.latest_financial_observations(_QUERY, _CODES, _CUTOFF) == ()
 
 
 @pytest.mark.parametrize("reason", (

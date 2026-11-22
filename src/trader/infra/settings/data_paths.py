@@ -25,6 +25,10 @@ class DataPaths:
         return self.root / "company/company_facts.sqlite3"
 
     @property
+    def company_published(self) -> Path:
+        return self.root / "company/company_published.sqlite3"
+
+    @property
     def company_collection(self) -> Path:
         return self.root / "company/raw/company_collection.sqlite3"
 

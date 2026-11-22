@@ -64,6 +64,7 @@ _ROUND_REASON_EXPLANATIONS = {
     "unlock_population_coverage_unverified": "未来解禁窗口是否覆盖全部合格股票待核",
     "unlock_total_share_denominator_unverified": "解禁比例的总股本分母待核",
     "source_attempt_unconfirmed": "旧请求已占用额度，响应或落库凭据待核",
+    "previous_directory_attempt_unconfirmed": "该目录请求已在旧轮次占用额度，等待原响应凭据",
     "accepted_input_count_unconfirmed": "旧步骤接纳数量待核",
     "issuer_revision_relationship_unverified": "同一发行人公告的新旧修订关系待核",
     "persistent_risk_initial_state_unverified": "公告窗口开始时仍生效的历史风险待核",

@@ -8,6 +8,7 @@ from tests.download.component.company.test_company_sync_round import _SCOPE
 from tests.helpers.download.configuration import CompanyEventPolicyFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDownloadStore, CompanyInputValidationFailure, Disclosure, DisclosurePage, DisclosurePartition, DisclosureQuery, StructuredCompanyPage, StructuredCompanyQuery
+from trader.download.domain.company_financial_admission import CompanyFinancialRevisionProof
 from trader.download.domain.company_source_records import CompanyFinancialSourcePage
 from trader.download.domain.company_sync import CompanySyncBudget, CompanySyncFamily
 from trader.download.infra.company_document_files import CompanyDocumentFiles
@@ -58,7 +59,7 @@ class _Sources:
         raise AssertionError("no_pdf_fanout")
 
 
-def _runtime(tmp_path, *, observe_scope=None):
+def _runtime(tmp_path, *, observe_scope=None, admit_observations=False, financial_revision_proofs=()):
     policy, event_policy = SqlitePolicyFixture(), CompanyEventPolicyFixture()
     facts = SQLiteCompanyFactsIndex(tmp_path / "formal.sqlite3", event_policy=event_policy, sqlite_policy=policy)
     reader = SQLiteCompanyEvidenceReader(facts.path, event_policy=event_policy, sqlite_policy=policy)
@@ -80,7 +81,8 @@ def _runtime(tmp_path, *, observe_scope=None):
     source = _Sources(transport)
     runtime = CompanySyncRuntime(normalized, facts, material, journal, inputs, event_policy=event_policy, sqlite_policy=policy,
         read_document=documents.read, financial_source=source, ratio_source=source, annual_source=source,
-        news_source=source, official_source=source, observe_scope=observe_scope)
+        news_source=source, official_source=source, observe_scope=observe_scope, admit_observations=admit_observations,
+        financial_revision_proofs=financial_revision_proofs)
     return runtime, reader, transport, physical
 
 
@@ -107,6 +109,24 @@ def test_local_field_watermark_reacts_to_proof_inputs_and_coverage_only(tmp_path
         assert recovered != covered
         runtime.inputs.acknowledge_recovered(_SCOPE.identity, (proof,))
         assert runtime.field_watermark(_SCOPE, _SCOPE.codes, lambda: None) == recovered
+    assert physical == []
+
+
+def test_candidate_watermark_includes_exact_financial_original_and_authority_digest(tmp_path):
+    report_date = _SCOPE.cutoff.date() - timedelta(days=30)
+    original = Disclosure("sse", "issuer-report", _SCOPE.codes, "季度报告", _SCOPE.cutoff, "", "a" * 64)
+    proof = CompanyFinancialRevisionProof(original, report_date, report_date, _SCOPE.cutoff, "b" * 64, b"c" * 32)
+    runtime, _, transport, physical = _runtime(tmp_path, admit_observations=True, financial_revision_proofs=(proof,))
+    with transport:
+        runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
+        partition = DisclosurePartition("sse", _SCOPE.cutoff.date(), _SCOPE.cutoff.date())
+        runtime.material.register_partition(partition, _SCOPE.cutoff)
+        runtime.material.commit_page(partition, DisclosurePage((), 0, False), _SCOPE.cutoff)
+        before = runtime.field_watermark(_SCOPE, _SCOPE.codes, lambda: None)
+        runtime.material.register_disclosures((original,))
+        after = runtime.field_watermark(_SCOPE, _SCOPE.codes, lambda: None)
+        assert after != before
+        assert runtime.field_watermark(_SCOPE, _SCOPE.codes, lambda: None) == after
     assert physical == []
 
 

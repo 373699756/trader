@@ -9,7 +9,7 @@ from trader.download.domain.company_document_links import CompanyPublishedEviden
 from trader.download.domain.company_annual_income import CompanyAnnualIncome, ApplyCompanyAnnualIncome, SelectCompanyAnnualIncome
 from trader.download.domain.company_events import CompanyEventPolicy, CompanyEvidenceLink, CompanyPositiveType, RepurchaseMeasurements
 from trader.download.domain.company_event_extraction import IsCompanyRepurchaseCancellationOnly
-from trader.download.domain.company_evidence import CompanyDocument
+from trader.download.domain.company_evidence import CompanyDocument, CompanyRatio
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_field_results import CompanyFieldConclusion
 from trader.download.domain.company_measurement_corrections import CorrectCompanyRepurchaseDisposalMeasurements, RefineCompanyIsolatedPositiveMeasurements
@@ -38,11 +38,13 @@ def PrepareCompanyIssuerInputs(
     published_links: tuple[CompanyPublishedEvidenceLink, ...] = (),
     recovered: tuple[CompanyRecoveredInput, ...] = (),
     annual_incomes: tuple[CompanyAnnualIncome, ...] = (),
+    unlock_observations: tuple[CompanyRatio, ...] = (),
 ) -> CompanyIssuerPreparation:
     """Use the sole field proofer and only valid-backed exact bodies for corrections."""
     original = previous
     announcement = PrepareCompanyAnnouncements(collected, formal, previous, cutoff=cutoff, extraction_hash=extraction_hash,
-        rule_identity=CompanyFieldProofRulesHash(), event_policy=event_policy, read_document=read_document, check=check) if include_new_announcements and correct_measurements else None
+        rule_identity=CompanyFieldProofRulesHash(), event_policy=event_policy, read_document=read_document, check=check,
+        unlock_observations=unlock_observations) if include_new_announcements and correct_measurements else None
     if announcement is not None:
         previous = announcement.facts
     annual_receipts: list[CompanyInputReceipt] = []

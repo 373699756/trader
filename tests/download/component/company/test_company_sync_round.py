@@ -1,7 +1,7 @@
 """Persisted scope and transport slots protect retries across process restarts."""
 
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -10,7 +10,9 @@ from tests.helpers.shared.configuration import SqlitePolicyFixture
 from trader.download.application.company_sync import ResumeCompanySyncPendingStep, RunCompanySyncRound
 from trader.download.domain.company_sync import (
     CompanySyncBudget, CompanySyncFamily, CompanySyncPhasePlan, CompanySyncPhaseState, CompanySyncRoundScope, CompanySyncStepResult, CompanySyncInterrupted,
+    CompanySyncUnresolvedDirectoryRequest,
 )
+from trader.download.infra.company_disclosure_source import CNINFO_DIRECTORY_URL
 from trader.download.infra.company_sync_inputs import SQLiteCompanySyncInputStore
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
 from trader.infra.http_contracts import HttpRequest, HttpResponse
@@ -285,6 +287,61 @@ def test_transport_rejection_and_unobserved_slot_cannot_be_reported_as_confirmed
     journal.finish(round_id, CompanySyncFamily.FINANCIAL, CompanySyncStepResult(False, False, failure="source_attempt_unconfirmed"))
     assert journal.family(round_id, CompanySyncFamily.FINANCIAL).unknown_attempts == 1
     assert physical == []
+    transport.close()
+
+
+def _blocked_directory_round(journal, producers, budget, request, directory_state, *, retain_response=False):
+    plans = tuple(producer.plan for producer in producers)
+    round_id = journal.begin(_SCOPE, plans, max_source_calls=budget.max_source_calls)
+    for family in _SCOPE.families:
+        if family is CompanySyncFamily.ANNOUNCEMENTS:
+            journal.start(round_id, family, directory_state)
+            journal.authorize_request(request)
+            if retain_response:
+                journal.retain_directory_response(request, HttpResponse(200, b'{"announcements":[]}'))
+            journal.finish(round_id, family, CompanySyncStepResult(False, False, failure="source_attempt_unconfirmed"))
+        else:
+            journal.start(round_id, family, CompanySyncPhaseState(CanonicalDigest(family), False))
+            journal.finish(round_id, family, CompanySyncStepResult(True, False, pending_count=0))
+    return round_id, plans
+
+
+def test_later_round_preserves_old_unknown_and_blocks_exact_request_or_cursor(tmp_path):
+    journal, producers, budget, _, _, transport = _resources(tmp_path)
+    request = HttpRequest("POST", CNINFO_DIRECTORY_URL, 1, body=b"page=1")
+    directory = CompanySyncPhaseState(CanonicalDigest("old_directory"), True)
+    old, plans = _blocked_directory_round(journal, producers, budget, request, directory)
+    assert not journal.defer_unconfirmed_directory(old, _SCOPE.cutoff + timedelta(hours=1))
+    assert not journal.can_refresh(old)
+
+    following = replace(_SCOPE, cutoff=_SCOPE.cutoff + timedelta(days=1))
+    assert journal.defer_unconfirmed_directory(old, following.cutoff)
+    assert journal.active() is None
+    blocked = journal.family(old, CompanySyncFamily.ANNOUNCEMENTS)
+    assert blocked is not None and blocked.unknown_attempts == journal.source_calls(old) == 1
+
+    new = journal.begin(following, plans, max_source_calls=budget.max_source_calls)
+    journal.start(new, CompanySyncFamily.ANNOUNCEMENTS, directory)
+    with pytest.raises(CompanySyncUnresolvedDirectoryRequest):
+        journal.authorize_request(replace(request, body=b"page=1&new_request_parameter=1"))
+    journal.finish(new, CompanySyncFamily.ANNOUNCEMENTS, CompanySyncStepResult(False, False))
+    journal.start(new, CompanySyncFamily.ANNOUNCEMENTS, replace(directory, identity=CanonicalDigest("new_directory")))
+    with pytest.raises(CompanySyncUnresolvedDirectoryRequest):
+        journal.authorize_request(request)
+    assert journal.source_calls(new) == 0
+    journal.authorize_request(replace(request, body=b"page=2&new_scope=1"))
+    assert journal.source_calls(new) == journal.source_calls(old) == 1
+    transport.close()
+
+
+def test_later_round_preserves_recoverable_old_directory_round(tmp_path):
+    journal, producers, budget, _, _, transport = _resources(tmp_path)
+    request = HttpRequest("POST", CNINFO_DIRECTORY_URL, 1, body=b"page=1")
+    directory = CompanySyncPhaseState(CanonicalDigest("old_directory"), True)
+    old, _ = _blocked_directory_round(journal, producers, budget, request, directory, retain_response=True)
+    assert journal.directory_response(old) is not None
+    assert not journal.defer_unconfirmed_directory(old, _SCOPE.cutoff + timedelta(days=1))
+    assert journal.active().round_id == old
     transport.close()
 
 

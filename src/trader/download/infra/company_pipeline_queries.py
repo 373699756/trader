@@ -12,13 +12,19 @@ from trader.download.domain.company_evidence import (
     EvidenceMarket,
     Market,
 )
+from trader.download.domain.company_unlock_notice import IsCompanyUnlockListingNotice, IsCompanyUnlockListingRevision
 import hashlib
 from pathlib import Path
 from trader.infra.sqlite_connection import SqliteConnection
 
 def _work_policy() -> str:
-    extraction = Path(__file__).resolve().parents[1] / "domain/company_event_extraction.py"
-    return hashlib.sha256(Path(__file__).read_bytes() + extraction.read_bytes()).hexdigest()
+    domain = Path(__file__).resolve().parents[1] / "domain"
+    return hashlib.sha256(Path(__file__).read_bytes() + (domain / "company_event_extraction.py").read_bytes()
+        + (domain / "company_unlock_notice.py").read_bytes()).hexdigest()
+
+
+def _requires_document(title: str) -> bool:
+    return CompanyDocumentNeedsReview(title) or IsCompanyUnlockListingNotice(title) or IsCompanyUnlockListingRevision(title)
 
 
 def PrepareCompanyPipelineQueries(connection: SqliteConnection) -> None:
@@ -38,7 +44,7 @@ def PrepareCompanyPipelineQueries(connection: SqliteConnection) -> None:
     while batch := rows.fetchmany(512):
         connection.run_many(
             "INSERT INTO company_document_requirements VALUES(?)",
-            ((row[0],) for row in batch if CompanyDocumentNeedsReview(row[1])),
+            ((row[0],) for row in batch if _requires_document(row[1])),
         )
         connection.run_many(
             "INSERT INTO company_document_exclusions VALUES(?,'subject_outside_scope')",
@@ -122,7 +128,7 @@ def IndexCompanyDocument(connection: SqliteConnection, rows: Sequence[Disclosure
         (
             (item.source, item.identity)
             for item in rows
-            if item.kind == "announcement" and CompanyDocumentNeedsReview(item.title)
+            if item.kind == "announcement" and _requires_document(item.title)
         ),
     )
     connection.run_many(
@@ -131,7 +137,7 @@ def IndexCompanyDocument(connection: SqliteConnection, rows: Sequence[Disclosure
             (item.source, item.identity)
             for item in rows
             if item.kind != "announcement" or (
-                not CompanyDocumentNeedsReview(item.title) and re.search(r"20[0-9]{2}年(?:年度|第三季度|三季度|三季)报告", item.title) is None
+                not _requires_document(item.title) and re.search(r"20[0-9]{2}年(?:年度|第三季度|三季度|三季)报告", item.title) is None
             )
         ),
     )

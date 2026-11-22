@@ -9,6 +9,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
 from trader.download.application.company_sync import CompanyDirectoryResponseReceipt
 from trader.download.infra.company_disclosure_source import CNINFO_DIRECTORY_URL
@@ -17,6 +18,7 @@ from trader.download.domain.company_sync import CompanySyncRoundIdentity
 from trader.download.domain.company_sync import (
     CompanySyncFamily, CompanySyncFamilyResult, CompanySyncPhasePlan, CompanySyncPhaseState,
     CompanySyncResume, CompanySyncRoundScope, CompanySyncSourceBudgetExceeded, CompanySyncStepResult,
+    CompanySyncUnresolvedDirectoryRequest,
 )
 from trader.infra.atomic_files import AtomicWriteJson
 from trader.infra.http_contracts import HttpAttempt, HttpRequest, HttpResponse
@@ -164,6 +166,39 @@ class SQLiteCompanySyncRoundJournal:
                     return False
             return connection.run("SELECT 1 FROM company_sync_request WHERE round_id=? AND observed=0 LIMIT 1", (round_id,)).fetchone() is None
 
+    def defer_unconfirmed_directory(self, round_id: str, next_cutoff: datetime) -> bool:
+        """Leave an unrecoverable directory attempt charged to its terminal round."""
+        if next_cutoff.utcoffset() is None:
+            raise ValueError("company_round_cutoff_timezone_required")
+        if self.directory_response(round_id) is not None:
+            return False
+        zone = ZoneInfo("Asia/Shanghai")
+        with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
+            row = connection.run("SELECT cutoff FROM company_sync_round WHERE round_id=? AND active=1", (round_id,)).fetchone()
+            if row is None or datetime.fromisoformat(row[0]).astimezone(zone).date() >= next_cutoff.astimezone(zone).date():
+                return False
+            resume_needed = connection.run("""
+                SELECT 1 FROM company_sync_plan p LEFT JOIN company_sync_step s
+                ON s.round_id=p.round_id AND s.family=p.family AND s.step=(
+                    SELECT MAX(last.step) FROM company_sync_step last WHERE last.round_id=p.round_id AND last.family=p.family
+                ) WHERE p.round_id=? AND (s.step IS NULL OR s.complete=0 OR s.can_continue=1) LIMIT 1
+                """, (round_id,)).fetchone()
+            if resume_needed is not None or connection.run("SELECT 1 FROM company_sync_step WHERE round_id=? AND complete=0 LIMIT 1",
+                (round_id,)).fetchone() is not None:
+                return False
+            requests = tuple(connection.run("""
+                SELECT r.family,r.host,r.method,r.failure,s.complete,s.can_continue,s.source_required,s.failure,s.step=(
+                    SELECT MAX(last.step) FROM company_sync_step last WHERE last.round_id=r.round_id AND last.family=r.family
+                ) FROM company_sync_request r JOIN company_sync_step s USING(round_id,family,step)
+                WHERE r.round_id=? AND r.observed=0 ORDER BY r.attempt LIMIT 2
+                """, (round_id,)))
+            if len(requests) != 1 or tuple(requests[0]) != (
+                CompanySyncFamily.ANNOUNCEMENTS.value, _DIRECTORY_HOST, "POST", "", 1, 0, 1, "source_attempt_unconfirmed", 1,
+            ):
+                return False
+            connection.run("UPDATE company_sync_round SET active=0 WHERE round_id=? AND active=1", (round_id,))
+        return True
+
     def source_calls(self, round_id: str) -> int:
         with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
             return _source_calls(connection, round_id)
@@ -261,15 +296,26 @@ class SQLiteCompanySyncRoundJournal:
             raise ValueError("company_sync_request_outside_source_step")
         round_id, family, step = executing
         with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
-            row = connection.run("SELECT source_required,complete FROM company_sync_step WHERE round_id=? AND family=? AND step=?", (round_id, family.value, step)).require_one()
+            row = connection.run("SELECT source_required,complete,state_hash FROM company_sync_step WHERE round_id=? AND family=? AND step=?", (round_id, family.value, step)).require_one()
             if not row[0] or row[1]:
                 raise ValueError("company_sync_request_outside_source_step")
             maximum = connection.run("SELECT max_source_calls FROM company_sync_round WHERE round_id=? AND active=1", (round_id,)).require_one()[0]
             if _source_calls(connection, round_id) >= maximum:
                 raise CompanySyncSourceBudgetExceeded("company_sync_source_budget_exhausted")
+            request_hash = _request_hash(request.method, request.url, request.body)
+            host = urlsplit(request.url).hostname or ""
+            if family is CompanySyncFamily.ANNOUNCEMENTS and request.method == "POST" and host == _DIRECTORY_HOST:
+                unsettled = connection.run("""
+                    SELECT 1 FROM company_sync_request r JOIN company_sync_round old USING(round_id)
+                    JOIN company_sync_step s USING(round_id,family,step)
+                    WHERE old.active=0 AND r.family=? AND r.observed=0 AND r.host=? AND r.method='POST'
+                      AND s.failure='source_attempt_unconfirmed' AND (r.request_hash=? OR s.state_hash=?) LIMIT 1
+                    """, (family.value, host, request_hash, row[2])).fetchone()
+                if unsettled is not None:
+                    raise CompanySyncUnresolvedDirectoryRequest("previous_directory_attempt_unconfirmed")
             connection.run("""INSERT INTO company_sync_request(round_id,family,step,request_hash,host,method)
                 VALUES(?,?,?,?,?,?)""", (round_id, family.value, step,
-                _request_hash(request.method, request.url, request.body), urlsplit(request.url).hostname or "", request.method))
+                request_hash, host, request.method))
 
     def retain_directory_response(self, request: HttpRequest, response: HttpResponse) -> None:
         """Save only the complete response bound to the current reserved directory request."""

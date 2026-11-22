@@ -93,7 +93,7 @@ def AuditCompanySyncRounds(
             return time.monotonic() >= stop_at
         result = ExecuteCompanySync(
             isolated, scope, cancel_requested=cancelled,
-            report=CreateSyncProgress(), fill=False,
+            report=CreateSyncProgress(), fill=False, admit_observations=True,
         )
         observations.append({
             "invocation": number, "round_id": result.round_id, "scope_identity": result.scope.identity,
@@ -144,7 +144,7 @@ def AuditCompanySyncRestart(
     RequireIsolatedReplay(directory, (settings.project_root, settings.data_paths.root, settings.runtime_dir))
     isolated = replace(settings, data_paths=DataPaths(directory / "data"), runtime_dir=directory / "runtime")
     policy = BuildSqlitePolicy(isolated)
-    reader = SQLiteCompanyEvidenceReader(isolated.data_paths.company,
+    reader = SQLiteCompanyEvidenceReader(isolated.data_paths.company_published,
         event_policy=LoadStrategySettings(isolated.strategy_config_path).company_scoring.events, sqlite_policy=policy)
     journal = SQLiteCompanySyncRoundJournal(isolated.data_paths.company_sync, sqlite_policy=policy,
         publication_identity=reader.publication_identity)
@@ -161,7 +161,7 @@ def AuditCompanySyncRestart(
     requested_scope = scope if requested_cutoff is None else CompanySyncRoundScope(scope.codes, requested_cutoff, scope.families)
     stop_at = time.monotonic() + seconds
     result = ExecuteCompanySync(isolated, requested_scope, cancel_requested=lambda: time.monotonic() >= stop_at,
-        report=CreateSyncProgress(), fill=False)
+        report=CreateSyncProgress(), fill=False, admit_observations=True)
     calls = tuple(item.source_calls for item in result.families)
     after_calls = sum(value for value in calls if value is not None) if len(calls) == len(scope.families) and all(value is not None for value in calls) else None
     return {

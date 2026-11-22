@@ -1291,7 +1291,7 @@ def _build_publication(
 
 def ExecuteCompanySync(
     settings: RuntimeSettings, scope: CompanySyncRoundScope, *,
-    cancel_requested: Callable[[], bool], report: SyncProgress, fill: bool,
+    cancel_requested: Callable[[], bool], report: SyncProgress, fill: bool, admit_observations: bool = False,
 ) -> CompanySyncRoundResult:
     from trader.download.domain.company_sync import CompanySyncBudget, CompanySyncInterrupted
     from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
@@ -1337,9 +1337,10 @@ def ExecuteCompanySync(
 
     with ExitStack() as resources:
         resources.enter_context(ProcessLock(paths.company_collection.parent / "evidence.lock", label="sync company"))
-        facts = SQLiteCompanyFactsIndex(paths.company, event_policy=event_policy, sqlite_policy=sqlite_policy,
+        formal_path = paths.company_published if admit_observations else paths.company
+        facts = SQLiteCompanyFactsIndex(formal_path, event_policy=event_policy, sqlite_policy=sqlite_policy,
                                        cancel_requested=stopped, io_budget=io_budget)
-        reader = company_facts_reader.SQLiteCompanyEvidenceReader(paths.company, event_policy=event_policy,
+        reader = company_facts_reader.SQLiteCompanyEvidenceReader(formal_path, event_policy=event_policy,
             sqlite_policy=sqlite_policy, io_budget=io_budget)
         journal = SQLiteCompanySyncRoundJournal(paths.company_sync, sqlite_policy=sqlite_policy,
                                                publication_identity=reader.publication_identity, io_budget=io_budget)
@@ -1443,7 +1444,7 @@ def ExecuteCompanySync(
             news_source=structured, official_source=official, io_budget=io_budget,
             document_configuration=configuration, document_policies=policies, wall_clock=ShanghaiClock(_utc_now).now,
             observe_scope=observe_scope, observe=observe_family, activity=progress.activity,
-            source_ready=lambda: time.monotonic() < source_deadline)
+            source_ready=lambda: time.monotonic() < source_deadline, admit_observations=admit_observations)
         budget = CompanySyncBudget(configuration.round_step_limit, configuration.round_request_limit,
             min(256, configuration.round_step_limit), deadline)
         try:

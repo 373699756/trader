@@ -192,6 +192,10 @@ class CompanySyncSourceBudgetExceeded(RuntimeError):
     """The fixed round has no remaining physical HTTP allowance."""
 
 
+class CompanySyncUnresolvedDirectoryRequest(RuntimeError):
+    """An earlier frozen round already reserved this unconfirmed directory request."""
+
+
 class CompanySyncInterrupted(InterruptedError):
     """An explicit coordinator cancellation/deadline check stopped this step."""
 

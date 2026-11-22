@@ -1,20 +1,126 @@
-"""Read historical financial source proofs without producing PDF financial replacements."""
+"""Prepare exact issuer financial proof and read published material dependencies."""
 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Sequence
+import re
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
-from trader.download.domain.company_evidence import CompanyFinancial, Disclosure
+from trader.download.domain.company_evidence import CompanyDocument, CompanyFinancial, Disclosure
+from trader.download.domain.company_financial_admission import CompanyFinancialAdmission, CompanyFinancialRevisionProof, MatchCompanyFinancialOriginal
 from trader.download.domain.company_financial_report import COMPANY_FINANCIAL_REPORT_DIGEST, COMPANY_FINANCIAL_REPORT_FIELDS, CompanyFinancialReportField, CompanyFinancialReportState
+from trader.download.domain.company_source_records import CompanyFinancialSourceObservation
 from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
-from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
+from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_connection import SqliteConnection
 
 _STATES: tuple[CompanyFinancialReportState, ...] = ("numeric", "not_applicable", "not_disclosed", "not_meaningful", "unquantified", "unsupported")
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+_PERIODIC = re.compile(r"(20[0-9]{2})年(第一季度|一季度|一季|半年度|中期|第三季度|三季度|三季|年度)报告")
+_ORIGINAL_QUARTER = re.compile(r"(?:[\u4e00-\u9fffA-Za-z0-9（）():：·]{0,80})?20[0-9]{2}年(?:第三季度|三季度|三季)报告(?:全文|正文)?")
+_CORRECTION = re.compile(r"更正|修订|调整|重述|补充|差错|撤回|取消|作废")
+_FINANCIAL = re.compile(r"财务|财报|报表|会计|利润|报告")
+_PERIOD_END = {
+    "第一季度": (3, 31), "一季度": (3, 31), "一季": (3, 31), "半年度": (6, 30), "中期": (6, 30),
+    "第三季度": (9, 30), "三季度": (9, 30), "三季": (9, 30), "年度": (12, 31),
+}
+
+
+def PrepareCompanyFinancialAdmissions(
+    collected: SqliteConnection,
+    observations: tuple[CompanyFinancialSourceObservation, ...],
+    cutoff: datetime,
+    *,
+    read_document: Callable[[bytes], str],
+    check: Callable[[], None],
+    revision_proofs: tuple[CompanyFinancialRevisionProof, ...] = (),
+) -> tuple[CompanyFinancialAdmission, ...]:
+    """Use retained originals with explicit issuer revision proof, without requests."""
+    if cutoff.utcoffset() is None:
+        raise ValueError("company_financial_admission_cutoff_invalid")
+    if not revision_proofs:
+        return ()
+    cutoff = cutoff.astimezone(_SHANGHAI)
+    proofs: dict[tuple[str, date, str], list[CompanyFinancialRevisionProof]] = {}
+    for proof in revision_proofs:
+        if proof.checked_through == cutoff:
+            proofs.setdefault((proof.original.codes[0], proof.report_date, proof.source_record_hash), []).append(proof)
+    results = []
+    for item in observations:
+        check()
+        report = item.financial
+        matched = proofs.get((*item.business_key, item.record_hash), ())
+        if len(matched) != 1 or item.observed_at > cutoff or (report.report_date.month, report.report_date.day) != (9, 30):
+            continue
+        proof = matched[0]
+        start = report.report_date + timedelta(days=1)
+        rows = collected.run("""SELECT d.*,c.code,
+            (SELECT COUNT(*) FROM disclosure_codes m WHERE m.disclosure_id=d.id) AS member_count,
+            (SELECT COUNT(*) FROM document_extractions x WHERE x.disclosure_id=d.id AND x.record_hash=d.record_hash) AS extracted,
+            EXISTS(SELECT 1 FROM document_supersessions s WHERE s.disclosure_id=d.id OR s.replacement_id=d.id) AS supersession
+            FROM disclosure_codes c JOIN disclosures d ON d.id=c.disclosure_id
+            WHERE c.code=? AND d.kind='announcement' AND d.published_at>=? AND d.published_at<=?
+            AND (d.title LIKE '%报告%' OR d.title LIKE '%财务%' OR d.title LIKE '%财报%'
+                OR d.title LIKE '%报表%' OR d.title LIKE '%会计%' OR d.title LIKE '%利润%')
+            ORDER BY d.published_at,d.source,d.source_key""", (report.code, start.isoformat(), cutoff.isoformat())).fetchall()
+        originals = []
+        for row in rows:
+            title = "".join(row["title"].split())
+            period = _period(title)
+            if (period is not None and period > report.report_date
+                or _CORRECTION.search(title) and _FINANCIAL.search(title)):
+                break
+            if period == report.report_date and _ORIGINAL_QUARTER.fullmatch(title) is not None:
+                originals.append(row)
+        else:
+            if len(originals) == 1:
+                row = originals[0]
+                disclosure = DecodeCompanyDisclosure(row)
+                digest = row["body_hash"]
+                if (disclosure != proof.original or row["member_count"] != 1 or row["extracted"] != 1 or row["supersession"]
+                    or not row["body_checked"] or not row["body_retained"] or not isinstance(digest, bytes) or len(digest) != 32):
+                    continue
+                check()
+                try:
+                    body = read_document(digest)
+                except InterruptedError:
+                    raise
+                except (OSError, ValueError, EOFError):
+                    continue
+                if hashlib.sha256(body.encode()).digest() != digest:
+                    continue
+                check()
+                admitted = MatchCompanyFinancialOriginal(item, CompanyDocument(disclosure, body, True), cutoff)
+                if admitted is not None:
+                    results.append(CompanyFinancialAdmission(admitted, item, digest, proof))
+    return tuple(results)
+
+
+def _period(title: str) -> date | None:
+    match = _PERIODIC.search(title)
+    return date(int(match[1]), *_PERIOD_END[match[2]]) if match is not None else None
+
+
+def CompanyFinancialAdmissionReceipts(
+    proof: CompanyFinancialAdmission,
+    *,
+    extraction_hash: bytes,
+    published_at: datetime,
+) -> tuple[CompanyInputReceipt, ...]:
+    """Bind the exact official body, supplier row and admitted values together."""
+    original, supplier = proof.revision.original, proof.supplier
+    policy = (f"financial_issuer_original:{proof.report.report_date}:{supplier.record_hash}:"
+              f"{CanonicalDigest(proof.report)}:{proof.revision.authority_evidence_hash.hex()}")
+    return (
+        CompanyInputReceipt(original.source, original.identity, proof.report.code, original.digest,
+            extraction_hash, proof.body_hash, published_at, "valid", "financial_issuer_original"),
+        CompanyInputReceipt(original.source, original.identity, proof.report.code, original.digest,
+            hashlib.sha256(policy.encode()).digest(), proof.body_hash, published_at, "field_attempted", policy),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,10 +149,13 @@ def ReadCompanyFinancialMaterials(formal: SqliteConnection, codes: Sequence[str]
     materials: list[CompanyFinancialMaterial] = []
     for row in formal.run(
         f"SELECT code,source_key,policy_id FROM company_input_receipt WHERE code IN ({slots}) "
-        "AND outcome='field_attempted' AND policy_id LIKE 'financial_source:%'", codes,
+        "AND outcome='field_attempted' AND (policy_id LIKE 'financial_source:%' OR policy_id LIKE 'financial_issuer_original:%')", codes,
     ):
         parts = row[2].split(":")
-        if len(parts) != 6 or parts[3] not in COMPANY_FINANCIAL_REPORT_FIELDS or parts[4] not in _STATES:
+        if parts[0] == "financial_issuer_original":
+            if len(parts) != 5 or any(re.fullmatch(r"[0-9a-f]{64}", part) is None for part in parts[2:]):
+                raise ValueError("company_financial_source_policy_invalid")
+        elif len(parts) != 6 or parts[3] not in COMPANY_FINANCIAL_REPORT_FIELDS or parts[4] not in _STATES:
             raise ValueError("company_financial_source_policy_invalid")
         materials.append(CompanyFinancialMaterial(row[0], row[1], date.fromisoformat(parts[1])))
     return tuple(materials)
@@ -136,4 +245,4 @@ def ReadCompanyFinancialSourceProofs(
                 break
     return tuple(proofs)
 
-__all__ = ["CompanyFinancialSourceProof", "CompanyFinancialMaterial", "ReadCompanyFinancialMaterials", "CompanyFinancialReportValue", "ReadCompanyFinancialSourceProofs"]
+__all__ = ["CompanyFinancialAdmissionReceipts", "CompanyFinancialSourceProof", "CompanyFinancialMaterial", "PrepareCompanyFinancialAdmissions", "ReadCompanyFinancialMaterials", "CompanyFinancialReportValue", "ReadCompanyFinancialSourceProofs"]

@@ -30,6 +30,7 @@ from trader.download.infra.company_financial_observations import (
     ReadCompanyFinancialObservations,
     ReadRoundCompanyFinancialBatch,
     ReadRoundCompanyFinancialObservations,
+    ReadRoundLatestCompanyFinancialObservations,
     WriteCompanyFinancialObservations,
 )
 from trader.download.infra.company_fact_inputs import BindCompanyEvidenceSource
@@ -198,6 +199,30 @@ class SQLiteCompanyNormalizedIndex:
             self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy,
         ) as connection, SqliteTransaction(connection):
             return ReadRoundCompanyFinancialBatch(connection, scope, len(codes))
+
+    def latest_financial_observations(
+        self, query: StructuredCompanyQuery, codes: tuple[str, ...], cutoff: datetime,
+    ) -> tuple[CompanyFinancialSourceObservation, ...]:
+        """Read the per-issuer latest values only after the frozen page ledger closes."""
+        scope = self._scope(query, codes, cutoff)
+        self._check_cancelled()
+        with self._session(
+            self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy,
+        ) as connection, SqliteTransaction(connection):
+            if _closed_financial_observation_watermark(connection, scope) is None:
+                return ()
+            return ReadRoundLatestCompanyFinancialObservations(connection, scope)
+
+    def financial_observation_watermark(
+        self, query: StructuredCompanyQuery, codes: tuple[str, ...], cutoff: datetime,
+    ) -> str | None:
+        """Identify the exact accepted page content after all pages are present."""
+        scope = self._scope(query, codes, cutoff)
+        self._check_cancelled()
+        with self._session(
+            self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy,
+        ) as connection, SqliteTransaction(connection):
+            return _closed_financial_observation_watermark(connection, scope)
 
     def accept(self, query: StructuredCompanyQuery, page: CompanyFinancialSourcePage, codes: tuple[str, ...], cutoff: datetime, *, eligible_codes: tuple[str, ...] | None = None) -> None:
         scope = self._scope(query, codes, cutoff)
@@ -479,6 +504,19 @@ def _intent_parent(row: tuple[object, ...]) -> CompanyPublicationIdentity | None
     if not isinstance(row[1], bytes) or not isinstance(row[2], bytes):
         raise ValueError("company_normalization_intent_invalid")
     return CompanyPublicationIdentity(row[1], row[2], RequireCompanyTime(row[3]))
+
+
+def _closed_financial_observation_watermark(connection: SqliteConnection, scope: str) -> str | None:
+    pages = tuple(tuple(row) for row in connection.run(
+        "SELECT page,pages,total,raw_count,response_hash FROM company_round_page WHERE scope=? ORDER BY page", (scope,),
+    ))
+    if not pages or pages[-1][0] != pages[-1][1]:
+        return None
+    last, declared_pages, total, _, _ = pages[-1]
+    if (last != len(pages) or sum(row[3] for row in pages) != total
+        or any((page, declared_pages, total) != row[:3] for page, row in enumerate(pages, 1))):
+        raise CompanyInputValidationFailure("company_round_count_mismatch")
+    return CanonicalDigest((scope, pages))
 
 
 def _has_current_field_rules(connection: SqliteConnection) -> bool:

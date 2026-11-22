@@ -11,11 +11,13 @@ from tests.download.component.company.test_company_sync_round import _SCOPE
 from tests.download.component.company.test_company_sync_runtime import _runtime
 from tests.helpers.download.configuration import CompanySyncConfigurationFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
+from trader.download.application.company_financial_producer import BuildCompanyFinancialRoundQuery
 from trader.download.application.company_sync import ResumeCompanySyncPendingStep, RunCompanySyncRound
-from trader.download.domain.company_evidence import BuildCompanyDocumentPolicies, CompanyDocumentExtraction, CompanyDocumentFailure, Disclosure, DisclosurePage
-from trader.download.domain.company_events import CompanyEventStatus, CompanyRiskType
+from trader.download.domain.company_evidence import BuildCompanyDocumentPolicies, CompanyDocumentExtraction, CompanyDocumentFailure, CompanyRatio, Disclosure, DisclosurePage, StructuredCompanyPage, StructuredCompanyQuery
+from trader.download.domain.company_events import CompanyDataState, CompanyEventStatus, CompanyRiskType
 from trader.download.domain.company_sync import CompanySyncBudget, CompanySyncFamily, CompanySyncStepResult
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
+from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
 from trader.download.infra.company_sync_producers import CompanyAnnouncementProducer
 from trader.infra.http_contracts import HttpResponse
@@ -37,12 +39,80 @@ _INVESTIGATION = "证券代码：600001\n证券简称：测试公司\n公告编�
 _DETAIL = "本公司将依照有关规定持续履行信息披露义务，相关内容请以本次正式公告为准。"
 _PLAN = "证券代码：600001 公告编号：2026-101\n关于回购股份的公告\n本公司拟回购股份，回购股份用于注销。" + _DETAIL
 _PROGRESS = "证券代码：600001 公告编号：2026-102\n关于回购股份进展的公告\n本公司就公告编号：2026-101所述方案披露实施进展。已实际回购股份占公司总股本的比例为0.2%，回购股份用于注销。" + _DETAIL
+_UNLOCK_TITLE = "首次公开发行前股票期权行权限售股上市流通公告"
+_UNLOCK = "证券代码：600001 公告编号：2026-045\n本公司董事会保证公告内容真实、准确和完整。\n本次股票上市流通总数为2,034,800股。\n本次股票上市流通日期为2026年11月27日。\n本次上市流通的限售股数量为2,034,800股，股东数量为41人，占截至本公告披露之日公司总股本比例为0.024%。"
 
 
 def _run(runtime, transport, *, steps=80):
     with transport:
         return runtime.run(_SCOPE.codes, _SCOPE.cutoff, CompanySyncBudget(100, 0, steps, 10),
             cancel_requested=lambda: False, monotonic=lambda: 0)
+
+
+@pytest.mark.parametrize("scenario", ("verified", "active_default", "source_only", "scoped_denominator", "wrong_date", "wrong_ratio", "later_revision", "prior_complete"))
+def test_unlock_admits_exact_issuer_event_without_completing_the_window(tmp_path, scenario):
+    admit = scenario != "active_default"
+    runtime, reader, transport, physical = _runtime(tmp_path, admit_observations=admit)
+    runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
+    observed_at = _SCOPE.cutoff.date()
+    day = observed_at + timedelta(days=10)
+    observation = CompanyRatio(_SCOPE.codes[0], day, 0.0242738391)
+    if scenario == "prior_complete":
+        prior, = reader.read(_SCOPE.codes)
+        prior = replace(prior, unlock_checked_at=_SCOPE.cutoff, unlock_coverage_end=observed_at + timedelta(days=180),
+            unlock_state=CompanyDataState.COMPLETE)
+        runtime.normalized.publish_prepared(_SCOPE.codes, (prior,), (), (), (), _SCOPE.cutoff,
+            field_rules_hash=CompanyFieldProofRulesHash())
+    if scenario != "source_only":
+        title = _UNLOCK_TITLE
+        body = _UNLOCK
+        if scenario == "scoped_denominator":
+            body = body.replace("公司总股本", "公司流通股本")
+        elif scenario == "wrong_date":
+            body = body.replace("11月27日", "11月28日")
+        elif scenario == "wrong_ratio":
+            body = body.replace("0.024%", "0.025%")
+        notice = _material(runtime, body, key="unlock", title=title, days=2)
+        if scenario == "later_revision":
+            runtime.material.register_disclosures((replace(notice, identity="revision", title=f"{title}的更正公告",
+                published_at=_SCOPE.cutoff - timedelta(days=1), digest="a" * 64),))
+    before = runtime.field_watermark(_SCOPE, _SCOPE.codes, lambda: None)
+    runtime.inputs.accept_ratios(_SCOPE.identity, StructuredCompanyQuery("unlock", observed_at, day),
+        StructuredCompanyPage("unlock", 1, 1, 1, ratios=(observation,)), _SCOPE.cutoff)
+    assert (runtime.field_watermark(_SCOPE, _SCOPE.codes, lambda: None) != before) is admit
+    if scenario == "verified":
+        _run(runtime, transport)
+    else:
+        runtime.prepare_local(_SCOPE, check=lambda: None, cancel_requested=lambda: False, eligible_codes=_SCOPE.codes,
+            financial_query=BuildCompanyFinancialRoundQuery(_SCOPE.cutoff))
+    fact, = reader.read(_SCOPE.codes)
+    assert fact.pending_document_count == 0
+    assert not fact.risk_events and not fact.positive_events and physical == []
+    with SqliteSession(runtime.facts.path) as formal:
+        valid = formal.run("SELECT source_key FROM company_input_receipt WHERE outcome='valid'").fetchall()
+    if scenario == "prior_complete":
+        assert not fact.unlock_schedule and not valid
+        assert (fact.unlock_state, fact.unlock_checked_at, fact.unlock_coverage_end) == (
+            prior.unlock_state, prior.unlock_checked_at, prior.unlock_coverage_end,
+        )
+        return
+    assert fact.unlock_checked_at is None and fact.unlock_coverage_end is None
+    if scenario != "verified":
+        assert fact.unlock_schedule == () and fact.unlock_state is CompanyDataState.UNAVAILABLE
+        assert not valid
+        return
+    assert fact.unlock_schedule == (replace(observation, ratio_pct=0.024),)
+    assert fact.unlock_state is CompanyDataState.PARTIAL
+    assert [row[0] for row in valid] == ["unlock"]
+    assert any((review.scope, review.reason_code, review.evidence_id) == ("unlock", "window_incomplete", "unlock") for review in fact.review_reasons)
+    link, = reader.read_document_links(_SCOPE.codes).links
+    assert link.link.evidence_id == "unlock" and link.link.body_checked
+    with SqliteSession(runtime.material.path) as storage:
+        assert storage.run("SELECT scope,reason_code FROM company_material_dependencies").require_one()[:] == ("unlock", "window_incomplete")
+    head = reader.publication_identity()
+    runtime._read_document = lambda digest: pytest.fail("proved_unlock_original_must_not_be_read_again")
+    _run(runtime, transport)
+    assert reader.publication_identity() == head and physical == []
 
 
 def test_retained_new_original_reaches_normal_formal_reader_without_a_source_budget(tmp_path):

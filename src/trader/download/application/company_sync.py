@@ -8,6 +8,7 @@ from typing import Protocol
 from trader.download.domain.company_sync import (
     CompanySyncBudget,CompanySyncFamily,CompanySyncFamilyResult,CompanySyncPhasePlan,CompanySyncPhaseState,
     CompanySyncRoundResult,CompanySyncRoundScope,CompanySyncSourceBudgetExceeded,CompanySyncStepResult,CompanySyncInterrupted,CompanySourceCancelled,
+    CompanySyncUnresolvedDirectoryRequest,
 )
 from trader.download.domain.company_evidence import CompanyInputValidationFailure, CompanySourceFailure
 from trader.download.domain.download_failure import DownloadValidationFailure
@@ -279,6 +280,9 @@ def _invoke_step(producer:CompanySyncProducer,scope:CompanySyncRoundScope,budget
         return producer.advance(scope,cancel_requested=cancel_requested,deadline=budget.deadline)
     except CompanySyncSourceBudgetExceeded:
         return CompanySyncStepResult(False,False,gaps=("source_budget_exhausted",))
+    except CompanySyncUnresolvedDirectoryRequest:
+        code = "previous_directory_attempt_unconfirmed"
+        return CompanySyncStepResult(False, False, gaps=(code,), failure=code)
     except InterruptedError:
         raise
     except CompanySourceCancelled as exc:

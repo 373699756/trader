@@ -1,5 +1,6 @@
 """Company resource orchestration with explicit clients and one formal owner."""
 
+import logging
 import sqlite3
 from collections import defaultdict
 from collections.abc import Callable, Iterator
@@ -15,11 +16,14 @@ from trader.download.application.company_source_ports import (
 from trader.download.application.company_sync import CompanySyncProducer, ResumeCompanySyncPendingStep, RunCompanySyncRound
 from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy
 from trader.download.domain.company_evidence import (
-    CompanyDatabaseIncompatibleError, CompanyDownloadStore, CompanyDocumentPolicies, CompanySyncConfiguration, EvidenceMarket, StructuredCompanyQuery,
+    CompanyDatabaseIncompatibleError, CompanyDownloadStore, CompanyDocumentPolicies, CompanyRatio, CompanySyncConfiguration, EvidenceMarket, StructuredCompanyQuery,
 )
 from trader.download.domain.company_facts import CompanyFacts
+from trader.download.domain.company_financial_admission import CompanyFinancialAdmission, CompanyFinancialRevisionProof
 from trader.download.domain.company_document_links import CompanyPublishedEvidenceLink
 from trader.download.domain.company_field_results import CompanyFieldConclusion
+from trader.download.domain.company_normalization import ApplyCompanyFinancialAdmission
+from trader.download.domain.company_source_records import CompanyFinancialSourceObservation
 from trader.download.domain.company_sync import (
     CompanySyncBudget, CompanySyncFamily, CompanySyncFamilyResult, CompanySyncInterrupted, CompanySyncPhasePlan, CompanySyncPhaseState,
     CompanySyncRoundResult, CompanySyncRoundScope, CompanySyncStepResult, CompanySourceCancelled,
@@ -30,6 +34,7 @@ from trader.download.infra.company_facts_index import CompanyPublicationIdentity
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
 from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
 from trader.download.infra.company_field_recovery import RegisterCompanyMaterialDependencies
+from trader.download.infra.company_financial_publication import CompanyFinancialAdmissionReceipts, PrepareCompanyFinancialAdmissions
 from trader.download.infra.company_material_index import SQLiteCompanyMaterialIndex
 from trader.download.infra.company_normalized_index import CompanyNormalizationBaseline, SQLiteCompanyNormalizedIndex
 from trader.download.infra.company_sync_inputs import SQLiteCompanySyncInputStore
@@ -64,6 +69,8 @@ class CompanySyncRuntime:
         observe: Callable[[CompanySyncFamilyResult], None] | None = None,
         activity: Callable[[CompanySyncFamily], AbstractContextManager[None]] | None = None,
         source_ready: Callable[[], bool] | None = None,
+        admit_observations: bool = False,
+        financial_revision_proofs: tuple[CompanyFinancialRevisionProof, ...] = (),
     ) -> None:
         paths = (normalized.path, facts.path, material.path, journal.path, inputs.path)
         if any(path.is_symlink() for path in paths) or any(
@@ -82,6 +89,8 @@ class CompanySyncRuntime:
         self._observe = observe
         self._activity = activity
         self._source_ready = source_ready
+        self._admit_observations = admit_observations
+        self._financial_revision_proofs = financial_revision_proofs
         self._execution_scope: CompanySyncRoundScope | None = None
         self._execution_round_id = ""
 
@@ -157,6 +166,7 @@ class CompanySyncRuntime:
     ) -> CompanySyncRoundResult:
         if cancel_requested() or monotonic() >= budget.deadline:
             return CompanySyncRoundResult("", CompanySyncRoundScope(codes, cutoff), (), cancel_requested(), not cancel_requested(), "")
+        requested_scope = CompanySyncRoundScope(codes, cutoff)
         active = self.journal.active()
         exhausted_same_day = active is not None and cutoff.astimezone(active.scope.cutoff.tzinfo).date() == active.scope.cutoff.date() and (
             self.journal.source_calls(active.round_id) >= active.max_source_calls
@@ -167,11 +177,15 @@ class CompanySyncRuntime:
             if not exhausted_same_day:
                 self.journal.finish_refresh(active.round_id)
                 active = None
+        elif (active is not None and new_refresh and requested_scope.cutoff.date() > active.scope.cutoff.date()
+            and self.journal.defer_unconfirmed_directory(active.round_id, requested_scope.cutoff)):
+            logging.getLogger(__name__).warning("公司旧轮次公告响应未确认，保留已占用额度和原请求。新范围独立推进。")
+            active = None
         if active is not None:
             scope = active.scope
             budget = replace(budget, max_source_calls=active.max_source_calls)
         else:
-            scope = CompanySyncRoundScope(codes, cutoff)
+            scope = requested_scope
         self._execution_scope = scope
         eligible_codes = tuple(code for code in scope.codes if code in codes)
         news_codes = self.inputs.freeze_news_codes(scope.identity, tuple(code for code in news_codes if code in scope.codes))
@@ -196,11 +210,11 @@ class CompanySyncRuntime:
                     (POSITIVE_TYPES[CompanyPositiveType.OPERATING_CONTRACT],)) if row[0] in eligible_codes)
                 return ReadCompanyFactRows(formal, selected)
         query = financial_query or BuildCompanyFinancialRoundQuery(scope.cutoff)
-        fields = _FieldProducer(self, monotonic, eligible_codes)
+        fields = _FieldProducer(self, monotonic, eligible_codes, query)
         announcements = CompanyAnnouncementProducer(self.inputs, self.material, self._official_source, scope,
             sqlite_policy=self._sqlite_policy, extraction_hash=self.facts.extraction_hash, io_budget=self._io_budget,
             current_codes=eligible_codes, configuration=self._document_configuration, policies=self._document_policies,
-            wall_clock=self._wall_clock)
+            wall_clock=self._wall_clock, admit_observations=self._admit_observations)
         producers: tuple[CompanySyncProducer, ...] = (
             CompanyFinancialProducer(self.normalized, self._financial_source, query, qualification_gaps=(
                 "latest_financial_population_unverified", "financial_first_disclosure_revision_unverified"), current_codes=eligible_codes),
@@ -263,7 +277,9 @@ class CompanySyncRuntime:
         """Explicit maintenance; publication never calls this operation."""
         self.material.clean_material(cutoff)
 
-    def field_watermark(self, scope: CompanySyncRoundScope, eligible_codes: tuple[str, ...], check: Callable[[], None]) -> str:
+    def field_watermark(self, scope: CompanySyncRoundScope, eligible_codes: tuple[str, ...], check: Callable[[], None], *,
+        financial_query: StructuredCompanyQuery | None = None,
+    ) -> str:
         check()
         eligible = frozenset(eligible_codes)
         markets = tuple(sorted({EvidenceMarket(code) for code in eligible_codes}))
@@ -271,8 +287,10 @@ class CompanySyncRuntime:
         with self._session(self.facts.path, check=check, read_only=True) as formal, SqliteTransaction(formal):
             facts = ReadCompanyFactRows(formal, eligible_codes)
             publication = ReadCompanyPublicationIdentity(formal)
+        financial_proofs = self._financial_revision_proofs if self._admit_observations else ()
         identities = tuple(sorted({identity for fact in facts for event in fact.risk_events + fact.positive_events for identity in event.evidence_ids}
-            | {review.evidence_id for fact in facts for review in fact.review_reasons if review.evidence_id is not None}))
+            | {review.evidence_id for fact in facts for review in fact.review_reasons if review.evidence_id is not None}
+            | {proof.original.identity for proof in financial_proofs if proof.original.codes[0] in eligible}))
         with self._session(self.material.path, check=check, read_only=True) as raw, SqliteTransaction(raw):
             coverage = tuple(tuple(row) for row in raw.run(
                 "SELECT market,start_date,end_date FROM coverage "
@@ -295,9 +313,19 @@ class CompanySyncRuntime:
                 for row in raw.run("SELECT c.code,d.source,d.source_key,d.record_hash,d.body_hash,d.body_checked,d.body_retained FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id WHERE d.source_key IN (" + ",".join("?" for _ in batch) + ") ORDER BY c.code,d.source,d.source_key", batch):
                     if row[0] in eligible:
                         material.append((row[0], row[1], row[2], row[3], row[4].hex() if isinstance(row[4], bytes) else None, row[5], row[6]))
-        return CanonicalDigest((self.inputs.field_input_identity(scope.identity), coverage,
+        inputs: tuple[object, ...] = (self.inputs.field_input_identity(scope.identity), coverage,
             tuple(sorted(set(material), key=lambda row: (str(row[0]), str(row[1]), str(row[2])))),
-            publication.content_hash.hex() if publication is not None else None))
+            publication.content_hash.hex() if publication is not None else None)
+        if self._admit_observations:
+            inputs += (self.inputs.ratios(scope.identity, "unlock"),)
+        if financial_proofs:
+            query = financial_query or BuildCompanyFinancialRoundQuery(scope.cutoff)
+            inputs += (
+                self.normalized.financial_observation_watermark(query, scope.codes, scope.cutoff),
+                tuple((proof.original, proof.report_date, proof.checked_from, proof.checked_through,
+                    proof.source_record_hash, proof.authority_evidence_hash.hex()) for proof in financial_proofs),
+            )
+        return CanonicalDigest(inputs)
 
     @contextmanager
     def _session(self, path: Path, *, check: Callable[[], None], read_only: bool) -> Iterator[SqliteConnection]:
@@ -321,13 +349,22 @@ class CompanySyncRuntime:
                 check()
             raise
 
-    def prepare_local(self, scope: CompanySyncRoundScope, *, check: Callable[[], None], cancel_requested: Callable[[], bool], eligible_codes: tuple[str, ...]) -> CompanySyncStepResult:
+    def prepare_local(self, scope: CompanySyncRoundScope, *, check: Callable[[], None], cancel_requested: Callable[[], bool],
+        eligible_codes: tuple[str, ...], financial_query: StructuredCompanyQuery,
+    ) -> CompanySyncStepResult:
         check()
         if not eligible_codes:
             return CompanySyncStepResult(True, False, pending_count=None, gaps=("population_members_became_ineligible",))
         rules_hash = CompanyFieldProofRulesHash()
         recovered = self.inputs.pending_recovered(scope.identity)
         annuals = self.inputs.annuals(scope.identity)
+        unlock_by_code: dict[str, list[CompanyRatio]] = defaultdict(list)
+        observations: tuple[CompanyFinancialSourceObservation, ...] = ()
+        if self._admit_observations:
+            for ratio in self.inputs.ratios(scope.identity, "unlock"):
+                unlock_by_code[ratio.code].append(ratio)
+        if self._admit_observations and self._financial_revision_proofs:
+            observations = self.normalized.latest_financial_observations(financial_query, scope.codes, scope.cutoff)
         with (
             self._session(self.material.path, check=check, read_only=True) as raw,
             self._session(self.facts.path, check=check, read_only=True) as formal,
@@ -344,6 +381,12 @@ class CompanySyncRuntime:
             for link in ReadCompanyDocumentLinks(formal, all_codes):
                 links_by_code[link.code].append(link)
             eligible = frozenset(eligible_codes)
+            admissions: dict[str, CompanyFinancialAdmission] = {}
+            if observations:
+                for admission in PrepareCompanyFinancialAdmissions(raw,
+                    tuple(item for item in observations if item.financial.code in eligible), scope.cutoff,
+                    read_document=self._read_document, check=check, revision_proofs=self._financial_revision_proofs):
+                    admissions[admission.report.code] = admission
             prepared = []
             for code in all_codes:
                 check()
@@ -354,11 +397,17 @@ class CompanySyncRuntime:
                 needs_recovery_reproof = any(field.applicable and field.value is not None and field.state != "verified"
                     and any(item.code == fact.code and item.source_key in event.evidence_ids for item in recovered
                         for event in fact.risk_events + fact.positive_events if event.event_id == field.event_id) for field in current_fields)
-                prepared.append(PrepareCompanyIssuerInputs(raw, formal, fact, cutoff=scope.cutoff,
+                proof = admissions.get(code)
+                admitted = ApplyCompanyFinancialAdmission(fact, proof, scope.cutoff) if proof is not None else fact
+                item = PrepareCompanyIssuerInputs(raw, formal, admitted, cutoff=scope.cutoff,
                     extraction_hash=self.facts.extraction_hash, event_policy=self._event_policy,
                     read_document=self._read_document, check=check, revalidate=revalidate or needs_recovery_reproof, correct_measurements=code in eligible,
                     include_new_announcements=True, published_links=tuple(links_by_code.get(code, ())), recovered=recovered,
-                    annual_incomes=annuals))
+                    annual_incomes=annuals, unlock_observations=tuple(unlock_by_code.get(code, ())))
+                if proof is not None and admitted != fact:
+                    receipts = CompanyFinancialAdmissionReceipts(proof, extraction_hash=self.facts.extraction_hash, published_at=scope.cutoff)
+                    item = replace(item, receipts=(*item.receipts, *receipts))
+                prepared.append(item)
         changed = self.normalized.publish_prepared(all_codes, tuple(item.facts for item in prepared),
             tuple(field for item in prepared for field in item.fields), tuple(receipt for item in prepared for receipt in item.receipts),
             tuple(link for item in prepared for link in item.links), scope.cutoff, field_rules_hash=rules_hash,
@@ -377,9 +426,12 @@ class CompanySyncRuntime:
 
 
 class _FieldProducer:
-    def __init__(self, runtime: CompanySyncRuntime, monotonic: Callable[[], float], eligible_codes: tuple[str, ...]) -> None:
+    def __init__(self, runtime: CompanySyncRuntime, monotonic: Callable[[], float], eligible_codes: tuple[str, ...],
+        query: StructuredCompanyQuery,
+    ) -> None:
         self._runtime, self._monotonic = runtime, monotonic
         self._eligible_codes = eligible_codes
+        self._financial_query = query
         self._plan = CompanySyncPhasePlan(CompanySyncFamily.FIELDS, CanonicalDigest(("current_field_proof", CompanyFieldProofRulesHash().hex())), refresh_on_input_change=True)
 
     @property
@@ -388,14 +440,15 @@ class _FieldProducer:
 
     def state(self, scope: CompanySyncRoundScope) -> CompanySyncPhaseState:
         check = self._runtime._io_budget.check if self._runtime._io_budget is not None else lambda: None
-        watermark = self._runtime.field_watermark(scope, self._eligible_codes, check)
+        watermark = self._runtime.field_watermark(scope, self._eligible_codes, check, financial_query=self._financial_query)
         return CompanySyncPhaseState(CanonicalDigest((scope, self._plan, watermark)), False)
 
     def advance(self, scope: CompanySyncRoundScope, *, cancel_requested: Callable[[], bool], deadline: float) -> CompanySyncStepResult:
         def check() -> None:
             if cancel_requested() or self._monotonic() >= deadline:
                 raise CompanySyncInterrupted("company_sync_local_preparation_interrupted")
-        return self._runtime.prepare_local(scope, check=check, cancel_requested=cancel_requested, eligible_codes=self._eligible_codes)
+        return self._runtime.prepare_local(scope, check=check, cancel_requested=cancel_requested, eligible_codes=self._eligible_codes,
+            financial_query=self._financial_query)
 
 
 def _unavailable(code: str, cutoff: datetime) -> CompanyFacts:

@@ -80,6 +80,20 @@ def ReadRoundCompanyFinancialObservations(
     ))
 
 
+def ReadRoundLatestCompanyFinancialObservations(
+    connection: SqliteConnection, scope: str,
+) -> tuple[CompanyFinancialSourceObservation, ...]:
+    """Return the exact latest observation per issuer in one completed round."""
+    return tuple(_decode(row) for row in connection.run(
+        "WITH latest AS (SELECT code, MAX(report_date) AS report_date FROM company_round_member "
+        "WHERE scope=? GROUP BY code) "
+        "SELECT o.* FROM latest l JOIN company_round_member m ON m.scope=? AND m.code=l.code AND m.report_date=l.report_date "
+        "JOIN company_financial_observation o ON o.code=m.code AND o.report_date=m.report_date AND o.record_hash=m.record_hash "
+        "ORDER BY m.code",
+        (scope, scope),
+    ))
+
+
 def ReadRoundCompanyFinancialBatch(
     connection: SqliteConnection, scope: str, population: int,
 ) -> CompanyFinancialBatchCoverage:
@@ -166,5 +180,6 @@ def _decode(row: Row) -> CompanyFinancialSourceObservation:
 
 __all__ = [
     "COMPANY_FINANCIAL_OBSERVATIONS_SCHEMA", "WriteCompanyFinancialObservations", "ReadCompanyFinancialObservations",
-    "ReadRoundCompanyFinancialObservations", "ReadRoundCompanyFinancialBatch", "ReadCommittedCompanyFinancialReports",
+    "ReadRoundCompanyFinancialObservations", "ReadRoundLatestCompanyFinancialObservations", "ReadRoundCompanyFinancialBatch",
+    "ReadCommittedCompanyFinancialReports",
 ]

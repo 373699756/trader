@@ -11,7 +11,7 @@ from trader.download.application.company_sync import CompanyDirectoryResponseRec
 from trader.download.application.company_source_ports import (
     CompanyNewsSource, CompanyOfficialDocumentSource, CompanyRatioSource,
 )
-from trader.download.domain.company_event_extraction import CompanyDocumentRiskRelevant
+from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview, CompanyDocumentRiskRelevant
 from trader.download.domain.company_evidence import (
     CompanyInputValidationFailure, CompanyDocumentFailure, CompanyDocumentFailureRules, CompanyDocumentPolicies,
     CompanySyncConfiguration, CompanyDocumentRouteForFailure, Disclosure, DisclosurePartition, EvidenceMarket, StructuredCompanyQuery,
@@ -20,6 +20,7 @@ from datetime import datetime
 from trader.download.domain.company_sync import (
     CompanySyncFamily, CompanySyncPhasePlan, CompanySyncPhaseState, CompanySyncRoundScope, CompanySyncStepResult,
 )
+from trader.download.domain.company_unlock_notice import IsCompanyUnlockListingNotice, IsCompanyUnlockListingRevision
 from trader.download.infra.company_disclosure_source import DecodeCninfoDirectoryResponse
 from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
@@ -133,12 +134,13 @@ class CompanyAnnouncementProducer:
         source: CompanyOfficialDocumentSource, scope: CompanySyncRoundScope, *, sqlite_policy: SqliteIoPolicy, extraction_hash: bytes,
         io_budget: CompanySyncIoBudget | None = None, current_codes: tuple[str, ...] | None = None,
         configuration: CompanySyncConfiguration | None = None, policies: CompanyDocumentPolicies | None = None,
-        wall_clock: Callable[[], datetime] | None = None) -> None:
+        wall_clock: Callable[[], datetime] | None = None, admit_observations: bool = False) -> None:
         self._inputs, self._material, self._source, self._sqlite_policy = inputs, material, source, sqlite_policy
         self._extraction_hash = extraction_hash
         self._current_codes = scope.codes if current_codes is None else current_codes
         self._io_budget = io_budget
         self._configuration, self._policies, self._wall_clock = configuration, policies, wall_clock
+        self._admit_observations = admit_observations
         markets = tuple(sorted({EvidenceMarket(code) for code in scope.codes}))
         self._partitions = tuple(DisclosurePartition(market, start, end)
             for start, end in ((scope.cutoff.date(), scope.cutoff.date()),
@@ -377,6 +379,7 @@ class CompanyAnnouncementProducer:
         if not current_codes:
             return None
         other: Disclosure | None = None
+        unlock_codes: frozenset[str] | None = None
         with self._session(self._material.path) as connection:
             rows = connection.run("""SELECT d.*,c.code FROM disclosures d
                 JOIN disclosure_codes c ON c.disclosure_id=d.id
@@ -392,8 +395,19 @@ class CompanyAnnouncementProducer:
             for row in rows:
                 if row["code"] not in current_codes:
                     continue
-                is_risk = _risk_priority(row["title"])
+                title = row["title"]
+                is_risk = _risk_priority(title)
                 if not is_risk and (risk_only or other is not None):
+                    continue
+                if IsCompanyUnlockListingNotice(title) and not CompanyDocumentNeedsReview(title):
+                    if not self._admit_observations:
+                        continue
+                    if unlock_codes is None:
+                        unlock_codes = frozenset(item.code for item in self._inputs.ratios(scope.identity, "unlock")
+                            if item.ratio_pct > 0 and item.day >= scope.cutoff.date())
+                    if row["code"] not in unlock_codes:
+                        continue
+                if IsCompanyUnlockListingRevision(title) and not CompanyDocumentNeedsReview(title):
                     continue
                 item = DecodeCompanyDisclosure(row)
                 if self._inputs.task_done(scope.identity, "new_announcement_document", CanonicalDigest((item, self._policies))):
