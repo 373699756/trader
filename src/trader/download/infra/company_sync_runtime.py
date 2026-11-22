@@ -60,6 +60,7 @@ class CompanySyncRuntime:
         io_budget: CompanySyncIoBudget | None = None,
         document_configuration: CompanySyncConfiguration | None = None, document_policies: CompanyDocumentPolicies | None = None,
         wall_clock: Callable[[], datetime] | None = None,
+        observe_scope: Callable[[CompanySyncRoundScope], None] | None = None,
         observe: Callable[[CompanySyncFamilyResult], None] | None = None,
         activity: Callable[[CompanySyncFamily], AbstractContextManager[None]] | None = None,
         source_ready: Callable[[], bool] | None = None,
@@ -77,6 +78,7 @@ class CompanySyncRuntime:
         self._io_budget = io_budget
         self._document_configuration, self._document_policies = document_configuration, document_policies
         self._wall_clock = wall_clock
+        self._observe_scope = observe_scope
         self._observe = observe
         self._activity = activity
         self._source_ready = source_ready
@@ -213,6 +215,8 @@ class CompanySyncRuntime:
         plans = tuple(producer.plan for producer in producers)
         round_id = self.journal.begin(scope, plans, max_source_calls=budget.max_source_calls)
         self._execution_round_id = round_id
+        if self._observe_scope is not None:
+            self._observe_scope(scope)
         self.material.set_population(eligible_codes)
         # Current local proof and exact material needs precede any optional
         # network. The same fields owner runs again after source acceptance.

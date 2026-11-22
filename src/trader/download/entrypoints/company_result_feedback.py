@@ -46,6 +46,27 @@ _REASONS = {
     "OSError": "系统I/O失败", "RuntimeError": "运行步骤失败", "ValueError": "值校验未通过",
     "JSONDecodeError": "接口响应不是有效JSON",
 }
+_ROUND_REASON_EXPLANATIONS = {
+    "financial_first_disclosure_revision_unverified": "财报首次披露时间与后续修订链待核",
+    "latest_financial_population_unverified": "各股最新财报的全量覆盖待核",
+    "pledge_population_coverage_unverified": "质押快照是否覆盖全部合格股票待核",
+    "pledge_total_share_denominator_unverified": "质押比例的总股本分母待核",
+    "unlock_population_coverage_unverified": "未来解禁窗口是否覆盖全部合格股票待核",
+    "unlock_total_share_denominator_unverified": "解禁比例的总股本分母待核",
+    "source_attempt_unconfirmed": "旧请求已占用额度，响应或落库凭据待核",
+    "accepted_input_count_unconfirmed": "旧步骤接纳数量待核",
+    "issuer_revision_relationship_unverified": "同一发行人公告的新旧修订关系待核",
+    "persistent_risk_initial_state_unverified": "公告窗口开始时仍生效的历史风险待核",
+    "news_metadata_does_not_verify_issuer_risk": "新闻用于辅助研究，风险核验需要正式披露凭据",
+    "field_proof_incomplete": "仍有适用字段缺值或字段凭据待核",
+    "news_skipped_by_fill": "补缺模式跳过新的新闻请求",
+    "request_counts_unconfirmed": "步骤中断，终态请求数待核",
+    "source_budget_exhausted": "本轮来源请求额度已用完",
+    "step_interrupted": "本次步骤中断，沿原回执续传",
+    "supplier_input_rejected": "来源返回内容未通过校验，具体原因见错误码",
+    "population_members_became_ineligible": "原轮次中部分股票已不符合当前资格",
+    "new_population_members_wait_for_refresh": "新增合格股票等待下一轮次",
+}
 _RECOVERIES = {
     "retry": "自动重试", "cooldown": "冷却续传", "unextractable": "不可提取／资料未知",
     "source_deferred": "来源暂缓", "ocr_queued": "转OCR", "recording_failed": "恢复登记失败",
@@ -53,6 +74,11 @@ _RECOVERIES = {
 _ERROR_COMPONENTS = {"company_directory": "announcements", "company_document": "risk_documents"}
 _BusinessKey = tuple[str, str, str]
 _FailureKey = tuple[str, str, str, str]
+
+
+def ExplainCompanyRoundReason(code: str) -> str | None:
+    """Return a fixed explanation for a recognized round reason code."""
+    return _ROUND_REASON_EXPLANATIONS.get(code)
 
 
 def _component(kind: str | None, scope: DisclosurePartition | StructuredCompanyQuery | None = None) -> str:
@@ -447,4 +473,4 @@ def _state(value: CompanyDataState | None) -> str:
     }[value]
 
 
-__all__ = ["CompanyResultFeedback"]
+__all__ = ["CompanyResultFeedback", "ExplainCompanyRoundReason"]

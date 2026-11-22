@@ -10,7 +10,7 @@ from tests.helpers.download.company import company_evidence as fixtures
 from tests.helpers.download.company_resources import CompanyDocumentFilesFixture, SQLiteCompanyEvidenceReaderFixture, SQLiteCompanyFactsIndexFixture
 from trader.download.domain.company_event_extraction import ExtractCompanyLinkCandidate
 from trader.download.domain.company_events import CompanyEventStatus, CompanyPositiveStatus, CompanySubject
-from trader.download.domain.company_evidence import CompanyDocument, CompanyEvidenceInput, CompanyRatio, DisclosurePage, DisclosurePartition
+from trader.download.domain.company_evidence import CompanyDocument, CompanyEvidenceInput, CompanyFinancial, CompanyRatio, DisclosurePage, DisclosurePartition
 from trader.download.domain.company_facts import CompileCompanyFacts
 from trader.download.infra import company_facts_index, company_field_publication
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
@@ -48,15 +48,23 @@ def test_formal_company_totals_separate_verified_no_event_from_missing_coverage(
     writer = SQLiteCompanyFactsIndexFixture(index.facts_path)
     policy = fixtures.CompanyEventPolicy()
     today = _AT.date()
+    complete_report = CompanyFinancial("600001", today - timedelta(days=90), _AT - timedelta(days=2),
+        1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 10.0, 8.0)
+    latest_report = replace(complete_report, report_date=today - timedelta(days=30),
+        published_at=_AT - timedelta(days=1), basic_eps=None, parent_net_profit=-10.0, core_net_profit=None)
     source = CompanyEvidenceInput(
         "600001", _AT, today - timedelta(days=365), today, "coverage",
-        (), True, (), CompanyRatio("600001", today, 0), (), True, (), False, (),
+        (), True, (complete_report, latest_report), CompanyRatio("600001", today, 0), (), True, (), False, (),
         unlock_checked_at=_AT, unlock_coverage_end=today + timedelta(days=policy.unlock_days),
     )
+    partial_report = CompanyFinancial("600002", today - timedelta(days=30), _AT,
+        0.0, None, None, None, None, None, None, 0.0)
     with_event = replace(source, code="600002", pledge=CompanyRatio("600002", today, 12),
-        unlocks=(CompanyRatio("600002", today + timedelta(days=1), 5),), announcement_complete=False)
-    short_window = replace(source, code="600003", pledge=None, unlock_coverage_end=today + timedelta(days=20))
-    outside_scope = replace(source, code="600004", pledge=CompanyRatio("600004", today, 0))
+        financials=(partial_report,), unlocks=(CompanyRatio("600002", today + timedelta(days=1), 5),),
+        announcement_complete=False)
+    short_window = replace(source, code="600003", financials=(), pledge=None, unlock_coverage_end=today + timedelta(days=20))
+    outside_scope = replace(source, code="600004", financials=(replace(complete_report, code="600004"),),
+        pledge=CompanyRatio("600004", today, 0))
     writer.publish(tuple(CompileCompanyFacts(item, policy) for item in (
         source, with_event, short_window, outside_scope,
     )), {}, _identity(index), _AT)
@@ -65,9 +73,18 @@ def test_formal_company_totals_separate_verified_no_event_from_missing_coverage(
     assert totals is not None and totals.coverage is not None
     coverage = totals.coverage
     assert coverage.stocks == 4
+    assert dict(coverage.financial_fields) == {
+        "basic_eps": 2, "book_value_per_share": 1, "revenue_growth_pct": 1, "net_profit_growth_pct": 1,
+        "core_profit_growth_pct": 1, "roe_pct": 1, "parent_net_profit": 1, "core_net_profit": 1,
+    }
+    assert coverage.financial_complete == coverage.latest_profit_values == 0
+    assert coverage.recommendation_expected == 44 and coverage.recommendation_missing == 29
     assert (coverage.pledge_with_value, coverage.pledge_without_event) == (1, 1)
     assert (coverage.unlock_with_event, coverage.unlock_without_event) == (1, 1)
     assert (coverage.announcement_complete, coverage.announcement_partial) == (2, 1)
+    before_latest = _reader(index).read_field_counts(codes=requested, as_of=_AT - timedelta(days=2))
+    assert before_latest is not None and before_latest.coverage is not None
+    assert before_latest.coverage.latest_profit_values == 1
     read_later = _reader(index).read_field_counts(codes=requested, as_of=_AT + timedelta(days=1))
     assert read_later is not None and read_later.coverage is not None
     assert (read_later.coverage.unlock_with_event, read_later.coverage.unlock_without_event) == (0, 0)
@@ -76,6 +93,28 @@ def test_formal_company_totals_separate_verified_no_event_from_missing_coverage(
 def _identity(index):
     with SqliteSession(index.facts_path, SqliteConnectionOptions(read_only=True)) as connection:
         return ReadCompanyPublicationIdentity(connection)
+
+
+def test_formal_event_value_absence_is_independent_of_pending_proof_status(tmp_path):
+    index = fixtures._index(tmp_path)
+    _put(index, _TEXT.replace("回购股份用于注销。\n", ""))
+    codes = ("600001",)
+    index.publish(codes, _AT)
+    reader = _reader(index)
+    fields = reader.read_fields(codes).results
+    actual = next(field for field in fields if field.field == "actual_pct")
+    purpose = next(field for field in fields if field.field == "repurchase_purpose")
+    assert actual.value == 0.3 and purpose.value is None
+
+    writer = SQLiteCompanyFactsIndexFixture(index.facts_path)
+    writer.publish((), {}, _identity(index), _AT, field_results=(
+        replace(actual, state="pending_publication", reason="field_evidence_required", evidence=()), purpose,
+    ), field_rules_hash=CompanyFieldProofRulesHash())
+    totals = reader.read_field_counts(codes=codes, as_of=_AT)
+    assert totals is not None and totals.coverage is not None
+    fields_coverage = totals.coverage.other_fields
+    assert fields_coverage.pending == fields_coverage.applicable == 2
+    assert fields_coverage.missing_values == 1
 
 
 def _receipts(index, *, ordinary_only=False):
@@ -172,6 +211,11 @@ def test_reduction_fields_publish_with_risk_facts_and_reuse_without_reading_body
     assert totals is not None and totals.publication_hash == snapshot.publication_hash
     assert totals.verified == 3 and totals.not_applicable == 1
     assert totals.present_unverified == totals.other_pending == totals.not_disclosed == totals.pending_documents == 0
+    scoped = reader.read_field_counts(codes=("600001",), as_of=_AT)
+    assert scoped is not None and scoped.coverage is not None
+    assert scoped.coverage.reduction_fields.applicable == scoped.coverage.reduction_fields.verified == 3
+    assert scoped.coverage.reduction_fields.not_applicable == 1
+    assert scoped.coverage.other_fields.applicable == 0
     assert all(proof.source_key == document.disclosure.identity for item in fields for proof in item.evidence)
     valid = _receipts(index, ordinary_only=True)
 
@@ -256,6 +300,13 @@ def test_all_contract_source_fields_publish_and_second_publication_reuses_proofs
     index.publish(("600001",), _AT)
     fields = _reader(index).read_fields(("600001",)).results
     assert len(fields) == 6 and all(item.state == "verified" for item in fields)
+    scoped = _reader(index).read_field_counts(codes=("600001", "600002"), as_of=_AT)
+    assert scoped is not None and scoped.coverage is not None
+    assert scoped.coverage.other_fields.applicable == scoped.coverage.other_fields.verified == 6
+    assert scoped.coverage.reduction_fields.applicable == 0
+    outside = _reader(index).read_field_counts(codes=("600002",), as_of=_AT)
+    assert outside is not None and outside.coverage is not None
+    assert outside.coverage.other_fields.applicable == 0
     ratio, = (item for item in fields if item.field == "contract_revenue_pct")
     assert ratio.value == 20 and len(ratio.evidence) == 3
     identity = _identity(index)

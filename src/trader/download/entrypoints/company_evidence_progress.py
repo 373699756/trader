@@ -22,7 +22,7 @@ from trader.download.application.progress_message import (
     ProgressState,
     ProgressTask,
 )
-from trader.download.application.company_round_progress import CompanyFieldOutcomeCounts, CompanyFormalCoverage, IsCompanyNewsReference
+from trader.download.application.company_round_progress import CompanyEventFieldCoverage, CompanyFieldOutcomeCounts, CompanyFormalCoverage, IsCompanyNewsReference
 from trader.download.infra.progress_projection import ProgressNumber
 from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.download.infra.terminal_progress import TerminalDownloadProgress
@@ -35,7 +35,7 @@ from trader.download.domain.company_events import CompanyDataState
 from trader.download.domain.company_source_records import CompanyFinancialBatchCoverage
 from trader.download.domain.company_sync import CompanySyncFamily, CompanySyncFamilyResult, CompanySyncRoundResult
 from trader.download.domain.download_failure import DownloadFailureObservation
-from trader.download.entrypoints.company_result_feedback import CompanyResultFeedback
+from trader.download.entrypoints.company_result_feedback import CompanyResultFeedback, ExplainCompanyRoundReason
 
 
 def ReportStPreparation(
@@ -154,6 +154,7 @@ def _quantity(value: int | None) -> str:
 
 
 _COMPANY_ROUND_TASK = ProgressTask("company", "prepare", "公司轮次")
+_COMPANY_COVERAGE_TASK = ProgressTask("company", "coverage", "字段缺失")
 _FINANCIAL_OBSERVATION_LABELS = {
     "basic_eps": "EPS",
     "book_value_per_share": "每股净资产",
@@ -206,6 +207,29 @@ class CompanyRoundProgress:
             self._last_feedback = self._monotonic()
         self._report.register_observer("company", self._heartbeat, task_key="prepare")
         self._report(message)
+
+    def report_coverage(
+        self,
+        phase: Literal["本轮开始", "同步中", "本轮收尾"],
+        counts: CompanyFieldOutcomeCounts | None,
+    ) -> None:
+        """Emit a read-only snapshot supplied by the orchestration boundary."""
+        coverage = counts.coverage if counts is not None else None
+        fields: tuple[ProgressField, ...]
+        rows: tuple[ProgressRow, ...]
+        if coverage is None:
+            fields = (ProgressField(phase), ProgressField("正式字段缺失比例未核对", ProgressLevel.WARNING))
+            rows = ()
+        else:
+            fields = (
+                ProgressField(phase),
+                ProgressField(f"固定总体{coverage.stocks}股"),
+                ProgressField(f"正式荐股资料缺口{_rate(coverage.recommendation_missing, coverage.recommendation_expected)}"
+                    "（每股8项财务和3项风险覆盖）"),
+            )
+            rows = _coverage_rows(coverage)
+        self._report(ProgressMessage(fields, task=_COMPANY_COVERAGE_TASK, finished=phase == "本轮收尾",
+            immediate=True, heartbeat=False, rows=rows))
 
     @contextmanager
     def activity(self, family: CompanySyncFamily) -> Iterator[None]:
@@ -275,6 +299,8 @@ class CompanyRoundProgress:
                 finished=True,
                 stage_elapsed_seconds=timing.seconds if timing.seconds is not None else "not_run",
             ))
+        if coverage is not None:
+            self.report_coverage("本轮收尾", published)
 
     def _heartbeat(self) -> ProgressMessage | None:
         with self._lock:
@@ -333,6 +359,41 @@ def _published_field_totals(fields: CompanyFieldOutcomeCounts | None) -> tuple[P
     )
 
 
+def _rate(count: int, total: int) -> str:
+    return f"{count}/{total}（{count / total:.2%}）" if total else "无适用项"
+
+
+def _event_field_counts(coverage: CompanyEventFieldCoverage) -> tuple[ProgressField, ...]:
+    if not coverage.applicable:
+        return (ProgressField(f"无适用项，不适用{coverage.not_applicable}项"),)
+    return (
+        ProgressField(f"适用{coverage.applicable}项"),
+        ProgressField(f"缺值{_rate(coverage.missing_values, coverage.applicable)}"),
+        ProgressField(f"待补证{_rate(coverage.present_unverified + coverage.pending, coverage.applicable)}"),
+        ProgressField(f"已核有值{coverage.verified}项，有值待核{coverage.present_unverified}项，"
+            f"其他待核{coverage.pending}项，已证未披露{coverage.not_disclosed}项，不适用{coverage.not_applicable}项"),
+    )
+
+
+def _coverage_rows(coverage: CompanyFormalCoverage) -> tuple[ProgressRow, ...]:
+    stocks = coverage.stocks
+    financial = tuple(ProgressField(f"{_FINANCIAL_OBSERVATION_LABELS[field]}缺{_rate(stocks - count, stocks)}")
+        for field, count in coverage.financial_fields)
+    pledge_missing = stocks - coverage.pledge_with_value - coverage.pledge_without_event
+    unlock_missing = stocks - coverage.unlock_with_event - coverage.unlock_without_event
+    return (
+        ProgressRow("荐股财务", financial),
+        ProgressRow("荐股风险", (
+            ProgressField(f"质押待核{_rate(pledge_missing, stocks)}，已核无质押{coverage.pledge_without_event}股"),
+            ProgressField(f"解禁待核{_rate(unlock_missing, stocks)}，已核无解禁{coverage.unlock_without_event}股"),
+            ProgressField(f"公告风险完整覆盖缺{_rate(stocks - coverage.announcement_complete, stocks)}，"
+                f"其中部分覆盖{_rate(coverage.announcement_partial, stocks)}"),
+        )),
+        ProgressRow("减持事件字段", _event_field_counts(coverage.reduction_fields)),
+        ProgressRow("其他公告字段", _event_field_counts(coverage.other_fields)),
+    )
+
+
 def _financial_batch_totals(coverage: CompanyFinancialBatchCoverage) -> tuple[ProgressField, ...]:
     status = "页账本已闭合" if coverage.pages_complete else "页账本待闭合"
     gaps = "、".join(
@@ -348,6 +409,10 @@ def _financial_batch_totals(coverage: CompanyFinancialBatchCoverage) -> tuple[Pr
             f"财务源观察{coverage.latest_observed_stocks}/{coverage.population}股，"
             f"最新报表八项有值{coverage.latest_complete_stocks}股，"
             f"归母与扣非同时有值{coverage.latest_profit_pair_stocks}股"
+        ),
+        ProgressField(
+            f"已观察财报原始缺值{_rate(sum(count for _, count in coverage.missing_fields), coverage.latest_observed_stocks * 8)}，"
+            f"观测报告有缺项{_rate(coverage.latest_observed_stocks - coverage.latest_complete_stocks, coverage.latest_observed_stocks)}"
         ),
     )
     if gaps:
@@ -402,8 +467,12 @@ def _family_fields(family: CompanySyncFamilyResult) -> tuple[ProgressField, ...]
         *((ProgressField(f"错误 {family.result.failure}", ProgressLevel.ERROR),) if family.result.failure is not None else ()),
         *((ProgressField(f"缺口原因 {','.join(family.result.gaps)}", ProgressLevel.WARNING),) if family.result.gaps else ()),
     )
-    if IsCompanyNewsReference(family):
-        fields += (ProgressField("新闻用于辅助研究。发行人风险由正式披露凭据核验。"),)
+    reasons = tuple(dict.fromkeys(code for code in (family.result.failure, *family.result.gaps) if code is not None))
+    explanations = tuple(text for code in reasons if (text := ExplainCompanyRoundReason(code)) is not None)
+    if explanations:
+        fields += (ProgressField(f"说明 {'。'.join(explanations)}。"),)
+    if family.family is CompanySyncFamily.ANNUAL_INCOME and family.result.business_complete and family.accepted_inputs == 0:
+        fields += (ProgressField("本轮无待处理的合同营收任务。"),)
     return fields
 
 

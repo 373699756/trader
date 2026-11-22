@@ -58,7 +58,7 @@ class _Sources:
         raise AssertionError("no_pdf_fanout")
 
 
-def _runtime(tmp_path):
+def _runtime(tmp_path, *, observe_scope=None):
     policy, event_policy = SqlitePolicyFixture(), CompanyEventPolicyFixture()
     facts = SQLiteCompanyFactsIndex(tmp_path / "formal.sqlite3", event_policy=event_policy, sqlite_policy=policy)
     reader = SQLiteCompanyEvidenceReader(facts.path, event_policy=event_policy, sqlite_policy=policy)
@@ -80,7 +80,7 @@ def _runtime(tmp_path):
     source = _Sources(transport)
     runtime = CompanySyncRuntime(normalized, facts, material, journal, inputs, event_policy=event_policy, sqlite_policy=policy,
         read_document=documents.read, financial_source=source, ratio_source=source, annual_source=source,
-        news_source=source, official_source=source)
+        news_source=source, official_source=source, observe_scope=observe_scope)
     return runtime, reader, transport, physical
 
 
@@ -222,7 +222,8 @@ def test_new_same_day_cutoff_cannot_refill_an_exhausted_source_budget(tmp_path):
 
 
 def test_next_day_refresh_keeps_the_old_exhausted_ledger_and_starts_a_dated_round(tmp_path):
-    runtime, _reader, transport, physical = _runtime(tmp_path)
+    snapshots = []
+    runtime, _reader, transport, physical = _runtime(tmp_path, observe_scope=lambda scope: snapshots.append((scope, len(physical))))
     runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
     with transport:
         first = runtime.run(_SCOPE.codes, _SCOPE.cutoff, CompanySyncBudget(100, 1, 20, 10),
@@ -231,6 +232,7 @@ def test_next_day_refresh_keeps_the_old_exhausted_ledger_and_starts_a_dated_roun
             cancel_requested=lambda: False, monotonic=lambda: 0)
     assert first.round_id != second.round_id and second.scope.cutoff.date() > first.scope.cutoff.date()
     assert len(physical) == 2 and runtime.journal.source_calls(first.round_id) == runtime.journal.source_calls(second.round_id) == 1
+    assert snapshots == [(first.scope, 0), (second.scope, 1)]
 
 
 def test_fill_resumes_normal_round_and_leaves_frozen_news_for_normal_resume(tmp_path):

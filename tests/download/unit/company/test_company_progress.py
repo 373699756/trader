@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader import bootstrap
-from trader.download.application.company_round_progress import CompanyFieldOutcomeCounts
+from trader.download.application.company_round_progress import CompanyEventFieldCoverage, CompanyFieldOutcomeCounts, CompanyFormalCoverage
 from trader.download.application.sync_data import SyncResult, SyncTaskResult
 from trader.download.application.progress_message import ProgressField, ProgressMessage, ProgressTask
 from trader.download.domain.company_evidence import (
@@ -64,6 +64,40 @@ def test_company_round_unconfirmed_counts_are_not_none_or_zero():
     assert "统计未核对" in text
 
 
+def test_company_progress_projects_formal_and_event_gaps_during_same_round():
+    messages = []
+    progress = CompanyRoundProgress(SyncProgress(messages.append, lambda: 0.0), lambda: 0.0)
+    coverage = CompanyFormalCoverage(
+        stocks=4, financial_complete=0, latest_profit_values=1,
+        pledge_with_value=0, pledge_without_event=1, unlock_with_event=0, unlock_without_event=1,
+        announcement_complete=0, announcement_partial=1, verified_risk_stocks=0,
+        financial_fields=(("basic_eps", 2), ("book_value_per_share", 0), ("revenue_growth_pct", 0),
+            ("net_profit_growth_pct", 0), ("core_profit_growth_pct", 0), ("roe_pct", 0),
+            ("parent_net_profit", 1), ("core_net_profit", 1)),
+        other_fields=CompanyEventFieldCoverage(2, 1, 1, 1, 3, missing_values=2),
+        reduction_fields=CompanyEventFieldCoverage(0, 0, 0, 0, 0),
+    )
+    counts = CompanyFieldOutcomeCounts("b" * 64, 2, 1, 1, 1, 3, 0, coverage)
+    progress.start(4)
+    progress.report_coverage("本轮开始", counts)
+    progress.report_coverage("同步中", counts)
+    result = CompanySyncRoundFixture(_ROUND_AT, families=())
+    progress.finish(result, fields=counts)
+
+    reports = tuple(message for message in messages if message.task.key == "coverage")
+    assert len(reports) == 3 and reports[-1].finished
+    expected_phases = ("本轮开始", "同步中", "本轮收尾")
+    for message, phase in zip(reports, expected_phases, strict=True):
+        header = " | ".join(field.text for field in message.fields)
+        assert phase in header and "正式荐股资料缺口38/44（86.36%）" in header
+        rows = {row.label: " | ".join(field.text for field in row.fields) for row in message.rows}
+        assert "EPS缺2/4（50.00%）" in rows["荐股财务"]
+        assert "已核无质押1股" in rows["荐股风险"] and "部分覆盖1/4（25.00%）" in rows["荐股风险"]
+        assert "无适用项" in rows["减持事件字段"]
+        assert "缺值2/5（40.00%）" in rows["其他公告字段"] and "待补证2/5（40.00%）" in rows["其他公告字段"]
+        assert "已证未披露1项，不适用3项" in rows["其他公告字段"]
+
+
 def test_company_round_financial_observations_do_not_close_qualification_gaps():
     messages = []
     progress = CompanyRoundProgress(SyncProgress(messages.append, lambda: 0.0), lambda: 0.0)
@@ -71,12 +105,12 @@ def test_company_round_financial_observations_do_not_close_qualification_gaps():
         population=4403,
         accepted_pages=89,
         expected_pages=89,
-        accepted_raw_rows=23_122,
-        expected_raw_rows=23_122,
+        accepted_raw_rows=44_498,
+        expected_raw_rows=44_498,
         latest_observed_stocks=4403,
         latest_complete_stocks=4367,
         latest_profit_pair_stocks=4403,
-        missing_fields=(("basic_eps", 7), ("core_profit_growth_pct", 18)),
+        missing_fields=(("basic_eps", 7), ("revenue_growth_pct", 1), ("core_profit_growth_pct", 18), ("roe_pct", 11)),
     ))
     family = CompanySyncFamilyFixture(CompanySyncFamily.FINANCIAL, gaps=("latest_financial_population_unverified",))
     progress.finish(CompanySyncRoundFixture(_ROUND_AT, families=(family,)))
@@ -84,9 +118,11 @@ def test_company_round_financial_observations_do_not_close_qualification_gaps():
     message, = messages
     text = " | ".join(field.text for field in message.fields)
     assert message.state == "待补证"
-    assert "财务批量页89/89，原始行23122/23122" in text
+    assert "财务批量页89/89，原始行44498/44498" in text
     assert "财务源观察4403/4403股，最新报表八项有值4367股，归母与扣非同时有值4403股" in text
-    assert "EPS缺7股、扣非同比缺18股" in text
+    assert "EPS缺7股、营收同比缺1股、扣非同比缺18股、ROE缺11股" in text
+    assert "已观察财报原始缺值37/35224（0.11%）" in text and "观测报告有缺项36/4403（0.82%）" in text
+    assert "各股最新财报的全量覆盖待核" in text
 
 
 @pytest.mark.parametrize("terminal", (False, True))

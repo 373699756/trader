@@ -30,7 +30,7 @@ from trader.download.application.progress_message import ProgressMessage
 from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.sync_data import SyncData, SyncResult, SyncTarget
-from trader.download.domain.company_sync import CompanySyncFamily, CompanySyncRoundResult, CompanySyncRoundScope
+from trader.download.domain.company_sync import CompanySyncFamily, CompanySyncFamilyResult, CompanySyncRoundResult, CompanySyncRoundScope
 from trader.download.domain import company_evidence, company_events
 from trader.download.domain.current_industry import CurrentIndustrySnapshot
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
@@ -1397,14 +1397,6 @@ def ExecuteCompanySync(
             cancel_requested=stopped, raw_files=raw_files,
             pacer=CompanyRequestPacer(configuration.request_interval_seconds, time.monotonic, time.sleep, stopped),
             text_reserve_bytes=configuration.text_task_reserve_bytes, ocr_reserve_bytes=configuration.ocr_task_reserve_bytes)
-        runtime = CompanySyncRuntime(normalized, facts, material, journal, inputs=inputs,
-            event_policy=event_policy, sqlite_policy=sqlite_policy, read_document=read_document,
-            financial_source=structured, ratio_source=structured, annual_source=structured,
-            news_source=structured, official_source=official, io_budget=io_budget,
-            document_configuration=configuration, document_policies=policies, wall_clock=ShanghaiClock(_utc_now).now,
-            observe=progress.advance, activity=progress.activity, source_ready=lambda: time.monotonic() < source_deadline)
-        budget = CompanySyncBudget(configuration.round_step_limit, configuration.round_request_limit,
-            min(256, configuration.round_step_limit), deadline)
 
         def read_counts(selected: CompanySyncRoundScope) -> CompanyFieldOutcomeCounts | None:
             if stopped():
@@ -1419,11 +1411,44 @@ def ExecuteCompanySync(
                 logging.getLogger(__name__).warning("公司正式字段计数不可用 category=%s", type(exc).__name__)
                 return None
 
+        initial_scope: CompanySyncRoundScope | None = None
+        initial_fields: CompanyFieldOutcomeCounts | None = None
+        last_coverage_hash = ""
+        next_coverage_check = 0.0
+
+        def observe_scope(scope: CompanySyncRoundScope) -> None:
+            nonlocal initial_scope, initial_fields, last_coverage_hash, next_coverage_check
+            initial_scope = scope
+            initial_fields = read_counts(scope)
+            last_coverage_hash = initial_fields.publication_hash if initial_fields is not None else ""
+            next_coverage_check = time.monotonic() + 30.0
+            progress.report_coverage("本轮开始", initial_fields)
+
+        def observe_family(family: CompanySyncFamilyResult) -> None:
+            nonlocal last_coverage_hash, next_coverage_check
+            progress.advance(family)
+            now = time.monotonic()
+            if (initial_scope is None or family.family is not CompanySyncFamily.FIELDS
+                or not family.result.changed_codes or now < next_coverage_check):
+                return
+            next_coverage_check = now + 30.0
+            current = read_counts(initial_scope)
+            if current is not None and current.publication_hash != last_coverage_hash:
+                last_coverage_hash = current.publication_hash
+                progress.report_coverage("同步中", current)
+
+        runtime = CompanySyncRuntime(normalized, facts, material, journal, inputs=inputs,
+            event_policy=event_policy, sqlite_policy=sqlite_policy, read_document=read_document,
+            financial_source=structured, ratio_source=structured, annual_source=structured,
+            news_source=structured, official_source=official, io_budget=io_budget,
+            document_configuration=configuration, document_policies=policies, wall_clock=ShanghaiClock(_utc_now).now,
+            observe_scope=observe_scope, observe=observe_family, activity=progress.activity,
+            source_ready=lambda: time.monotonic() < source_deadline)
+        budget = CompanySyncBudget(configuration.round_step_limit, configuration.round_request_limit,
+            min(256, configuration.round_step_limit), deadline)
         try:
             runtime.initialize(codes, cutoff)
             active = journal.active()
-            initial_scope = active.scope if active is not None else CompanySyncRoundScope(codes, cutoff)
-            initial_fields = read_counts(initial_scope)
             news_cutoff = cutoff if active is None else active.scope.cutoff
             news_records = tuple(SQLiteFreezeRecords(paths.recommendation(profile) / "freeze.sqlite3", sqlite_policy=sqlite_policy,
                 read_session=lambda path: io_budget.session(path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy))
