@@ -22,7 +22,7 @@ from trader.download.application.progress_message import (
     ProgressState,
     ProgressTask,
 )
-from trader.download.application.company_round_progress import CompanyFieldOutcomeCounts, IsCompanyNewsReference
+from trader.download.application.company_round_progress import CompanyFieldOutcomeCounts, CompanyFormalCoverage, IsCompanyNewsReference
 from trader.download.infra.progress_projection import ProgressNumber
 from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.download.infra.terminal_progress import TerminalDownloadProgress
@@ -32,6 +32,7 @@ from trader.download.domain.company_evidence import (
 )
 from trader.download.domain.history_sync import HistoryStCheckFailure, HistoryStCheckProgress
 from trader.download.domain.company_events import CompanyDataState
+from trader.download.domain.company_source_records import CompanyFinancialBatchCoverage
 from trader.download.domain.company_sync import CompanySyncFamily, CompanySyncFamilyResult, CompanySyncRoundResult
 from trader.download.domain.download_failure import DownloadFailureObservation
 from trader.download.entrypoints.company_result_feedback import CompanyResultFeedback
@@ -153,6 +154,16 @@ def _quantity(value: int | None) -> str:
 
 
 _COMPANY_ROUND_TASK = ProgressTask("company", "prepare", "公司轮次")
+_FINANCIAL_OBSERVATION_LABELS = {
+    "basic_eps": "EPS",
+    "book_value_per_share": "每股净资产",
+    "revenue_growth_pct": "营收同比",
+    "net_profit_growth_pct": "净利同比",
+    "core_profit_growth_pct": "扣非同比",
+    "roe_pct": "ROE",
+    "parent_net_profit": "归母利润",
+    "core_net_profit": "扣非利润",
+}
 
 
 @dataclass(slots=True)
@@ -174,6 +185,12 @@ class CompanyRoundProgress:
         self._last_message: ProgressMessage | None = None
         self._last_feedback = float("-inf")
         self._finished = False
+        self._financial_batch: CompanyFinancialBatchCoverage | None = None
+
+    def set_financial_batch(self, coverage: CompanyFinancialBatchCoverage) -> None:
+        """Attach only the caller's read-only assessment of the exact frozen batch."""
+        with self._lock:
+            self._financial_batch = coverage
 
     def start(self, requested: int) -> None:
         message = ProgressMessage(
@@ -224,18 +241,33 @@ class CompanyRoundProgress:
             self._last_feedback = self._monotonic()
         self._report(message)
 
-    def finish(self, result: CompanySyncRoundResult, *, fields: CompanyFieldOutcomeCounts | None = None) -> None:
+    def finish(
+        self,
+        result: CompanySyncRoundResult,
+        *,
+        fields: CompanyFieldOutcomeCounts | None = None,
+        previous: CompanyFieldOutcomeCounts | None = None,
+    ) -> None:
         with self._lock:
             if self._running is not None:
                 raise ValueError("company_sync_progress_activity_unfinished")
             self._finished = True
+            financial_batch = self._financial_batch
         self._report.finish_owner("company")
+        published = fields if fields is not None and fields.publication_hash == result.publication_hash else None
+        coverage = published.coverage if published is not None else None
+        former = previous.coverage if previous is not None else None
         for family in result.families:
             timing = self._families[family.family]
             details = (*_family_fields(family), *_invocation_fields(timing, family.family))
+            if family.family is CompanySyncFamily.FINANCIAL and financial_batch is not None:
+                details += _financial_batch_totals(financial_batch)
+            if coverage is not None:
+                details += _formal_coverage_fields(family.family, coverage, former)
             if family.family is CompanySyncFamily.FIELDS:
-                published = fields if fields is not None and fields.publication_hash == result.publication_hash else None
                 details += _published_field_totals(published)
+                if published is not None and previous is not None:
+                    details += (ProgressField(f"本次正式已核字段净增{published.verified - previous.verified:+d}项"),)
             self._report(ProgressMessage(
                 details,
                 task=ProgressTask("company", family.family.value, "公司资料"),
@@ -299,6 +331,62 @@ def _published_field_totals(fields: CompanyFieldOutcomeCounts | None) -> tuple[P
         ),
         ProgressField(f"各股待处理正文合计{fields.pending_documents}篇次"),
     )
+
+
+def _financial_batch_totals(coverage: CompanyFinancialBatchCoverage) -> tuple[ProgressField, ...]:
+    status = "页账本已闭合" if coverage.pages_complete else "页账本待闭合"
+    gaps = "、".join(
+        f"{_FINANCIAL_OBSERVATION_LABELS[field]}缺{count}股"
+        for field, count in coverage.missing_fields if count
+    )
+    fields: tuple[ProgressField, ...] = (
+        ProgressField(
+            f"{status}，财务批量页{coverage.accepted_pages}/{_quantity(coverage.expected_pages)}，"
+            f"原始行{coverage.accepted_raw_rows}/{_quantity(coverage.expected_raw_rows)}"
+        ),
+        ProgressField(
+            f"财务源观察{coverage.latest_observed_stocks}/{coverage.population}股，"
+            f"最新报表八项有值{coverage.latest_complete_stocks}股，"
+            f"归母与扣非同时有值{coverage.latest_profit_pair_stocks}股"
+        ),
+    )
+    if gaps:
+        fields += (ProgressField(f"有观测的最新报表 {gaps}"),)
+    return fields
+
+
+def _formal_coverage_fields(
+    family: CompanySyncFamily, coverage: CompanyFormalCoverage, previous: CompanyFormalCoverage | None,
+) -> tuple[ProgressField, ...]:
+    if family is CompanySyncFamily.FINANCIAL:
+        current = coverage.financial_complete
+        former = previous.financial_complete if previous is not None else None
+        description = f"正式完整财报{current}/{coverage.stocks}股，最新披露双利润{coverage.latest_profit_values}股"
+    elif family is CompanySyncFamily.PLEDGE:
+        current = coverage.pledge_with_value + coverage.pledge_without_event
+        former = previous.pledge_with_value + previous.pledge_without_event if previous is not None else None
+        description = (
+            f"正式有效质押比例{coverage.pledge_with_value}股，已核无质押{coverage.pledge_without_event}股，"
+            f"待核{coverage.stocks - current}股"
+        )
+    elif family is CompanySyncFamily.UNLOCK:
+        current = coverage.unlock_with_event + coverage.unlock_without_event
+        former = previous.unlock_with_event + previous.unlock_without_event if previous is not None else None
+        description = (
+            f"完整窗口有解禁{coverage.unlock_with_event}股，已核无解禁{coverage.unlock_without_event}股，"
+            f"待核{coverage.stocks - current}股"
+        )
+    elif family is CompanySyncFamily.ANNOUNCEMENTS:
+        current = coverage.announcement_complete
+        former = previous.announcement_complete if previous is not None else None
+        description = (
+            f"正式完整公告覆盖{current}股，部分覆盖{coverage.announcement_partial}股，"
+            f"已核风险事件涉及{coverage.verified_risk_stocks}股"
+        )
+    else:
+        return ()
+    delta = f"，本次完整覆盖净增{current - former:+d}股" if former is not None else ""
+    return (ProgressField(description + delta),)
 
 
 def _family_fields(family: CompanySyncFamilyResult) -> tuple[ProgressField, ...]:

@@ -8,17 +8,18 @@ from trader.infra.sqlite_publication import VerifiedSqlitePublication, VerifySql
 import sqlite3
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from trader.download.application.company_round_progress import CompanyFieldOutcomeCounts
+from trader.download.application.company_round_progress import CompanyFieldOutcomeCounts, CompanyFormalCoverage
 from trader.download.domain.company_document_links import CompanyDocumentLinkSnapshot
-from trader.download.domain.company_events import CompanyEventPolicy
+from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_field_results import CompanyFieldSnapshot
 from trader.download.infra.company_document_link_rows import ReadCompanyDocumentLinks
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
-from trader.download.infra.company_facts_protocol import CompanyExtractionHash, CompanyInteger
+from trader.download.infra.company_facts_protocol import CompanyExtractionHash, CompanyInteger, DATA_STATES, EncodeCompanyDate, EncodeCompanyTime
 from trader.download.infra.company_facts_schema import COMPANY_FACTS_SCHEMA
 from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
@@ -42,6 +43,7 @@ class SQLiteCompanyEvidenceReader:
         self._io_budget = io_budget
         self.path = path
         self._extraction_hash = CompanyExtractionHash(event_policy)
+        self._unlock_days = event_policy.unlock_days
         self._file_verification: VerifiedSqlitePublication | None = None
 
     @contextmanager
@@ -134,7 +136,11 @@ class SQLiteCompanyEvidenceReader:
             raise ValueError("company_field_rules_unreproved")
 
     def read_field_counts(
-        self, *, cancel_requested: Callable[[], bool] | None = None,
+        self,
+        *,
+        codes: Sequence[str] = (),
+        as_of: datetime | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> CompanyFieldOutcomeCounts | None:
         """Count conclusions and pending documents from the same formal snapshot."""
         def check_cancelled() -> None:
@@ -161,6 +167,7 @@ class SQLiteCompanyEvidenceReader:
                     """).require_one()
                 if total:
                     self._require_current_field_rules(connection)
+                coverage = self._coverage(connection, codes, as_of, check_cancelled) if as_of is not None else None
                 check_cancelled()
                 return CompanyFieldOutcomeCounts(
                     version,
@@ -170,11 +177,58 @@ class SQLiteCompanyEvidenceReader:
                     CompanyInteger(undisclosed),
                     CompanyInteger(inapplicable),
                     CompanyInteger(documents),
+                    coverage,
                 )
         except sqlite3.Error as exc:
             if cancel_requested is not None and cancel_requested():
                 raise InterruptedError("company_field_read_cancelled") from exc
             raise RuntimeError("company_fields_unreadable") from exc
+
+    def _coverage(
+        self, connection: SqliteConnection, codes: Sequence[str], as_of: datetime, check: Callable[[], None],
+    ) -> CompanyFormalCoverage:
+        requested = tuple(sorted(set(codes)))
+        if as_of.utcoffset() is None or len(requested) > 12_000:
+            raise ValueError("company_coverage_scope_invalid")
+        complete, partial = (DATA_STATES[state] for state in (CompanyDataState.COMPLETE, CompanyDataState.PARTIAL))
+        target_day = EncodeCompanyDate(as_of.date())
+        horizon = EncodeCompanyDate(as_of.date() + timedelta(days=self._unlock_days))
+        cutoff = EncodeCompanyTime(as_of)
+        totals = [0] * 9
+        for offset in range(0, len(requested), 512):
+            check()
+            batch = requested[offset : offset + 512]
+            slots = ",".join("?" for _ in batch)
+            row = connection.run(f"""
+                WITH scoped AS (
+                    SELECT f.finance_state=? AND f.disclosed_at<=? AND f.report_date<=? AS finance,
+                      l.disclosed_at<=? AND l.report_date<=? AND l.parent_profit IS NOT NULL
+                        AND l.core_profit IS NOT NULL AS profits,
+                      f.pledge_state=? AND f.pledge_date<=? AS pledge, f.pledge_pct,
+                      f.unlock_state=? AND f.unlock_checked_at<=? AND f.unlock_end_date>=? AS unlock,
+                      EXISTS(SELECT 1 FROM company_unlock u WHERE u.code=f.code
+                        AND u.unlock_date BETWEEN ? AND ?) AS scheduled,
+                      f.announcement_state=? AS announcement_complete, f.announcement_state=? AS announcement_partial,
+                      EXISTS(SELECT 1 FROM company_risk_event r WHERE r.code=f.code AND r.first_disclosed_at<=?) AS risk
+                    FROM company_facts f LEFT JOIN company_latest_financial l ON l.code=f.code
+                    WHERE f.code IN ({slots})
+                )
+                SELECT COUNT(CASE WHEN finance THEN 1 END), COUNT(CASE WHEN profits THEN 1 END),
+                  COUNT(CASE WHEN pledge AND pledge_pct>0 THEN 1 END),
+                  COUNT(CASE WHEN pledge AND pledge_pct=0 THEN 1 END),
+                  COUNT(CASE WHEN unlock AND scheduled THEN 1 END),
+                  COUNT(CASE WHEN unlock AND NOT scheduled THEN 1 END),
+                  COUNT(CASE WHEN announcement_complete THEN 1 END),
+                  COUNT(CASE WHEN announcement_partial THEN 1 END),
+                  COUNT(CASE WHEN risk THEN 1 END)
+                FROM scoped
+                """, (
+                    complete, cutoff, target_day, cutoff, target_day, complete, target_day,
+                    complete, cutoff, horizon, target_day, horizon, complete, partial, cutoff, *batch,
+                )).require_one()
+            for index, value in enumerate(row):
+                totals[index] += CompanyInteger(value)
+        return CompanyFormalCoverage(len(requested), *totals)
 
     def publication_identity(self, *, cancel_requested: Callable[[], bool] | None = None) -> str:
         """Observe the committed identity without verifying or loading the fact payload."""

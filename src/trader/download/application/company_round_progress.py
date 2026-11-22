@@ -6,6 +6,22 @@ from trader.download.domain.company_sync import CompanySyncFamily, CompanySyncFa
 
 
 @dataclass(frozen=True, slots=True)
+class CompanyFormalCoverage:
+    """Verified company facts within one fixed synchronization population."""
+
+    stocks: int
+    financial_complete: int
+    latest_profit_values: int
+    pledge_with_value: int
+    pledge_without_event: int
+    unlock_with_event: int
+    unlock_without_event: int
+    announcement_complete: int
+    announcement_partial: int
+    verified_risk_stocks: int
+
+
+@dataclass(frozen=True, slots=True)
 class CompanyFieldOutcomeCounts:
     """Totals from a single verified formal publication."""
 
@@ -16,6 +32,7 @@ class CompanyFieldOutcomeCounts:
     not_disclosed: int
     not_applicable: int
     pending_documents: int
+    coverage: CompanyFormalCoverage | None = None
 
 
 def IsCompanyNewsReference(family: CompanySyncFamilyResult) -> bool:
@@ -32,5 +49,6 @@ def IsCompanyNewsReference(family: CompanySyncFamilyResult) -> bool:
 
 __all__ = [
     "CompanyFieldOutcomeCounts",
+    "CompanyFormalCoverage",
     "IsCompanyNewsReference",
 ]

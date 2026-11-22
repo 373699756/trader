@@ -7,6 +7,7 @@ import sqlite3
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from itertools import islice
 from math import isfinite
 from pathlib import Path
@@ -379,7 +380,9 @@ class SqliteSchema:
             raise ValueError("sqlite_schema_requires_create_statements")
 
 
+@lru_cache(maxsize=128)
 def _schema_tokens(statement: str) -> tuple[str, ...]:
+    """Reuse DDL tokenization by text while each check reads the current schema."""
     statement = re.sub(r"\bIF\s+NOT\s+EXISTS\b", "", statement, count=1, flags=re.IGNORECASE)
     tokens = re.findall(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|\w+|[^\w\s]", statement.rstrip().rstrip(";"))
     return tuple(token if token.startswith(("'", '"')) else token.lower() for token in tokens)

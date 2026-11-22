@@ -10,7 +10,7 @@ from tests.helpers.download.company import company_evidence as fixtures
 from tests.helpers.download.company.company_annual_income import _contract
 from tests.helpers.download.company_resources import SQLiteCompanyEvidenceReaderFixture, SQLiteCompanyFactsIndexFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
-from trader.download.application.company_financial_producer import CompanyFinancialProducer
+from trader.download.application.company_financial_producer import BuildCompanyFinancialRoundQuery, CompanyFinancialProducer
 from trader.download.application.company_sync import RunCompanySyncRound
 from trader.download.domain.company_sync import CompanySyncBudget, CompanySyncFamily, CompanySyncRoundScope
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
@@ -68,8 +68,8 @@ def _index(tmp_path, baseline=None, clean=None):
     return index, facts
 
 
-def _observation(*, code="600001", at=_NOTICE, cutoff=_CUTOFF, eps=2.0, parent=100.0):
-    financial = CompanyFinancial(code, date(2026, 9, 30), at, eps, 5, 1, 3, 4, 5, parent, 90)
+def _observation(*, code="600001", at=_NOTICE, cutoff=_CUTOFF, period=date(2026, 9, 30), eps=2.0, parent=100.0):
+    financial = CompanyFinancial(code, period, at, eps, 5, 1, 3, 4, 5, parent, 90)
     source_key = code + ".SH"
     return CompanyFinancialSourceObservation(
         financial, source_key, at, at, cutoff, "CNY",
@@ -80,6 +80,44 @@ def _observation(*, code="600001", at=_NOTICE, cutoff=_CUTOFF, eps=2.0, parent=1
 
 def _page(*observations, page=1, pages=1, total=None):
     return CompanyFinancialSourcePage(page, pages, len(observations) if total is None else total, len(observations), tuple(observations), "a" * 64)
+
+
+def test_financial_batch_coverage_counts_latest_observations_separately_from_pages_and_formal_facts(tmp_path):
+    index, facts = _index(tmp_path, _baseline(tmp_path / "baseline"))
+    reader = SQLiteCompanyEvidenceReaderFixture(facts.path)
+    before = reader.publication_identity()
+    codes = ("600001", "600002", "600003")
+    query = BuildCompanyFinancialRoundQuery(_CUTOFF)
+    index.accept(
+        query,
+        _page(
+            _observation(period=date(2026, 6, 30)),
+            _observation(code="600002", parent=0.0),
+            _observation(code="600004"),
+            pages=2,
+            total=4,
+        ),
+        codes,
+        _CUTOFF,
+    )
+    partial = index.financial_batch(query, codes, _CUTOFF)
+    assert (partial.accepted_pages, partial.expected_pages, partial.accepted_raw_rows) == (1, 2, 3)
+    assert not partial.pages_complete
+    assert partial.latest_complete_stocks == 2
+
+    successor = index.cursor(query, codes, _CUTOFF)
+    assert successor is not None
+    index.accept(
+        successor, _page(_observation(eps=None, parent=-2.0), page=2, pages=2, total=4), codes, _CUTOFF,
+    )
+    complete = index.financial_batch(query, codes, _CUTOFF)
+    assert complete.pages_complete and complete.accepted_raw_rows == 4
+    assert (complete.population, complete.latest_observed_stocks, complete.latest_complete_stocks) == (3, 2, 1)
+    assert complete.latest_profit_pair_stocks == 2
+    assert tuple((name, count) for name, count in complete.missing_fields if count) == (("basic_eps", 1),)
+    assert reader.publication_identity() == before
+    next_cutoff = _CUTOFF + timedelta(days=1)
+    assert index.financial_batch(BuildCompanyFinancialRoundQuery(next_cutoff), codes, next_cutoff).expected_pages is None
 
 
 @pytest.mark.parametrize("reason", (

@@ -228,7 +228,7 @@ def _unlock_snapshot(
     rows, checked_at, coverage_end = source.unlocks, source.unlock_checked_at, source.unlock_coverage_end
     target_end = now.date() + timedelta(days=policy.unlock_days)
     source_valid = _unlock_metadata_valid(checked_at, coverage_end, now)
-    complete = complete and source_valid
+    complete = complete and source_valid and checked_at is not None and coverage_end is not None
     previous_valid = (
         previous is not None
         and previous.published_at <= now
@@ -236,7 +236,8 @@ def _unlock_snapshot(
     )
     if previous_valid and previous is not None and (
         not source_valid
-        or not complete and (checked_at is None or coverage_end is None)
+        or checked_at is None
+        or coverage_end is None
         or (
             checked_at is not None and previous.unlock_checked_at is not None
             and checked_at < previous.unlock_checked_at
@@ -258,7 +259,7 @@ def _unlock_snapshot(
         item for item in rows
         if now.date() <= item.day <= target_end and (coverage_end is None or item.day <= coverage_end)
     )
-    if complete and (coverage_end is None or coverage_end >= target_end):
+    if complete and coverage_end is not None and coverage_end >= target_end:
         state = CompanyDataState.COMPLETE
     elif schedule or checked_at is not None and coverage_end is not None and coverage_end >= now.date():
         state = CompanyDataState.PARTIAL

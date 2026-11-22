@@ -16,7 +16,9 @@ from trader.download.domain.company_document_links import CompanyPublishedEviden
 from trader.download.infra.company_document_link_rows import ReadCompanyDocumentLinks
 from trader.download.domain.company_field_results import CompanyFieldConclusion
 from trader.download.domain.company_normalization import CompanyNormalizationCommit, NormalizeCompanyFinancialFacts
-from trader.download.domain.company_source_records import CompanyFinancialSourceObservation, CompanyFinancialSourcePage
+from trader.download.domain.company_source_records import (
+    CompanyFinancialBatchCoverage, CompanyFinancialSourceObservation, CompanyFinancialSourcePage,
+)
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
 from trader.download.infra.company_facts_index import (
@@ -25,7 +27,10 @@ from trader.download.infra.company_facts_index import (
 from trader.download.infra.company_facts_protocol import DecodeCompanyLabel, EncodeCompanyTime, EVIDENCE_SOURCES, RequireCompanyTime
 from trader.download.infra.company_facts_schema import COMPANY_FACTS_SCHEMA
 from trader.download.infra.company_financial_observations import (
-    ReadCompanyFinancialObservations, ReadRoundCompanyFinancialObservations, WriteCompanyFinancialObservations,
+    ReadCompanyFinancialObservations,
+    ReadRoundCompanyFinancialBatch,
+    ReadRoundCompanyFinancialObservations,
+    WriteCompanyFinancialObservations,
 )
 from trader.download.infra.company_fact_inputs import BindCompanyEvidenceSource
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
@@ -183,6 +188,16 @@ class SQLiteCompanyNormalizedIndex:
                 raise CompanyInputValidationFailure("company_round_count_mismatch")
             return None
         return replace(query, page=row[0] + 1, expected_rows=row[2], received_rows=row[3])
+
+    def financial_batch(
+        self, query: StructuredCompanyQuery, codes: tuple[str, ...], cutoff: datetime,
+    ) -> CompanyFinancialBatchCoverage:
+        scope = self._scope(query, codes, cutoff)
+        self._check_cancelled()
+        with self._session(
+            self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy,
+        ) as connection, SqliteTransaction(connection):
+            return ReadRoundCompanyFinancialBatch(connection, scope, len(codes))
 
     def accept(self, query: StructuredCompanyQuery, page: CompanyFinancialSourcePage, codes: tuple[str, ...], cutoff: datetime, *, eligible_codes: tuple[str, ...] | None = None) -> None:
         scope = self._scope(query, codes, cutoff)

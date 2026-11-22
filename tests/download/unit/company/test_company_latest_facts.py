@@ -177,6 +177,20 @@ def test_explicit_complete_unlock_check_preserves_its_recorded_timestamp():
     assert current.unlock_state is CompanyDataState.COMPLETE
 
 
+@pytest.mark.parametrize("missing", ("unlock_checked_at", "unlock_coverage_end"))
+def test_checked_empty_unlock_with_missing_proof_does_not_clear_previous_schedule(missing):
+    source = _unlock_source()
+    policy = fixtures.CompanyEventPolicy()
+    previous = CompileCompanyFacts(source, policy)
+    unproven = replace(source, unlocks=(), **{missing: None})
+    assert CompileCompanyFacts(unproven, policy).unlock_state is CompanyDataState.UNAVAILABLE
+    refreshed = CompileCompanyFacts(unproven, policy, previous=previous)
+    assert refreshed.unlock_state is CompanyDataState.PARTIAL
+    assert refreshed.unlock_schedule == previous.unlock_schedule
+    assert refreshed.unlock_checked_at == previous.unlock_checked_at
+    assert refreshed.unlock_coverage_end == previous.unlock_coverage_end
+
+
 @pytest.mark.parametrize("kind", ("older", "future", "naive", "short_coverage", "expired_coverage"))
 def test_unusable_or_short_unlock_snapshot_cannot_erase_previous_schedule(kind):
     source = _unlock_source()

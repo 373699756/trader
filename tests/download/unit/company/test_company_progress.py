@@ -26,6 +26,7 @@ from trader.download.entrypoints.company_evidence_progress import CompanyEvidenc
 from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.entrypoints.cli import Main
 from trader.download.domain.company_sync import CompanySyncFamily, CompanySyncFamilyResult, CompanySyncStepResult
+from trader.download.domain.company_source_records import CompanyFinancialBatchCoverage
 from tests.helpers.download.company_round import CompanySyncFamilyFixture, CompanySyncRoundFixture
 
 
@@ -61,6 +62,31 @@ def test_company_round_unconfirmed_counts_are_not_none_or_zero():
     text = " | ".join(field.text for field in messages[0].fields)
     assert "累计核验未核对股次" in text and "预算已占用未核对，未知未核对" in text and "None" not in text
     assert "统计未核对" in text
+
+
+def test_company_round_financial_observations_do_not_close_qualification_gaps():
+    messages = []
+    progress = CompanyRoundProgress(SyncProgress(messages.append, lambda: 0.0), lambda: 0.0)
+    progress.set_financial_batch(CompanyFinancialBatchCoverage(
+        population=4403,
+        accepted_pages=89,
+        expected_pages=89,
+        accepted_raw_rows=23_122,
+        expected_raw_rows=23_122,
+        latest_observed_stocks=4403,
+        latest_complete_stocks=4367,
+        latest_profit_pair_stocks=4403,
+        missing_fields=(("basic_eps", 7), ("core_profit_growth_pct", 18)),
+    ))
+    family = CompanySyncFamilyFixture(CompanySyncFamily.FINANCIAL, gaps=("latest_financial_population_unverified",))
+    progress.finish(CompanySyncRoundFixture(_ROUND_AT, families=(family,)))
+
+    message, = messages
+    text = " | ".join(field.text for field in message.fields)
+    assert message.state == "待补证"
+    assert "财务批量页89/89，原始行23122/23122" in text
+    assert "财务源观察4403/4403股，最新报表八项有值4367股，归母与扣非同时有值4403股" in text
+    assert "EPS缺7股、扣非同比缺18股" in text
 
 
 @pytest.mark.parametrize("terminal", (False, True))

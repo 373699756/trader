@@ -14,6 +14,14 @@ from trader.download.domain.company_sync import (
 )
 
 
+def BuildCompanyFinancialRoundQuery(cutoff: datetime) -> StructuredCompanyQuery:
+    """Build the standard financial batch window for a Shanghai market cutoff."""
+    if cutoff.utcoffset() is None:
+        raise ValueError("company_round_cutoff_timezone_required")
+    day = cutoff.astimezone(ZoneInfo("Asia/Shanghai")).date()
+    return StructuredCompanyQuery("financial", day - timedelta(days=365), day)
+
+
 class CompanyFinancialInputIndex(Protocol):
     def cursor(self, query: StructuredCompanyQuery, codes: tuple[str, ...], cutoff: datetime) -> StructuredCompanyQuery | None: ...
     def accept(self, query: StructuredCompanyQuery, page: CompanyFinancialSourcePage, codes: tuple[str, ...], cutoff: datetime, *, eligible_codes: tuple[str, ...] | None = None) -> None: ...
@@ -77,4 +85,4 @@ class CompanyFinancialProducer:
         return CompanySyncStepResult(True, False, changed_codes=changed, pending_count=0)
 
 
-__all__ = ["CompanyFinancialInputIndex", "CompanyFinancialProducer"]
+__all__ = ["BuildCompanyFinancialRoundQuery", "CompanyFinancialInputIndex", "CompanyFinancialProducer"]

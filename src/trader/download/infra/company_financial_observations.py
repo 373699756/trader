@@ -4,9 +4,13 @@ from collections.abc import Sequence
 from datetime import date, datetime
 from sqlite3 import Row
 
-from trader.download.domain.company_evidence import CompanyFinancial
+from trader.download.domain.company_evidence import CompanyFinancial, CompanyInputValidationFailure
 from trader.download.domain.company_source_records import (
-    CompanyFinancialMissingField, CompanyFinancialSourceObservation, CompanyFinancialSourceValues,
+    CompanyFinancialBatchCoverage,
+    CompanyFinancialField,
+    CompanyFinancialMissingField,
+    CompanyFinancialSourceObservation,
+    CompanyFinancialSourceValues,
 )
 from trader.download.infra.company_facts_protocol import EncodeCompanyTime
 from trader.infra.sqlite_connection import SqliteConnection, SqliteSchema
@@ -21,6 +25,17 @@ COMPANY_FINANCIAL_OBSERVATIONS_SCHEMA = SqliteSchema((
       record_hash TEXT NOT NULL,PRIMARY KEY(code,report_date,record_hash)
     ) WITHOUT ROWID""",
 ))
+
+_BATCH_FIELDS: tuple[tuple[CompanyFinancialField, str], ...] = (
+    ("basic_eps", "eps"),
+    ("book_value_per_share", "bps"),
+    ("revenue_growth_pct", "revenue_growth_pct"),
+    ("net_profit_growth_pct", "profit_growth_pct"),
+    ("core_profit_growth_pct", "core_profit_growth_pct"),
+    ("roe_pct", "roe_pct"),
+    ("parent_net_profit", "parent_profit"),
+    ("core_net_profit", "core_profit"),
+)
 
 
 def WriteCompanyFinancialObservations(
@@ -65,6 +80,52 @@ def ReadRoundCompanyFinancialObservations(
     ))
 
 
+def ReadRoundCompanyFinancialBatch(
+    connection: SqliteConnection, scope: str, population: int,
+) -> CompanyFinancialBatchCoverage:
+    """Summarize the frozen pagination and latest observed periods in one read transaction."""
+    accepted, first, last, expected, maximum_pages, expected_rows, maximum_rows, raw_rows = connection.run(
+        "SELECT COUNT(*), MIN(page), MAX(page), MIN(pages), MAX(pages), MIN(total), MAX(total),"
+        " COALESCE(SUM(raw_count), 0) FROM company_round_page WHERE scope=?",
+        (scope,),
+    ).require_one()
+    if accepted and (
+        first != 1 or last != accepted or expected != maximum_pages or expected_rows != maximum_rows
+        or accepted > expected or raw_rows > expected_rows or accepted == expected and raw_rows != expected_rows
+    ):
+        raise CompanyInputValidationFailure("company_financial_batch_pagination_inconsistent")
+
+    present = ", ".join(f"COUNT(o.{column})" for _, column in _BATCH_FIELDS)
+    all_present = " AND ".join(f"o.{column} IS NOT NULL" for _, column in _BATCH_FIELDS)
+    observed, matched, complete, profit_pair, *counts = connection.run(
+        f"""WITH latest AS (
+            SELECT code, MAX(report_date) AS report_date FROM company_round_member
+            WHERE scope=? AND record_hash IS NOT NULL GROUP BY code
+        )
+        SELECT COUNT(*), COUNT(o.code),
+            COUNT(CASE WHEN {all_present} THEN 1 END),
+            COUNT(CASE WHEN o.parent_profit IS NOT NULL AND o.core_profit IS NOT NULL THEN 1 END),
+            {present}
+        FROM latest l JOIN company_round_member m ON m.scope=? AND m.code=l.code AND m.report_date=l.report_date
+        LEFT JOIN company_financial_observation o ON o.code=m.code AND o.report_date=m.report_date AND o.record_hash=m.record_hash""",
+        (scope, scope),
+    ).require_one()
+    if observed != matched or observed > population or observed > raw_rows:
+        raise CompanyInputValidationFailure("company_financial_batch_membership_inconsistent")
+
+    return CompanyFinancialBatchCoverage(
+        population=population,
+        accepted_pages=accepted,
+        expected_pages=expected,
+        accepted_raw_rows=raw_rows,
+        expected_raw_rows=expected_rows,
+        latest_observed_stocks=observed,
+        latest_complete_stocks=complete,
+        latest_profit_pair_stocks=profit_pair,
+        missing_fields=tuple((field, observed - count) for (field, _), count in zip(_BATCH_FIELDS, counts, strict=True)),
+    )
+
+
 def ReadCommittedCompanyFinancialReports(
     connection: SqliteConnection,
     codes: Sequence[str],
@@ -105,5 +166,5 @@ def _decode(row: Row) -> CompanyFinancialSourceObservation:
 
 __all__ = [
     "COMPANY_FINANCIAL_OBSERVATIONS_SCHEMA", "WriteCompanyFinancialObservations", "ReadCompanyFinancialObservations",
-    "ReadRoundCompanyFinancialObservations", "ReadCommittedCompanyFinancialReports",
+    "ReadRoundCompanyFinancialObservations", "ReadRoundCompanyFinancialBatch", "ReadCommittedCompanyFinancialReports",
 ]

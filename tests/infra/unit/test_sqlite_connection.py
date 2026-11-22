@@ -64,6 +64,17 @@ def test_schema_rejects_incompatible_tables(tmp_path):
         assert connection.run("PRAGMA user_version").require_one()[0] == 0
 
 
+def test_schema_checks_current_definition_after_repeated_validation(tmp_path):
+    schema = SqliteSchema(("CREATE TABLE facts(value TEXT NOT NULL CHECK(value='A'))",))
+    with SqliteSession(tmp_path / "facts.sqlite3") as connection:
+        EnsureSqliteSchema(connection, schema, allow_create=True, exact=True)
+        EnsureSqliteSchema(connection, schema, exact=True)
+        connection.run("DROP TABLE facts")
+        connection.run("CREATE TABLE facts(value TEXT NOT NULL CHECK(value='a'))")
+        with pytest.raises(sqlite3.DatabaseError, match="unsupported"):
+            EnsureSqliteSchema(connection, schema, exact=True)
+
+
 def test_concurrent_schema_initializers_share_one_valid_schema(tmp_path):
     path = tmp_path / "index.sqlite3"
     schema = SqliteSchema(("CREATE TABLE facts(value INTEGER)",))

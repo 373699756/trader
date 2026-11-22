@@ -8,7 +8,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from trader.download.application.company_financial_producer import CompanyFinancialProducer
+from trader.download.application.company_financial_producer import BuildCompanyFinancialRoundQuery, CompanyFinancialProducer
 from trader.download.application.company_source_ports import (
     CompanyAnnualIncomeSource, CompanyFinancialObservationSource, CompanyNewsSource, CompanyOfficialDocumentSource, CompanyRatioSource,
 )
@@ -187,7 +187,7 @@ class CompanySyncRuntime:
                     "SELECT DISTINCT code FROM company_positive_event WHERE event_type=? ORDER BY code",
                     (POSITIVE_TYPES[CompanyPositiveType.OPERATING_CONTRACT],)) if row[0] in eligible_codes)
                 return ReadCompanyFactRows(formal, selected)
-        query = financial_query or StructuredCompanyQuery("financial", scope.cutoff.date() - timedelta(days=365), scope.cutoff.date())
+        query = financial_query or BuildCompanyFinancialRoundQuery(scope.cutoff)
         fields = _FieldProducer(self, monotonic, eligible_codes)
         announcements = CompanyAnnouncementProducer(self.inputs, self.material, self._official_source, scope,
             sqlite_policy=self._sqlite_policy, extraction_hash=self.facts.extraction_hash, io_budget=self._io_budget,

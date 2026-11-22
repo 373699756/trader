@@ -98,6 +98,34 @@ def test_unlock_horizon_is_requalified_in_memory_at_each_requested_date():
     assert restrictions == {"600001": {"research_data_degraded"}} and reader.visits == 1
 
 
+@pytest.mark.parametrize("unlock_ratio", (0.0, 12.0))
+def test_stale_announcements_keep_independently_verified_pledge_and_unlock(unlock_ratio):
+    initial = _snapshot()
+    scope = replace(
+        initial,
+        announcements=(),
+        announcement_complete=False,
+        window_end=_AT.date() - timedelta(days=2),
+        unlocks=initial.unlocks if unlock_ratio else (),
+        unlock_checked_at=_AT - timedelta(days=1),
+    )
+    research = _research(_Reader(scope), _AT)
+    research.initialize(("600001",), cancelled=lambda: False)
+    restrictions = {}
+    observation = research.load(
+        ("600001",), _AT, include_structured=True, action_restrictions=restrictions
+    )["600001"]
+    assert not observation.corporate_risk_window_complete
+    assert "risk_coverage:stale" in observation.source_errors
+    assert observation.pledge_ratio_pct == 10.0
+    assert observation.unlock_ratio_pct == unlock_ratio
+    assert observation.unlock_window_start == scope.unlock_checked_at.date()
+    assert restrictions == {"600001": {"research_data_degraded"}}
+    coverage = research.status()
+    assert coverage.pledge_covered_count == coverage.unlock_covered_count == 1
+    assert coverage.announcements_covered_count == coverage.verified_count == 0
+
+
 def test_changed_publication_retries_without_accepting_mixed_rows():
     class Changing(_Reader):
         def visit(self, codes, consume, **kwargs):

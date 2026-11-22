@@ -10,7 +10,8 @@ from tests.helpers.download.company import company_evidence as fixtures
 from tests.helpers.download.company_resources import CompanyDocumentFilesFixture, SQLiteCompanyEvidenceReaderFixture, SQLiteCompanyFactsIndexFixture
 from trader.download.domain.company_event_extraction import ExtractCompanyLinkCandidate
 from trader.download.domain.company_events import CompanyEventStatus, CompanyPositiveStatus, CompanySubject
-from trader.download.domain.company_evidence import CompanyDocument, DisclosurePage, DisclosurePartition
+from trader.download.domain.company_evidence import CompanyDocument, CompanyEvidenceInput, CompanyRatio, DisclosurePage, DisclosurePartition
+from trader.download.domain.company_facts import CompileCompanyFacts
 from trader.download.infra import company_facts_index, company_field_publication
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity
@@ -40,6 +41,36 @@ def _put(index, text=_TEXT, *, identity="field-delivery", digest="field-record",
 
 def _reader(index):
     return SQLiteCompanyEvidenceReaderFixture(index.facts_path)
+
+
+def test_formal_company_totals_separate_verified_no_event_from_missing_coverage(tmp_path):
+    index = fixtures._index(tmp_path)
+    writer = SQLiteCompanyFactsIndexFixture(index.facts_path)
+    policy = fixtures.CompanyEventPolicy()
+    today = _AT.date()
+    source = CompanyEvidenceInput(
+        "600001", _AT, today - timedelta(days=365), today, "coverage",
+        (), True, (), CompanyRatio("600001", today, 0), (), True, (), False, (),
+        unlock_checked_at=_AT, unlock_coverage_end=today + timedelta(days=policy.unlock_days),
+    )
+    with_event = replace(source, code="600002", pledge=CompanyRatio("600002", today, 12),
+        unlocks=(CompanyRatio("600002", today + timedelta(days=1), 5),), announcement_complete=False)
+    short_window = replace(source, code="600003", pledge=None, unlock_coverage_end=today + timedelta(days=20))
+    outside_scope = replace(source, code="600004", pledge=CompanyRatio("600004", today, 0))
+    writer.publish(tuple(CompileCompanyFacts(item, policy) for item in (
+        source, with_event, short_window, outside_scope,
+    )), {}, _identity(index), _AT)
+    requested = ("600001", "600002", "600003", "600005")
+    totals = _reader(index).read_field_counts(codes=requested, as_of=_AT)
+    assert totals is not None and totals.coverage is not None
+    coverage = totals.coverage
+    assert coverage.stocks == 4
+    assert (coverage.pledge_with_value, coverage.pledge_without_event) == (1, 1)
+    assert (coverage.unlock_with_event, coverage.unlock_without_event) == (1, 1)
+    assert (coverage.announcement_complete, coverage.announcement_partial) == (2, 1)
+    read_later = _reader(index).read_field_counts(codes=requested, as_of=_AT + timedelta(days=1))
+    assert read_later is not None and read_later.coverage is not None
+    assert (read_later.coverage.unlock_with_event, read_later.coverage.unlock_without_event) == (0, 0)
 
 
 def _identity(index):

@@ -550,8 +550,6 @@ def _qualified(
         item,
         company_context=replace(item.company_context, coverage_current=False) if item.company_context else None,
         corporate_risk_window_complete=False,
-        pledge_ratio_pct=None,
-        unlock_ratio_pct=None,
         news_queried=False,
         source_errors=tuple(sorted(set((*item.source_errors, "risk_coverage:stale")))),
     )
@@ -669,7 +667,7 @@ def _observation(
         and snapshot.pledge.day <= now.date()
         and snapshot.pledge_state is CompanyDataState.COMPLETE
         else None,
-        unlock_window_start=snapshot.checked_at.date(),
+        unlock_window_start=ShanghaiNow(snapshot.unlock_checked_at).date() if snapshot.unlock_checked_at is not None else None,
         unlock_window_end=snapshot.unlock_coverage_end,
         corporate_risk_facts=facts,
         corporate_risk_window_complete=snapshot.announcement_state is CompanyDataState.COMPLETE,

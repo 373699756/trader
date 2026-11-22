@@ -148,6 +148,29 @@ class CompanyFinancialSourcePage:
 
 
 @dataclass(frozen=True, slots=True)
+class CompanyFinancialBatchCoverage:
+    """Coverage of one exact financial query before source admission."""
+
+    population: int
+    accepted_pages: int
+    expected_pages: int | None
+    accepted_raw_rows: int
+    expected_raw_rows: int | None
+    latest_observed_stocks: int
+    latest_complete_stocks: int
+    latest_profit_pair_stocks: int
+    missing_fields: tuple[tuple[CompanyFinancialField, int], ...]
+
+    @property
+    def pages_complete(self) -> bool:
+        return (
+            self.expected_pages is not None
+            and self.accepted_pages == self.expected_pages
+            and self.accepted_raw_rows == self.expected_raw_rows
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class CompanyOfficialDirectoryQuery:
     start_day: date
     end_day: date
@@ -196,6 +219,7 @@ __all__ = [
     "CompanyFinancialSourceRecordHash",
     "CompanyFinancialSourceObservation",
     "CompanyFinancialSourcePage",
+    "CompanyFinancialBatchCoverage",
     "CompanyOfficialDirectoryQuery",
     "CompanyOfficialDirectoryObservation",
     "CompanyOfficialDirectoryPage",

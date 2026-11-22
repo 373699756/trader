@@ -21,6 +21,8 @@ from uuid import uuid4
 from flask import Flask
 
 from trader.download.application.company_exclusions import PublishCompanyExclusions
+from trader.download.application.company_financial_producer import BuildCompanyFinancialRoundQuery
+from trader.download.application.company_round_progress import CompanyFieldOutcomeCounts
 from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.application.history_ports import HistorySyncDependencies
 from trader.download.application.prepare_reference import PrepareReference, ReferencePreparationDependencies, ReferencePreparationSources
@@ -1403,9 +1405,25 @@ def ExecuteCompanySync(
             observe=progress.advance, activity=progress.activity, source_ready=lambda: time.monotonic() < source_deadline)
         budget = CompanySyncBudget(configuration.round_step_limit, configuration.round_request_limit,
             min(256, configuration.round_step_limit), deadline)
+
+        def read_counts(selected: CompanySyncRoundScope) -> CompanyFieldOutcomeCounts | None:
+            if stopped():
+                return None
+            try:
+                return reader.read_field_counts(codes=selected.codes, as_of=selected.cutoff, cancel_requested=stopped)
+            except InterruptedError:
+                if not stopped():
+                    raise
+                return None
+            except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
+                logging.getLogger(__name__).warning("公司正式字段计数不可用 category=%s", type(exc).__name__)
+                return None
+
         try:
             runtime.initialize(codes, cutoff)
             active = journal.active()
+            initial_scope = active.scope if active is not None else CompanySyncRoundScope(codes, cutoff)
+            initial_fields = read_counts(initial_scope)
             news_cutoff = cutoff if active is None else active.scope.cutoff
             news_records = tuple(SQLiteFreezeRecords(paths.recommendation(profile) / "freeze.sqlite3", sqlite_policy=sqlite_policy,
                 read_session=lambda path: io_budget.session(path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy))
@@ -1415,13 +1433,16 @@ def ExecuteCompanySync(
                 news_codes=news_codes)
         except CompanySyncInterrupted:
             return paused()
-        fields = None
-        if result.publication_hash and not stopped():
+        fields = read_counts(result.scope) if result.publication_hash else None
+        if not stopped() and any(item.family is CompanySyncFamily.FINANCIAL for item in result.families):
+            query = BuildCompanyFinancialRoundQuery(result.scope.cutoff)
             try:
-                fields = reader.read_field_counts(cancel_requested=stopped)
+                financial = normalized.financial_batch(query, result.scope.codes, result.scope.cutoff)
             except CompanySyncInterrupted:
                 pass
             except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
-                logging.getLogger(__name__).warning("公司正式字段计数不可用 category=%s", type(exc).__name__)
-        progress.finish(result, fields=fields)
+                logging.getLogger(__name__).warning("公司财务批量观察计数不可用 category=%s", type(exc).__name__)
+            else:
+                progress.set_financial_batch(financial)
+        progress.finish(result, fields=fields, previous=initial_fields if result.scope == initial_scope else None)
         return result
