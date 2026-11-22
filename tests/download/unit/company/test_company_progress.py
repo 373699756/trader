@@ -130,12 +130,13 @@ def test_company_failure_is_visible_with_exact_gaps_before_progress_throttle(ter
     clock = [0.0]
     progress = SyncProgress(messages.append, lambda: clock[0])
     company_progress = CompanyRoundProgress(progress, lambda: clock[0])
-    company_progress.advance(CompanySyncFamilyFixture(CompanySyncFamily.FINANCIAL, complete=False))
+    gaps = ("supplier_input_rejected", "latest_financial_population_unverified")
+    company_progress.advance(CompanySyncFamilyFixture(CompanySyncFamily.FINANCIAL, complete=False, gaps=gaps))
     clock[0] = 0.1
     failure = "company_round_page_number_mismatch"
     result = CompanySyncFamilyFixture(
         CompanySyncFamily.FINANCIAL, complete=False,
-        failure=failure, gaps=("supplier_input_rejected", "latest_financial_population_unverified"),
+        failure=failure, gaps=gaps,
     )
     if terminal:
         company_progress.finish(CompanySyncRoundFixture(_ROUND_AT, families=(result,)))
@@ -145,21 +146,77 @@ def test_company_failure_is_visible_with_exact_gaps_before_progress_throttle(ter
     text = " | ".join(field.text for field in messages[-1].fields)
     assert f"错误 {failure}" in text
     assert "缺口原因 supplier_input_rejected,latest_financial_population_unverified" in text
+    assert "说明 来源返回内容未通过校验" in text
     assert "本族请求预算已占用0" in text
 
 
-def test_company_step_heartbeat_repeats_acknowledged_counts_and_stops_with_owner():
+def test_company_interim_reasons_are_tracked_by_family_and_restored_at_finish():
+    messages = []
+    clock = [0.0]
+    progress = CompanyRoundProgress(SyncProgress(messages.append, lambda: clock[0]), lambda: clock[0])
+    gaps = ("population_members_became_ineligible", "new_population_members_wait_for_refresh")
+    financial = CompanySyncFamilyFixture(CompanySyncFamily.FINANCIAL, complete=False, can_continue=True,
+        gaps=gaps, accepted_inputs=12, source_calls=3)
+    pledge = replace(financial, family=CompanySyncFamily.PLEDGE)
+
+    def display(family: CompanySyncFamilyResult, *, elapsed: float = 2.0) -> tuple[str, ...]:
+        clock[0] += elapsed
+        before = len(messages)
+        progress.advance(family)
+        assert len(messages) == before + 1
+        return tuple(field.text for field in messages[-1].fields)
+
+    for first in (display(financial), display(pledge, elapsed=0.1)):
+        assert any("缺口2项" in text for text in first)
+        assert any(text.startswith("缺口原因 ") and all(gap in text for gap in gaps) for text in first)
+        assert any(text.startswith("说明 ") for text in first)
+
+    reordered = replace(financial, steps=2, accepted_inputs=36, source_calls=4,
+        result=replace(financial.result, gaps=tuple(reversed(gaps))))
+    repeated = display(reordered)
+    assert "最近确认调度步" in repeated
+    assert any("累计接纳输入36项" in text and "预算已占用4，未知0" in text for text in repeated)
+    assert not any("缺口" in text or text.startswith("说明 ") for text in repeated)
+
+    latest_gaps = (gaps[0], "latest_financial_population_unverified")
+    latest = replace(reordered, result=replace(reordered.result, gaps=latest_gaps))
+    changed = display(latest, elapsed=0.1)
+    assert any(text.startswith("缺口原因 ") and all(gap in text for gap in latest_gaps) for text in changed)
+    assert any(text.startswith("说明 ") and "各股最新财报的全量覆盖待核" in text for text in changed)
+
+    resolved = replace(pledge, result=replace(pledge.result, gaps=()))
+    cleared = display(resolved, elapsed=0.1)
+    assert any("缺口0项" in text for text in cleared)
+    assert not any(text.startswith("缺口原因 ") for text in cleared)
+    assert not any("缺口" in text or text.startswith("说明 ") for text in display(latest))
+
+    progress.finish(CompanySyncRoundFixture(_ROUND_AT, families=(latest, resolved)))
+    final, _pledge_final = messages[-2:]
+    assert final.finished and final.task.key == "financial"
+    terminal = tuple(field.text for field in final.fields)
+    assert any(text.startswith("缺口原因 ") and all(gap in text for gap in latest_gaps) and gaps[1] not in text
+        for text in terminal)
+    assert any(text.startswith("说明 ") and "各股最新财报的全量覆盖待核" in text for text in terminal)
+
+
+@pytest.mark.parametrize("failure", (None, "source_attempt_unconfirmed"))
+def test_company_step_heartbeat_repeats_only_progress_and_stops_with_owner(failure):
     messages = []
     clock = [0.0]
     progress = SyncProgress(messages.append, lambda: clock[0])
     company_progress = CompanyRoundProgress(progress, lambda: clock[0])
     company_progress.start(4403)
     family = CompanySyncFamilyResult(CompanySyncFamily.FINANCIAL, 2, 293, 3,
-        CompanySyncStepResult(False, True, accepted_inputs=293), unknown_attempts=1)
+        CompanySyncStepResult(False, failure is None, accepted_inputs=293,
+            gaps=("latest_financial_population_unverified",), failure=failure), unknown_attempts=1)
     clock[0] = 2
     company_progress.advance(family)
     assert any("最近确认调度步" == field.text for field in messages[-1].fields)
     assert any("累计接纳输入293项" in field.text and "占用3，未知1" in field.text for field in messages[-1].fields)
+    assert any(field.text.startswith("缺口原因 ") for field in messages[-1].fields)
+    if failure is not None:
+        assert messages[-1].state == "阻塞"
+        assert any(field.text == f"错误 {failure}" for field in messages[-1].fields)
     with company_progress.activity(CompanySyncFamily.PLEDGE):
         clock[0] = 6
         progress.heartbeat()
@@ -168,7 +225,13 @@ def test_company_step_heartbeat_repeats_acknowledged_counts_and_stops_with_owner
         progress.heartbeat()
         assert messages[-1].state == "处理中"
         assert any("当前执行 pledge 已用 00:00:06" in field.text for field in messages[-1].fields)
-        assert any("累计接纳输入293项" in field.text for field in messages[-1].fields)
+    clock[0] = 14
+    progress.heartbeat()
+    assert len(messages) == 4 and messages[-1].state == "等待"
+    for heartbeat in messages[-2:]:
+        assert any("累计接纳输入293项" in field.text and "占用3，未知1" in field.text for field in heartbeat.fields)
+        assert not any("缺口" in field.text or field.text.startswith(("说明 ", "错误 ")) for field in heartbeat.fields)
+        assert failure is None or all(failure not in field.text for field in heartbeat.fields)
     count = len(messages)
     progress.finish_owner("company")
     clock[0] = 40

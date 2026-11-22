@@ -249,20 +249,23 @@ class CompanyRoundProgress:
     def advance(self, family: CompanySyncFamilyResult) -> None:
         failure = family.result.failure
         state: ProgressState = "阻塞" if failure == "source_attempt_unconfirmed" else "失败" if failure else "处理中"
-        message = ProgressMessage(
-            (ProgressField("最近确认调度步"), *_family_fields(family)),
-            task=_COMPANY_ROUND_TASK,
-            state=state,
-            immediate=failure is not None,
-        )
         with self._lock:
             if self._finished:
                 return
             timing = self._families[family.family]
+            previous_gaps = timing.latest.result.gaps if timing.latest is not None else ()
+            show_issues = failure is not None or frozenset(family.result.gaps) != frozenset(previous_gaps)
             timing.acknowledged += 1
             timing.latest = family
+            message = ProgressMessage(
+                (ProgressField("最近确认调度步"), *_family_progress_fields(family)),
+                task=_COMPANY_ROUND_TASK,
+                state=state,
+            )
             self._last_message = message
             self._last_feedback = self._monotonic()
+        if show_issues:
+            message = replace(message, fields=(*message.fields, *_family_issue_fields(family)), immediate=True)
         self._report(message)
 
     def finish(
@@ -283,7 +286,7 @@ class CompanyRoundProgress:
         former = previous.coverage if previous is not None else None
         for family in result.families:
             timing = self._families[family.family]
-            details = (*_family_fields(family), *_invocation_fields(timing, family.family))
+            details = (*_family_progress_fields(family), *_family_issue_fields(family), *_invocation_fields(timing, family.family))
             if family.family is CompanySyncFamily.FINANCIAL and financial_batch is not None:
                 details += _financial_batch_totals(financial_batch)
             if coverage is not None:
@@ -310,8 +313,7 @@ class CompanyRoundProgress:
                 return None
             self._last_feedback = now
             if self._running is None:
-                state = message.state if message.state in {"阻塞", "失败"} else "等待"
-                return replace(message, state=state, immediate=False)
+                return replace(message, state="等待")
             family, started_at = self._running
             current = ProgressField(f"当前执行 {family.value} 已用 {ProgressDuration(now - started_at)}")
             return replace(message, fields=(current, *message.fields), state="处理中", immediate=False)
@@ -454,16 +456,23 @@ def _formal_coverage_fields(
     return (ProgressField(description + delta),)
 
 
-def _family_fields(family: CompanySyncFamilyResult) -> tuple[ProgressField, ...]:
+def _family_progress_fields(family: CompanySyncFamilyResult) -> tuple[ProgressField, ...]:
     accepted = (
         f"累计核验{_quantity(family.accepted_inputs)}股次/{family.steps}步，累计变动{len(family.result.changed_codes)}股"
         if family.family is CompanySyncFamily.FIELDS
         else f"累计接纳输入{_quantity(family.accepted_inputs)}项"
     )
-    fields = (ProgressField(
-        f"{family.family.value} {accepted}；"
-        f"本族请求预算已占用{_quantity(family.source_calls)}，未知{_quantity(family.unknown_attempts)}；"
-        f"缺口{len(family.result.gaps)}项"),
+    progress = ProgressField(
+        f"{family.family.value} {accepted}，"
+        f"本族请求预算已占用{_quantity(family.source_calls)}，未知{_quantity(family.unknown_attempts)}")
+    if family.family is CompanySyncFamily.ANNUAL_INCOME and family.result.business_complete and family.accepted_inputs == 0:
+        return progress, ProgressField("本轮无待处理的合同营收任务。")
+    return (progress,)
+
+
+def _family_issue_fields(family: CompanySyncFamilyResult) -> tuple[ProgressField, ...]:
+    fields = (
+        ProgressField(f"缺口{len(family.result.gaps)}项"),
         *((ProgressField(f"错误 {family.result.failure}", ProgressLevel.ERROR),) if family.result.failure is not None else ()),
         *((ProgressField(f"缺口原因 {','.join(family.result.gaps)}", ProgressLevel.WARNING),) if family.result.gaps else ()),
     )
@@ -471,8 +480,6 @@ def _family_fields(family: CompanySyncFamilyResult) -> tuple[ProgressField, ...]
     explanations = tuple(text for code in reasons if (text := ExplainCompanyRoundReason(code)) is not None)
     if explanations:
         fields += (ProgressField(f"说明 {'。'.join(explanations)}。"),)
-    if family.family is CompanySyncFamily.ANNUAL_INCOME and family.result.business_complete and family.accepted_inputs == 0:
-        fields += (ProgressField("本轮无待处理的合同营收任务。"),)
     return fields
 
 
