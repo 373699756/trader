@@ -30,7 +30,7 @@ def test_public_replay_rejects_external_current_data_before_dispatch(tmp_path: P
     data = tmp_path / "current" / "data"
     runtime = SimpleNamespace(
         project_root=tmp_path / "product", runtime_dir=tmp_path / "current" / "runtime",
-        data_paths=SimpleNamespace(root=data, company=data / "facts.sqlite3", company_collection=data / "raw.sqlite3"),
+        data_paths=SimpleNamespace(root=data, company=data / "facts.sqlite3", company_sources=data / "raw.sqlite3"),
     )
     monkeypatch.setattr(trader.infra.settings, "LoadRuntimeSettings", lambda config: runtime)
     options = CompanyOptions("company-resume", company_replay_directory=data / "replay")

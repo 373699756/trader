@@ -28,7 +28,7 @@ def _index(tmp_path):
     item = fixtures._disclosure("proof-audit", "控股股东减持计划公告")
     _put(index, item, _TEXT)
     index.publish(item.codes, fixtures.NOW)
-    CompanyDocumentFilesFixture(index.path.parent / "text").write(_TEXT)
+    CompanyDocumentFilesFixture(index.path.parent / "raw" / "text").write(_TEXT)
     with SqliteSession(index.path) as collected:
         collected.run("UPDATE disclosures SET body_retained=1 WHERE source_key=?", (item.identity,))
     return index
@@ -74,7 +74,7 @@ def test_independent_collection_commit_prevents_a_stable_reproof_pass(tmp_path, 
     def concurrent_commit(*args, **kwargs):
         result = prepare(*args, **kwargs)
         with SqliteSession(index.path) as producer:
-            producer.run("INSERT INTO component_checks VALUES('external','field-proof',?,'')", (fixtures.NOW.isoformat(),))
+            producer.run("INSERT INTO company_dirty_codes VALUES('600009')")
         return result
 
     monkeypatch.setattr(audit, "PrepareCompanyFieldResults", concurrent_commit)
@@ -102,7 +102,7 @@ def test_missing_or_unbound_originals_cannot_reprove_published_success(tmp_path,
         with SqliteSession(index.path) as collected:
             collected.run("UPDATE disclosures SET body_retained=0")
     if failure in {"missing", "released_missing"}:
-        for path in (index.path.parent / "text").glob("*/*.txt.gz"):
+        for path in (index.path.parent / "raw" / "text").glob("*/*.txt.gz"):
             path.unlink()
     elif failure == "receipt":
         with SqliteSession(index.facts_path) as formal:

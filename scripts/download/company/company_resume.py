@@ -178,6 +178,7 @@ def Main() -> int:
         "scripts/download/company/company_failure_audit.py",
         "scripts/download/company/company_query_audit.py",
         "scripts/download/company/company_publication_audit.py",
+        "scripts/download/company/company_source_qualification.py",
         "scripts/download/company/company_field_proof_audit.py",
         "scripts/download/company/company_document_download_audit.py",
         "src/trader/download/infra/company_disclosure_source.py",
@@ -191,6 +192,8 @@ def Main() -> int:
         "src/trader/download/infra/company_annual_field_publication.py",
         "src/trader/download/infra/company_financial_publication.py",
         "src/trader/download/infra/company_material_index.py",
+        "src/trader/download/infra/company_evidence_sql.py",
+        "src/trader/download/infra/company_source_schema.py",
         "src/trader/download/infra/company_normalized_index.py",
         "src/trader/download/infra/company_field_publication.py",
         "src/trader/download/infra/company_field_recovery.py",
@@ -209,7 +212,7 @@ def Main() -> int:
         from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 
         paths = runtime.data_paths
-        if args.database.resolve() != paths.company_collection.resolve() or (
+        if args.database.resolve() != paths.company_sources.resolve() or (
             args.facts_database is not None and args.facts_database.resolve() != paths.company.resolve()
         ):
             parser.error("--source-qualification-only requires company paths from the configured runtime")

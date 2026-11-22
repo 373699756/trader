@@ -104,7 +104,7 @@ def AuditCompanyOcr(
             runs = []
             try:
                 copied = _copy_local_pdf(
-                    path.parent, raw, item, previous_hash, configuration.extended_document_limits.max_bytes, check,
+                    path.parent / "raw", raw, item, previous_hash, configuration.extended_document_limits.max_bytes, check,
                 )
                 observation["input_source"] = "local" if copied else "download"
                 if not copied:

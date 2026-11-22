@@ -35,7 +35,7 @@ from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
 from trader.download.infra.company_financial_input_use import ReadUnusedCompanyFinancialInputs
 from trader.download.infra.company_facts_protocol import CompanyExtractionHash
 from trader.download.infra.company_facts_schema import COMPANY_FACTS_SCHEMA
-from trader.download.infra.company_evidence_sql import SCHEMA as COMPANY_COLLECTION_SCHEMA
+from trader.download.infra.company_source_schema import COMPANY_SOURCE_SCHEMA
 from trader.download.infra.company_raw_files import CompanyRawFiles
 from trader.download.infra.download_failure_diagnostics import ReadDownloadFailures
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration, LoadDownloadFailureConfiguration
@@ -267,7 +267,7 @@ def _audit_company_database(
     event_policy: CompanyEventPolicy | None,
 ) -> dict[str, object]:
     incompatible: list[str] = []
-    stores: tuple[tuple[Path, str, SqliteSchema], ...] = ((path, "collection", COMPANY_COLLECTION_SCHEMA),)
+    stores: tuple[tuple[Path, str, SqliteSchema], ...] = ((path, "sources", COMPANY_SOURCE_SCHEMA),)
     if facts_path is not None:
         stores += ((facts_path, "facts", COMPANY_FACTS_SCHEMA),)
     for database_path, store, schema in stores:
@@ -306,8 +306,9 @@ def _audit_company_database(
     if hashlib.sha256(configuration_path.read_bytes()).hexdigest() != configuration_hash:
         raise ValueError("company_audit_configuration_changed")
     failure_configuration = LoadDownloadFailureConfiguration(project_root)
+    raw_root = path.parent / "raw"
     raw = CompanyRawFiles(
-        path.parent,
+        raw_root,
         capacity=configuration.raw_capacity_bytes,
         analysis_reserve=configuration.raw_analysis_reserve_bytes,
         free_reserve=configuration.temporary_disk_reserve_bytes,
@@ -373,7 +374,7 @@ def _audit_company_database(
                 "attempted_at": row[10], "retry_at": row[11], "attempts": row[12], "policy": row[13],
                 "same_version": row[14] == item.digest, "ocr_diagnostic": json.loads(row[15]) if row[15] else None,
                 "ocr_timeout_attempts": row[16], "task_stage": row[17], "body_checked": bool(row[18]),
-                "body_retained": bool(row[19]), "directory": directory.relative_to(path.parent).as_posix(),
+                "body_retained": bool(row[19]), "directory": directory.relative_to(raw_root).as_posix(),
                 "directory_available": directory_available,
                 "files": files, "pdf_files": sum(name.endswith(".pdf") for name in files),
                 "failure_records": sum(name.startswith("failure-") and name.endswith(".json") for name in files),
@@ -525,8 +526,8 @@ def _audit_company_database(
         "summary": {
             "database": {
                 "read_only": True,
-                "pdf_archived": (path.parent / "failed").exists(),
-                "retained_failed_pdfs": sum(1 for _ in (path.parent / "failed").rglob("*.pdf")),
+                "pdf_archived": (raw_root / "failed").exists(),
+                "retained_failed_pdfs": sum(1 for _ in (raw_root / "failed").rglob("*.pdf")),
                 "database_bytes": path.stat().st_size,
                 "free_bytes": page_size * free_pages,
                 "table_bytes": table_bytes,

@@ -43,6 +43,7 @@ _SUMMARY_FAILURES = {
     "preparation_ReferenceDatabaseIncompatibleError": "ST资格及交易日历参考库结构不兼容",
     "preparation_AkshareCalendarTimeoutError": "交易日历准备超时",
     "CompanyDatabaseIncompatibleError": "公司资料库或请求账本结构不兼容，具体范围见上方诊断",
+    "CompanySyncRebuildActiveRound": "原请求轮次仍需核对，空库重下载暂缓",
     "ProcessLockError": "另一个任务持有公司同步锁",
 }
 _REASONS = {
@@ -69,6 +70,7 @@ _ROUND_REASON_EXPLANATIONS = {
     "issuer_revision_relationship_unverified": "同一发行人公告的新旧修订关系待核",
     "persistent_risk_initial_state_unverified": "公告窗口开始时仍生效的历史风险待核",
     "news_metadata_does_not_verify_issuer_risk": "新闻用于辅助研究，风险核验需要正式披露凭据",
+    "news_automatic_collection_retired": "辅助新闻已停止自动采集",
     "field_proof_incomplete": "仍有适用字段缺值或字段凭据待核",
     "news_skipped_by_fill": "补缺模式跳过新的新闻请求",
     "request_counts_unconfirmed": "步骤中断，终态请求数待核",

@@ -246,20 +246,26 @@ def _report_sync_failure(result: SyncResult, progress: SyncProgress) -> None:
             store = task.incompatible_company_store
             if store is CompanyDownloadStore.REQUEST_JOURNAL:
                 detail = "仅company/company_sync.sqlite3请求预算账本不兼容；保留已消费和未知请求记录，需核实处理，不作为资料删除重下范围。"
+            elif store is CompanyDownloadStore.RETIRED_LAYOUT:
+                detail = (
+                    "检测到旧版资料库。停止相关任务后，将 company_facts.sqlite3、company_normalized.sqlite3、"
+                    "company_inputs.sqlite3、raw/company_collection.sqlite3 及对应封签和SQLite配套文件移至备份目录。"
+                    "保留 company_sync.sqlite3、请求响应凭据和 raw 下的正文与原件，再运行 ./run.sh sync company。"
+                )
             elif store is not None:
                 path = {
-                    CompanyDownloadStore.COLLECTION: "company/raw/company_collection.sqlite3",
-                    CompanyDownloadStore.FACTS: "company/company_facts.sqlite3",
-                    CompanyDownloadStore.NORMALIZED: "company/company_normalized.sqlite3",
-                    CompanyDownloadStore.INPUTS: "company/company_inputs.sqlite3",
+                    CompanyDownloadStore.SOURCES: "company/company_sources.sqlite3",
+                    CompanyDownloadStore.FACTS: "company/company_published.sqlite3",
                 }[store]
-                detail = f"已确认不兼容的下载资料仅为{path}；明确该文件的重下处理后再继续，不连带删除原件、模型、冻结记录或请求预算。"
+                detail = f"已确认不兼容的下载资料为{path}。正式库和来源库需要配套备份核验，请保留原件、模型、冻结记录和请求预算。"
             else:
                 detail = "具体不兼容资料范围尚未核实，不执行删除或重建。"
             _sync_error(progress,
                 "sync company: 公司下载存储结构不兼容，本次未启动公司资料写入。"
                 + detail + "程序不会自动删除或迁移。",
             )
+        if task.task == "company" and task.reason == "CompanySyncRebuildActiveRound":
+            _sync_error(progress, "sync company: 原请求轮次还不能结束，空库重下载暂缓。请保留请求账本和原资料备份，待可恢复或进入允许的新日期范围后重试。")
         if task.task == "company" and task.reason == "ProcessLockError":
             _sync_error(progress,
                 "sync company: 公司同步锁正由另一个任务持有。若曾按 Ctrl+Z，请在原终端用 jobs 查看，"

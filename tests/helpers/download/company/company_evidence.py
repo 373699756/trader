@@ -71,11 +71,11 @@ class Sources:
         return ()
 
 
-def _index(tmp_path):
+def _index(tmp_path, *, text_root=None):
     index = CompanyResearchFixture(
         tmp_path / "company_evidence.sqlite3",
         facts_path=(tmp_path / "company_evidence.sqlite3").parent / "company_facts.sqlite3",
-        documents=CompanyDocumentFiles((tmp_path / "company_evidence.sqlite3").parent / "text"),
+        documents=CompanyDocumentFiles(tmp_path / "text" if text_root is None else text_root),
         listings=(CompanyListing("600001", NOW.date() - timedelta(days=365)),),
     )
     index.initialize()

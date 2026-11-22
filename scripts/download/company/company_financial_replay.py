@@ -291,8 +291,8 @@ def AuditCompanyNormalizedRound(
                   for position, path in enumerate(page_paths, 1))
     source = _FrozenFinancialPages(pages)
     directory.mkdir(parents=True)
-    formal_writer = SQLiteCompanyFactsIndex(directory / "facts.sqlite3", event_policy=event_policy, sqlite_policy=sqlite_policy)
-    index = SQLiteCompanyNormalizedIndex(directory / "normalized.sqlite3", formal_writer,
+    formal_writer = SQLiteCompanyFactsIndex(directory / "company_published.sqlite3", event_policy=event_policy, sqlite_policy=sqlite_policy)
+    index = SQLiteCompanyNormalizedIndex(directory / "company_sources.sqlite3", formal_writer,
                                          event_policy=event_policy, sqlite_policy=sqlite_policy, clean_material=lambda: None)
     index.initialize()
     index.seed(baseline)
@@ -303,7 +303,7 @@ def AuditCompanyNormalizedRound(
     failed: str | None = None
     result = None
     try:
-        journal = SQLiteCompanySyncRoundJournal(directory / "requests.sqlite3", sqlite_policy=sqlite_policy, publication_identity=reader.publication_identity)
+        journal = SQLiteCompanySyncRoundJournal(directory / "company_sync.sqlite3", sqlite_policy=sqlite_policy, publication_identity=reader.publication_identity)
         journal.initialize()
         result = RunCompanySyncRound(journal, (CompanyFinancialProducer(index, source, query,
             qualification_gaps=("latest_financial_population_unverified", "financial_first_disclosure_revision_unverified"), publication_scope="isolated_candidate"),),
@@ -367,8 +367,8 @@ def AuditCompanyNormalizedRestart(
     deadline = time.monotonic() + budget_seconds
     def cancel() -> bool:
         return time.monotonic() >= deadline
-    facts = SQLiteCompanyFactsIndex(directory / "facts.sqlite3", event_policy=event_policy, sqlite_policy=sqlite_policy)
-    index = SQLiteCompanyNormalizedIndex(directory / "normalized.sqlite3", facts, event_policy=event_policy,
+    facts = SQLiteCompanyFactsIndex(directory / "company_published.sqlite3", event_policy=event_policy, sqlite_policy=sqlite_policy)
+    index = SQLiteCompanyNormalizedIndex(directory / "company_sources.sqlite3", facts, event_policy=event_policy,
                                          sqlite_policy=sqlite_policy, clean_material=lambda: None)
     index.initialize()
     options = SqliteConnectionOptions(read_only=True)
@@ -380,7 +380,7 @@ def AuditCompanyNormalizedRestart(
         before_receipts = tuple(tuple(row) for row in formal.run("SELECT * FROM company_input_receipt ORDER BY source,source_key,code,record_hash,extraction_hash"))
     source = _FrozenFinancialPages(())
     reader = SQLiteCompanyEvidenceReader(facts.path, event_policy=event_policy, sqlite_policy=sqlite_policy)
-    journal = SQLiteCompanySyncRoundJournal(directory / "requests.sqlite3", sqlite_policy=sqlite_policy, publication_identity=reader.publication_identity)
+    journal = SQLiteCompanySyncRoundJournal(directory / "company_sync.sqlite3", sqlite_policy=sqlite_policy, publication_identity=reader.publication_identity)
     journal.initialize()
     result = RunCompanySyncRound(journal, (CompanyFinancialProducer(index, source, query,
         qualification_gaps=("latest_financial_population_unverified", "financial_first_disclosure_revision_unverified"), publication_scope="isolated_candidate"),),

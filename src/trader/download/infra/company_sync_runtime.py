@@ -11,7 +11,7 @@ from pathlib import Path
 
 from trader.download.application.company_financial_producer import BuildCompanyFinancialRoundQuery, CompanyFinancialProducer
 from trader.download.application.company_source_ports import (
-    CompanyAnnualIncomeSource, CompanyFinancialObservationSource, CompanyNewsSource, CompanyOfficialDocumentSource, CompanyRatioSource,
+    CompanyAnnualIncomeSource, CompanyFinancialObservationSource, CompanyOfficialDocumentSource, CompanyRatioSource,
 )
 from trader.download.application.company_sync import CompanySyncProducer, ResumeCompanySyncPendingStep, RunCompanySyncRound
 from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy
@@ -26,7 +26,7 @@ from trader.download.domain.company_normalization import ApplyCompanyFinancialAd
 from trader.download.domain.company_source_records import CompanyFinancialSourceObservation
 from trader.download.domain.company_sync import (
     CompanySyncBudget, CompanySyncFamily, CompanySyncFamilyResult, CompanySyncInterrupted, CompanySyncPhasePlan, CompanySyncPhaseState,
-    CompanySyncRoundResult, CompanySyncRoundScope, CompanySyncStepResult, CompanySourceCancelled,
+    CompanySyncRebuildActiveRound, CompanySyncRoundResult, CompanySyncRoundScope, CompanySyncStepResult, CompanySourceCancelled,
 )
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_document_link_rows import ReadCompanyDocumentLinks
@@ -42,7 +42,7 @@ from trader.download.infra.company_sync_io import CompanySyncIoBudget
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
 from trader.download.infra.company_sync_preparation import PrepareCompanyIssuerInputs
 from trader.download.infra.company_sync_producers import (
-    CompanyAnnouncementProducer, CompanyNewsProducer, CompanyRatioProducer,
+    CompanyAnnouncementProducer, CompanyRatioProducer, CompanyRetiredNewsProducer,
 )
 from trader.download.infra.company_sync_annual_income import CompanyAnnualIncomeProducer
 from trader.download.infra.company_facts_protocol import POSITIVE_TYPES
@@ -61,7 +61,7 @@ class CompanySyncRuntime:
         material: SQLiteCompanyMaterialIndex, journal: SQLiteCompanySyncRoundJournal, inputs: SQLiteCompanySyncInputStore,
         *, event_policy: CompanyEventPolicy, sqlite_policy: SqliteIoPolicy, read_document: Callable[[bytes], str],
         financial_source: CompanyFinancialObservationSource, ratio_source: CompanyRatioSource,
-        annual_source: CompanyAnnualIncomeSource, news_source: CompanyNewsSource, official_source: CompanyOfficialDocumentSource,
+        annual_source: CompanyAnnualIncomeSource, official_source: CompanyOfficialDocumentSource,
         io_budget: CompanySyncIoBudget | None = None,
         document_configuration: CompanySyncConfiguration | None = None, document_policies: CompanyDocumentPolicies | None = None,
         wall_clock: Callable[[], datetime] | None = None,
@@ -72,16 +72,16 @@ class CompanySyncRuntime:
         admit_observations: bool = False,
         financial_revision_proofs: tuple[CompanyFinancialRevisionProof, ...] = (),
     ) -> None:
-        paths = (normalized.path, facts.path, material.path, journal.path, inputs.path)
-        if any(path.is_symlink() for path in paths) or any(
+        paths = (material.path, facts.path, journal.path)
+        if any(path.is_symlink() for path in (*paths, normalized.path, inputs.path)) or any(
             left.resolve() == right.resolve() or left.exists() and right.exists() and left.samefile(right)
             for position, left in enumerate(paths) for right in paths[position + 1:]
-        ):
-            raise ValueError("company_sync_store_paths_must_differ")
+        ) or normalized.path.resolve() != material.path.resolve() or inputs.path.resolve() != material.path.resolve():
+            raise ValueError("company_sync_sources_must_share_one_separate_store")
         self.normalized, self.facts, self.material, self.journal, self.inputs = normalized, facts, material, journal, inputs
         self._event_policy, self._sqlite_policy, self._read_document = event_policy, sqlite_policy, read_document
         self._financial_source, self._ratio_source, self._annual_source = financial_source, ratio_source, annual_source
-        self._news_source, self._official_source = news_source, official_source
+        self._official_source = official_source
         self._io_budget = io_budget
         self._document_configuration, self._document_policies = document_configuration, document_policies
         self._wall_clock = wall_clock
@@ -97,16 +97,12 @@ class CompanySyncRuntime:
     def initialize(self, codes: tuple[str, ...], cutoff: datetime, *, baseline: CompanyNormalizationBaseline | None = None) -> None:
         """Validate every existing store before creating any missing store.
 
-        Current complete schemas are mandatory. A legacy source codec is only
-        used by the separately explicit research driver, never this operation.
-        An empty target receives real unavailable facts, without source proof.
+        A clean source store cannot reuse a request cursor for discarded inputs.
         """
         scope = CompanySyncRoundScope(codes, cutoff)
         validations: tuple[tuple[CompanyDownloadStore, Callable[[], None]], ...] = (
-            (CompanyDownloadStore.COLLECTION, self.material.validate_existing),
             (CompanyDownloadStore.FACTS, self.facts.validate_existing),
-            (CompanyDownloadStore.NORMALIZED, self.normalized.validate_existing),
-            (CompanyDownloadStore.INPUTS, self.inputs.validate_existing),
+            (CompanyDownloadStore.SOURCES, self.material.validate_existing),
             (CompanyDownloadStore.REQUEST_JOURNAL, self.journal.validate_existing),
         )
         for store, validate in validations:
@@ -124,34 +120,53 @@ class CompanySyncRuntime:
             elif not self.normalized.recover_publication_seal():
                 raise
             self.facts.verify_publication()
-        self.normalized.initialize()
+        publication = self._read_store_publication(self.facts.path)
+        normalized_publication = self._read_store_publication(self.material.path)
+        if baseline is None:
+            if publication is None and normalized_publication is None:
+                self._release_scope_for_rebuild(scope)
+            elif publication is None or normalized_publication is None:
+                raise ValueError("company_sync_explicit_typed_baseline_required")
         self.material.initialize()
-        self.inputs.initialize()
+        self.facts.initialize()
         self.journal.initialize()
         if baseline is not None:
             self.normalized.seed(baseline)
             return
-        with self._session(self.facts.path, check=self._io_budget.check if self._io_budget is not None else lambda: None, read_only=True) as formal:
-            publication = ReadCompanyPublicationIdentity(formal)
-        with self._session(self.normalized.path, check=self._io_budget.check if self._io_budget is not None else lambda: None, read_only=True) as normalized:
-            normalized_publication = ReadCompanyPublicationIdentity(normalized)
         if publication is None and normalized_publication is None:
             initial = tuple(_unavailable(code, cutoff) for code in codes)
             identity = CompanyPublicationIdentity(bytes.fromhex(CanonicalDigest(("initial_unavailable_population", scope))), self.facts.extraction_hash, cutoff)
             self.normalized.seed(CompanyNormalizationBaseline(initial, (), (), (), identity, CompanyFieldProofRulesHash()))
-        elif publication is None or normalized_publication is None:
-            raise ValueError("company_sync_explicit_typed_baseline_required")
+
+    def _read_store_publication(self, path: Path) -> CompanyPublicationIdentity | None:
+        if not path.exists():
+            return None
+        check = self._io_budget.check if self._io_budget is not None else lambda: None
+        with self._session(path, check=check, read_only=True) as connection:
+            return ReadCompanyPublicationIdentity(connection)
+
+    def _release_scope_for_rebuild(self, scope: CompanySyncRoundScope) -> None:
+        if not self.journal.path.exists():
+            return
+        active = self.journal.active()
+        if active is None:
+            return
+        if scope.cutoff.date() <= active.scope.cutoff.date():
+            raise CompanySyncRebuildActiveRound("company_sync_rebuild_requires_later_scope")
+        if self.journal.can_refresh(active.round_id):
+            self.journal.finish_refresh(active.round_id)
+        elif not self.journal.defer_unconfirmed_directory(active.round_id, scope.cutoff):
+            raise CompanySyncRebuildActiveRound("company_sync_rebuild_requires_previous_scope_reconciliation")
 
     def run(
         self, codes: tuple[str, ...], cutoff: datetime, budget: CompanySyncBudget, *,
         cancel_requested: Callable[[], bool], monotonic: Callable[[], float],
-        financial_query: StructuredCompanyQuery | None = None, fill: bool = False, new_refresh: bool = True,
-        news_codes: tuple[str, ...] = (),
+        financial_query: StructuredCompanyQuery | None = None, new_refresh: bool = True,
     ) -> CompanySyncRoundResult:
         self._execution_scope, self._execution_round_id = None, ""
         try:
             return self._run(codes, cutoff, budget, cancel_requested=cancel_requested, monotonic=monotonic,
-                financial_query=financial_query, fill=fill, new_refresh=new_refresh, news_codes=news_codes)
+                financial_query=financial_query, new_refresh=new_refresh)
         except (CompanySyncInterrupted, CompanySourceCancelled) as exc:
             if isinstance(exc, CompanySourceCancelled) and not cancel_requested() and monotonic() < budget.deadline:
                 raise
@@ -161,8 +176,7 @@ class CompanySyncRuntime:
     def _run(
         self, codes: tuple[str, ...], cutoff: datetime, budget: CompanySyncBudget, *,
         cancel_requested: Callable[[], bool], monotonic: Callable[[], float],
-        financial_query: StructuredCompanyQuery | None = None, fill: bool = False, new_refresh: bool = True,
-        news_codes: tuple[str, ...] = (),
+        financial_query: StructuredCompanyQuery | None = None, new_refresh: bool = True,
     ) -> CompanySyncRoundResult:
         if cancel_requested() or monotonic() >= budget.deadline:
             return CompanySyncRoundResult("", CompanySyncRoundScope(codes, cutoff), (), cancel_requested(), not cancel_requested(), "")
@@ -188,13 +202,8 @@ class CompanySyncRuntime:
             scope = requested_scope
         self._execution_scope = scope
         eligible_codes = tuple(code for code in scope.codes if code in codes)
-        news_codes = self.inputs.freeze_news_codes(scope.identity, tuple(code for code in news_codes if code in scope.codes))
-        news_excluded = fill
-        if active is not None:
-            news_excluded = any(
-                plan.family is CompanySyncFamily.NEWS and "news_skipped_by_fill" in plan.qualification_gaps
-                for plan in active.plans
-            )
+        retired_news = tuple(CompanyRetiredNewsProducer(plan) for plan in (() if active is None else active.plans)
+            if plan.family is CompanySyncFamily.NEWS)
         population_gaps = tuple(reason for changed, reason in (
             (eligible_codes != scope.codes, "population_members_became_ineligible"),
             (any(code not in scope.codes for code in codes), "new_population_members_wait_for_refresh"),
@@ -222,8 +231,7 @@ class CompanySyncRuntime:
             CompanyRatioProducer(self.inputs, self._ratio_source, StructuredCompanyQuery("unlock", scope.cutoff.date(), scope.cutoff.date() + timedelta(days=min(180, self._event_policy.unlock_days))), current_codes=eligible_codes),
             announcements,
             CompanyAnnualIncomeProducer(self.inputs, self._annual_source, annual_facts, current_codes=eligible_codes),
-            CompanyNewsProducer(self.inputs, self.material, self._news_source, news_codes=news_codes,
-                excluded_from_scope=news_excluded, current_codes=eligible_codes),
+            *retired_news,
             fields,
         )
         plans = tuple(producer.plan for producer in producers)
@@ -265,7 +273,7 @@ class CompanySyncRuntime:
         try:
             result = RunCompanySyncRound(self.journal, producers, scope, budget, monotonic=monotonic,
                 cancel_requested=cancel_requested, observe=self._observe, activity=self._activity,
-                recover_directory=announcements.recover_directory, source_ready=self._source_ready, skip_news=fill)
+                recover_directory=announcements.recover_directory, source_ready=self._source_ready)
         except CompanySyncInterrupted:
             return CompanySyncRoundResult(round_id, scope, (), cancel_requested(), not cancel_requested(), "")
         if population_gaps:

@@ -110,6 +110,7 @@ class SQLiteCompanyFactsIndex:
         event_policy: CompanyEventPolicy,
         cancel_requested: Callable[[], bool] | None = None,
         io_budget: CompanySyncIoBudget | None = None, sqlite_policy: SqliteIoPolicy,
+        seal_file: bool = True,
     ) -> None:
         self._sqlite_policy = sqlite_policy
         self.path = path
@@ -117,6 +118,7 @@ class SQLiteCompanyFactsIndex:
         self._cancel_requested = cancel_requested
         self._file_verification: VerifiedSqlitePublication | None = None
         self._io_budget = io_budget
+        self._seal_file = seal_file
 
     @contextmanager
     def _session(self, path: Path, options: SqliteConnectionOptions | None = None, *,
@@ -145,7 +147,7 @@ class SQLiteCompanyFactsIndex:
             EnsureSqliteSchema(connection, COMPANY_FACTS_SCHEMA, allow_create=True, exact=True)
 
     def publish_file(self) -> None:
-        if self.path.is_file():
+        if self._seal_file and self.path.is_file():
             policy = self._io_budget.remaining_policy(self._sqlite_policy) if self._io_budget is not None else self._sqlite_policy
             PublishSqliteFile(self.path, sqlite_policy=policy, check=self._io_budget.check if self._io_budget is not None else None)
 

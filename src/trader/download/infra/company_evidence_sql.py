@@ -1,12 +1,10 @@
-"""Fresh company evidence schema. No legacy database migration or recovery payloads."""
+"""Company collection tables for the shared source database."""
 
-from trader.infra.sqlite_connection import SqliteSchema
 from trader.download.infra.download_failure_diagnostics import FAILURE_DIAGNOSTICS_SQL
+from trader.infra.sqlite_connection import SqliteSchema
 
 _BASE_SCHEMA = SqliteSchema(
     (
-        "CREATE TABLE company_sync_job(singleton INTEGER PRIMARY KEY CHECK(singleton=1),initialized_at TEXT NOT NULL,cutoff TEXT NOT NULL)",
-        "CREATE TABLE company_expired_ranges(market TEXT,start_date TEXT,end_date TEXT,expired_at TEXT,PRIMARY KEY(market,start_date,end_date)) WITHOUT ROWID",
         """CREATE TABLE document_supersessions (
           disclosure_id INTEGER NOT NULL,code TEXT NOT NULL,record_hash TEXT NOT NULL,
           replacement_id INTEGER NOT NULL,replacement_hash TEXT NOT NULL,extraction_hash BLOB NOT NULL,
@@ -62,38 +60,6 @@ _BASE_SCHEMA = SqliteSchema(
         ) WITHOUT ROWID
         """,
         "CREATE INDEX IF NOT EXISTS partition_source_rows ON partition_rows(source_key)",
-        """
-        CREATE TABLE IF NOT EXISTS ratios (
-          component TEXT NOT NULL CHECK(component IN ('pledge','unlock')), code TEXT NOT NULL,
-          as_of_date TEXT NOT NULL, ratio_pct REAL NOT NULL CHECK(ratio_pct>=0 AND ratio_pct<=100),
-          PRIMARY KEY(component,code,as_of_date)
-        ) WITHOUT ROWID
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS component_checks (
-          component TEXT NOT NULL, scope TEXT NOT NULL, checked_at TEXT, failure TEXT NOT NULL DEFAULT '',
-          PRIMARY KEY(component,scope)
-        ) WITHOUT ROWID
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS structured_progress (
-          component TEXT NOT NULL, scope TEXT NOT NULL, start_date TEXT NOT NULL, end_date TEXT NOT NULL,
-          next_page INTEGER NOT NULL, expected_rows INTEGER, received_rows INTEGER NOT NULL DEFAULT 0,
-          PRIMARY KEY(component,scope)
-        ) WITHOUT ROWID
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS structured_members (
-          component TEXT NOT NULL, code TEXT NOT NULL, as_of_date TEXT NOT NULL,
-          ratio_pct REAL,
-          PRIMARY KEY(component,code,as_of_date)
-        ) WITHOUT ROWID
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS ratio_snapshots (
-          component TEXT PRIMARY KEY, start_date TEXT NOT NULL, end_date TEXT NOT NULL, checked_at TEXT NOT NULL
-        ) WITHOUT ROWID
-        """,
         "CREATE TABLE IF NOT EXISTS company_population(code TEXT PRIMARY KEY) WITHOUT ROWID",
         """CREATE TABLE IF NOT EXISTS document_publications (
           disclosure_id INTEGER NOT NULL REFERENCES disclosures(id) ON DELETE CASCADE,
@@ -161,7 +127,7 @@ CONTRACT_LINK_SCHEMA = (
     "PRIMARY KEY(source,source_key,code,record_hash,extraction_hash)) WITHOUT ROWID"
 )
 
-SCHEMA = SqliteSchema((*_BASE_SCHEMA.statements, _DOCUMENT_RETRY_SCHEMA, _DOCUMENT_EXTRACTION_SCHEMA,
+COMPANY_MATERIAL_STATEMENTS = (*_BASE_SCHEMA.statements, _DOCUMENT_RETRY_SCHEMA, _DOCUMENT_EXTRACTION_SCHEMA,
     *_DISCLOSURE_QUERY_SCHEMA,
     "CREATE TABLE IF NOT EXISTS document_announcement_numbers("
     "disclosure_id INTEGER NOT NULL REFERENCES disclosures(id) ON DELETE CASCADE,"
@@ -187,11 +153,10 @@ SCHEMA = SqliteSchema((*_BASE_SCHEMA.statements, _DOCUMENT_RETRY_SCHEMA, _DOCUME
     "PRIMARY KEY(disclosure_id,code,record_hash,body_hash,extraction_hash,scope,reason_code)) WITHOUT ROWID",
     "CREATE INDEX IF NOT EXISTS company_material_dependency_codes ON company_material_dependencies(code,disclosure_id)",
     CONTRACT_LINK_SCHEMA,
-    "CREATE TABLE IF NOT EXISTS annual_income("
-    "code TEXT NOT NULL,report_date TEXT NOT NULL,disclosed_at TEXT NOT NULL,updated_at TEXT NOT NULL,"
-    "observed_at TEXT NOT NULL,currency TEXT NOT NULL,operating_revenue REAL,record_hash TEXT NOT NULL,"
-    "PRIMARY KEY(code,report_date,disclosed_at,updated_at,record_hash)) WITHOUT ROWID",
     FAILURE_DIAGNOSTICS_SQL,
-))
+)
 
-__all__ = ["SCHEMA", "CONTRACT_LINK_SCHEMA"]
+__all__ = [
+    "COMPANY_MATERIAL_STATEMENTS",
+    "CONTRACT_LINK_SCHEMA",
+]

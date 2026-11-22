@@ -455,7 +455,7 @@ def _sqlite_adapter_cases(
     if sqlite_policy is None:
         raise ValueError("company_typed_measurement_requires_current_sqlite_policy")
     event_policy = LoadStrategySettings(checkout / "config/strategy.json").company_scoring.events
-    company = SQLiteCompanyFactsIndex(root / "company_facts.sqlite3", event_policy=event_policy, sqlite_policy=sqlite_policy)
+    company = SQLiteCompanyFactsIndex(root / "company_published.sqlite3", event_policy=event_policy, sqlite_policy=sqlite_policy)
     company.initialize()
     inputs = BuildCompanyMeasurementInputs(codes, now, company.extraction_hash)
     head: CompanyPublicationIdentity | None = None

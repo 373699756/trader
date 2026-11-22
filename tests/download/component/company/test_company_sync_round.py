@@ -15,6 +15,7 @@ from trader.download.domain.company_sync import (
 from trader.download.infra.company_disclosure_source import CNINFO_DIRECTORY_URL
 from trader.download.infra.company_sync_inputs import SQLiteCompanySyncInputStore
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
+from trader.download.infra.company_sync_producers import CompanyRetiredNewsProducer
 from trader.infra.http_contracts import HttpRequest, HttpResponse
 from trader.download.domain.company_sync import CompanySourceCancelled
 from trader.infra.http_transport import RequestsHttpTransport
@@ -30,15 +31,15 @@ class _Producer:
         self.inputs, self.transport, self.calls = inputs, transport, calls
         self.crash, self.cancel = crash, cancel
 
-    def _cursor(self):
-        return next((page for page in (1, 2) if not self.inputs.task_done(_SCOPE.identity, self.plan.family.value, str(page))), None)
+    def _cursor(self, scope):
+        return next((page for page in (1, 2) if not self.inputs.task_done(scope.identity, self.plan.family.value, str(page))), None)
 
     def state(self, scope):
-        page = self._cursor() if self.plan.family is CompanySyncFamily.FINANCIAL else None
+        page = self._cursor(scope) if self.plan.family is CompanySyncFamily.FINANCIAL else None
         return CompanySyncPhaseState(CanonicalDigest((self.plan.family, page)), page is not None)
 
     def advance(self, scope, *, cancel_requested, deadline):
-        page = self._cursor() if self.plan.family is CompanySyncFamily.FINANCIAL else None
+        page = self._cursor(scope) if self.plan.family is CompanySyncFamily.FINANCIAL else None
         if page is None:
             self.calls.append(self.plan.family.value)
             return CompanySyncStepResult(True, False, pending_count=0)
@@ -67,7 +68,7 @@ def _resources(tmp_path, *, maximum=8, crash=False, cancel=None):
         authorize=journal.authorize_request, observe=journal.observe_attempt, execute_request=execute, monotonic=lambda: 0,
     )
     producers = tuple(_Producer(family, inputs, transport, calls, crash=crash and family is CompanySyncFamily.FINANCIAL,
-        cancel=cancel if family is CompanySyncFamily.FINANCIAL else None) for family in CompanySyncFamily)
+        cancel=cancel if family is CompanySyncFamily.FINANCIAL else None) for family in _SCOPE.families)
     budget = CompanySyncBudget(100, maximum, 10, 10)
     return journal, producers, budget, physical, calls, transport
 
@@ -208,9 +209,9 @@ def test_recommendation_families_rotate_before_optional_inputs(tmp_path):
     assert order == [
         CompanySyncFamily.FINANCIAL, CompanySyncFamily.PLEDGE, CompanySyncFamily.UNLOCK,
         CompanySyncFamily.ANNOUNCEMENTS, CompanySyncFamily.FIELDS, CompanySyncFamily.FINANCIAL,
-        CompanySyncFamily.FINANCIAL, CompanySyncFamily.ANNUAL_INCOME, CompanySyncFamily.NEWS,
+        CompanySyncFamily.FINANCIAL, CompanySyncFamily.ANNUAL_INCOME,
     ]
-    assert tuple(item.family for item in result.families) == tuple(CompanySyncFamily)
+    assert tuple(item.family for item in result.families) == _SCOPE.families
     assert len(physical) == 2
 
 
@@ -232,7 +233,7 @@ def test_optional_inputs_run_after_core_family_reaches_its_invocation_limit(tmp_
         result = RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: False)
     assert not result.processing_complete and not result.budget_exhausted
     assert len(physical) == 1
-    assert calls == ["pledge", "unlock", "announcements", "fields", "annual_income", "news"]
+    assert calls == ["pledge", "unlock", "announcements", "fields", "annual_income"]
 
     restarted, producers, budget, physical, calls, transport = _resources(tmp_path)
     short = CompanySyncBudget(1, budget.max_source_calls, budget.steps_per_family, budget.deadline)
@@ -347,36 +348,33 @@ def test_later_round_preserves_recoverable_old_directory_round(tmp_path):
 
 @pytest.mark.parametrize("reserved", (False, True))
 @pytest.mark.parametrize("preflight", (False, True))
-def test_fill_reconciles_pending_news_without_dispatching_a_news_request(tmp_path, reserved, preflight):
+def test_retired_news_reconciles_old_reservation_without_dispatching_a_request(tmp_path, reserved, preflight):
     journal, producers, budget, physical, _calls, transport = _resources(tmp_path)
-    news = next(producer for producer in producers if producer.plan.family is CompanySyncFamily.NEWS)
-    ready = CompanySyncPhaseState(CanonicalDigest(_SCOPE.codes), True)
-    news.state = lambda scope: ready
-
-    def request_news(scope, *, cancel_requested, deadline):
-        raise AssertionError("fill_dispatched_news")
-
-    news.advance = request_news
-    round_id = journal.begin(_SCOPE, tuple(producer.plan for producer in producers), max_source_calls=budget.max_source_calls)
-    journal.start(round_id, CompanySyncFamily.NEWS, replace(ready, source_required=reserved))
+    scope = replace(_SCOPE, families=tuple(CompanySyncFamily))
+    news = CompanyRetiredNewsProducer(CompanySyncPhasePlan(CompanySyncFamily.NEWS, CanonicalDigest(("news", False, scope.codes))))
+    producers = (*producers[:-1], news, producers[-1])
+    round_id = journal.begin(scope, tuple(producer.plan for producer in producers), max_source_calls=budget.max_source_calls)
+    journal.start(round_id, CompanySyncFamily.NEWS, CompanySyncPhaseState(CanonicalDigest(scope.codes[0]), True))
     if reserved:
         journal.authorize_request(HttpRequest("GET", "https://example.test/news", 1))
 
     with transport:
         if preflight:
-            assert ResumeCompanySyncPendingStep(journal, producers, _SCOPE, round_id, budget,
+            assert ResumeCompanySyncPendingStep(journal, producers, scope, round_id, budget,
                 monotonic=lambda: 0, cancel_requested=lambda: False)
-        result = RunCompanySyncRound(journal, producers, _SCOPE, budget,
-            monotonic=lambda: 0, cancel_requested=lambda: False, skip_news=True)
+        result = RunCompanySyncRound(journal, producers, scope, budget,
+            monotonic=lambda: 0, cancel_requested=lambda: False)
 
     assert result.round_id == round_id and journal.outstanding_family(round_id) is None
     assert physical == ["https://example.test/1", "https://example.test/2"]
     persisted_news = journal.family(round_id, CompanySyncFamily.NEWS)
-    assert persisted_news.steps == 1 and persisted_news.source_calls == persisted_news.unknown_attempts == int(reserved)
+    assert persisted_news.source_calls == persisted_news.unknown_attempts == int(reserved)
     if reserved:
+        assert persisted_news.steps == 1
         assert persisted_news.result.failure == "source_attempt_unconfirmed"
     else:
-        assert persisted_news.result.deferred and persisted_news.result.failure is None
+        assert persisted_news.steps == 2 and persisted_news.result.failure is None
+        assert "news_automatic_collection_retired" in persisted_news.result.gaps
 
 
 def test_cancel_before_authorization_is_safe_to_resume_without_losing_allowance(tmp_path):

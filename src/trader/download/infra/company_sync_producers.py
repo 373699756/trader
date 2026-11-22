@@ -9,7 +9,7 @@ from datetime import timedelta
 
 from trader.download.application.company_sync import CompanyDirectoryResponseReceipt
 from trader.download.application.company_source_ports import (
-    CompanyNewsSource, CompanyOfficialDocumentSource, CompanyRatioSource,
+    CompanyOfficialDocumentSource, CompanyRatioSource,
 )
 from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview, CompanyDocumentRiskRelevant
 from trader.download.domain.company_evidence import (
@@ -77,42 +77,23 @@ class CompanyRatioProducer:
         return CompanySyncStepResult(True, False, pending_count=0)
 
 
-class CompanyNewsProducer:
-    def __init__(self, inputs: SQLiteCompanySyncInputStore, material: SQLiteCompanyMaterialIndex, source: CompanyNewsSource, *, news_codes: tuple[str, ...], excluded_from_scope: bool, current_codes: tuple[str, ...] | None = None) -> None:
-        self._inputs, self._material, self._source = inputs, material, source
-        self._excluded_from_scope = excluded_from_scope
-        self._current_codes = current_codes
-        self._news_codes = tuple(sorted(set(news_codes)))
-        self._plan = CompanySyncPhasePlan(CompanySyncFamily.NEWS, CanonicalDigest(("news", excluded_from_scope, self._news_codes)),
-            ("news_skipped_by_fill",) if excluded_from_scope else ("news_metadata_does_not_verify_issuer_risk",))
+class CompanyRetiredNewsProducer:
+    """Settle a retired local phase using the exact plan of an active round."""
+
+    def __init__(self, plan: CompanySyncPhasePlan) -> None:
+        if plan.family is not CompanySyncFamily.NEWS:
+            raise ValueError("company_retired_news_plan_invalid")
+        self._plan = plan
 
     @property
     def plan(self) -> CompanySyncPhasePlan:
         return self._plan
 
-    def _next(self, scope: CompanySyncRoundScope) -> str | None:
-        return None if self._excluded_from_scope else next((code for code in self._news_codes if code in scope.codes
-            and not self._inputs.task_done(scope.identity, "news", code)), None)
-
     def state(self, scope: CompanySyncRoundScope) -> CompanySyncPhaseState:
-        code = self._next(scope)
-        return CompanySyncPhaseState(CanonicalDigest(code), code is not None and (self._current_codes is None or code in self._current_codes))
+        return CompanySyncPhaseState(CanonicalDigest("news_automatic_collection_retired"), False)
 
     def advance(self, scope: CompanySyncRoundScope, *, cancel_requested: Callable[[], bool], deadline: float) -> CompanySyncStepResult:
-        code = self._next(scope)
-        if code is None:
-            return CompanySyncStepResult(True, False, pending_count=sum(code in scope.codes for code in self._news_codes) if self._excluded_from_scope else 0)
-        if self._current_codes is not None and code not in self._current_codes:
-            self._inputs.complete_task(scope.identity, "news", code, 0, CanonicalDigest(("ineligible", code)))
-            return CompanySyncStepResult(False, True, gaps=("population_members_became_ineligible",))
-        rows = self._source.news(code, observed_at=scope.cutoff)
-        if (len(rows) > 50 or any(row.kind != "news" or row.codes != (code,) or row.published_at > scope.cutoff
-            or row.published_at < scope.cutoff - timedelta(days=7) for row in rows)):
-            raise CompanyInputValidationFailure("company_news_response_scope_mismatch")
-        if rows:
-            self._material.register_disclosures(rows)
-        self._inputs.complete_task(scope.identity, "news", code, len(rows), CanonicalDigest(rows))
-        return CompanySyncStepResult(False, True, len(rows), 1)
+        return CompanySyncStepResult(True, False, pending_count=0, gaps=("news_automatic_collection_retired",))
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,7 +183,7 @@ class CompanyAnnouncementProducer:
             if len(dependencies) > 120000:
                 raise ValueError("company_required_material_scope_limit")
             with self._session(self._material.facts_path) as formal, SqliteTransaction(formal):
-                recoveries = ReadCompanyFieldRecovery(formal, connection, scope.codes, scope.cutoff, self._material.path.parent, field_rule_hash=CompanyFieldProofRulesHash())
+                recoveries = ReadCompanyFieldRecovery(formal, connection, scope.codes, scope.cutoff, self._material.raw_root, field_rule_hash=CompanyFieldProofRulesHash())
                 valid = frozenset((item.code, item.source, item.evidence_id, item.record_hash, item.body_hash) for item in dependencies
                     if item.code in scope.codes and formal.run("SELECT 1 FROM company_input_receipt WHERE code=? AND source=? AND source_key=? AND record_hash=? AND body_hash=? AND extraction_hash=? AND outcome='valid'",
                     (item.code, item.source, item.evidence_id, item.record_hash, item.body_hash, self._extraction_hash)).fetchone() is not None)
@@ -448,7 +429,7 @@ class CompanyAnnouncementProducer:
         return CompanySyncStepResult(False, True, accepted_inputs=1, source_calls=int(called))
 
 
-__all__ = ["CompanyRatioProducer", "CompanyNewsProducer", "CompanyAnnouncementProducer"]
+__all__ = ["CompanyRatioProducer", "CompanyRetiredNewsProducer", "CompanyAnnouncementProducer"]
 
 
 def _risk_priority(title: str) -> bool:

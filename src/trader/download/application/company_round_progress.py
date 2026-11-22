@@ -71,14 +71,16 @@ class CompanyFieldOutcomeCounts:
 
 
 def IsCompanyNewsReference(family: CompanySyncFamilyResult) -> bool:
-    """Recognize a finished news lookup with only its ordinary scope marker."""
+    """Recognize a settled auxiliary news phase in a historical round."""
     step = family.result
     return (
         family.family is CompanySyncFamily.NEWS
         and step.processed_scope_complete
         and step.pending_count == 0
         and step.failure is None
-        and step.gaps == ("news_metadata_does_not_verify_issuer_risk",)
+        and family.unknown_attempts == 0
+        and (step.gaps == ("news_metadata_does_not_verify_issuer_risk",)
+             or "news_automatic_collection_retired" in step.gaps)
     )
 
 

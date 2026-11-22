@@ -20,11 +20,14 @@ class CompanySyncFamily(str,Enum):
     FIELDS="fields"
 
 
+COMPANY_SYNC_FAMILIES = tuple(family for family in CompanySyncFamily if family is not CompanySyncFamily.NEWS)
+
+
 @dataclass(frozen=True,slots=True)
 class CompanySyncRoundScope:
     codes:tuple[str,...]
     cutoff:datetime
-    families:tuple[CompanySyncFamily,...]=tuple(CompanySyncFamily)
+    families:tuple[CompanySyncFamily,...]=COMPANY_SYNC_FAMILIES
 
     def __post_init__(self)->None:
         if (not self.codes or len(self.codes)>12000 or self.codes!=tuple(sorted(set(self.codes))) or self.cutoff.utcoffset() is None
@@ -150,7 +153,8 @@ class CompanySyncRoundResult:
 
     @property
     def business_complete(self)->bool:
-        return self.scope.families==tuple(CompanySyncFamily) and self.processing_complete and all(item.result.business_complete for item in self.families)
+        return self.scope.families == COMPANY_SYNC_FAMILIES and self.processing_complete and all(
+            item.result.business_complete for item in self.families)
 
     @property
     def needs_retry(self)->bool:
@@ -194,6 +198,10 @@ class CompanySyncSourceBudgetExceeded(RuntimeError):
 
 class CompanySyncUnresolvedDirectoryRequest(RuntimeError):
     """An earlier frozen round already reserved this unconfirmed directory request."""
+
+
+class CompanySyncRebuildActiveRound(RuntimeError):
+    """The earlier source scope is still needed to reconcile the request ledger."""
 
 
 class CompanySyncInterrupted(InterruptedError):

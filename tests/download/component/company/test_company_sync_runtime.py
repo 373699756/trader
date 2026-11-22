@@ -1,5 +1,6 @@
 """The real current-schema resources run all families without a global source guard."""
 
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
@@ -7,10 +8,12 @@ import pytest
 from tests.download.component.company.test_company_sync_round import _SCOPE
 from tests.helpers.download.configuration import CompanyEventPolicyFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
+from trader.download.application.company_round_progress import IsCompanyNewsReference
 from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDownloadStore, CompanyInputValidationFailure, Disclosure, DisclosurePage, DisclosurePartition, DisclosureQuery, StructuredCompanyPage, StructuredCompanyQuery
 from trader.download.domain.company_financial_admission import CompanyFinancialRevisionProof
 from trader.download.domain.company_source_records import CompanyFinancialSourcePage
-from trader.download.domain.company_sync import CompanySyncBudget, CompanySyncFamily
+from trader.download.domain.company_sync import CompanySyncBudget, CompanySyncFamily, CompanySyncPhasePlan, CompanySyncPhaseState, CompanySyncRebuildActiveRound, CompanySyncStepResult
+from trader.download.infra.company_disclosure_source import CNINFO_DIRECTORY_URL
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
@@ -21,7 +24,7 @@ from trader.download.infra.company_sync_inputs import CompanyRecoveredInput, SQL
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
 from trader.download.infra.company_sync_runtime import CompanySyncRuntime
 from trader.download.infra.company_sync_producers import CompanyAnnouncementProducer
-from trader.infra.http_contracts import HttpResponse
+from trader.infra.http_contracts import HttpRequest, HttpResponse
 from trader.infra.http_transport import RequestsHttpTransport
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_connection import SqliteSession
@@ -45,10 +48,6 @@ class _Sources:
     def annual_income(self, request, *, observed_at):
         raise AssertionError("no_applicable_contract_must_not_fetch_income")
 
-    def news(self, code, *, observed_at):
-        self.transport.get("https://example.test/news", timeout=1)
-        return ()
-
     def document_ready(self, item):
         raise AssertionError("no_exact_missing_dependency_must_not_plan_pdf")
 
@@ -64,12 +63,13 @@ def _runtime(tmp_path, *, observe_scope=None, admit_observations=False, financia
     facts = SQLiteCompanyFactsIndex(tmp_path / "formal.sqlite3", event_policy=event_policy, sqlite_policy=policy)
     reader = SQLiteCompanyEvidenceReader(facts.path, event_policy=event_policy, sqlite_policy=policy)
     documents = CompanyDocumentFiles(tmp_path / "raw/text", max_text_characters=100000, max_bytes=1000000, reserve_bytes=1)
-    material = SQLiteCompanyMaterialIndex(tmp_path / "raw/company_collection.sqlite3", facts=facts, documents=documents,
+    sources_path = tmp_path / "company_sources.sqlite3"
+    material = SQLiteCompanyMaterialIndex(sources_path, facts=facts, documents=documents,
         event_policy=event_policy, sqlite_policy=policy)
-    normalized = SQLiteCompanyNormalizedIndex(tmp_path / "normalized.sqlite3", facts, event_policy=event_policy,
+    normalized = SQLiteCompanyNormalizedIndex(sources_path, facts, event_policy=event_policy,
         sqlite_policy=policy, clean_material=lambda: None)
     journal = SQLiteCompanySyncRoundJournal(tmp_path / "journal.sqlite3", sqlite_policy=policy, publication_identity=reader.publication_identity)
-    inputs = SQLiteCompanySyncInputStore(tmp_path / "inputs.sqlite3", sqlite_policy=policy)
+    inputs = SQLiteCompanySyncInputStore(sources_path, sqlite_policy=policy)
     physical = []
     def execute(request):
         physical.append(request.url)
@@ -81,7 +81,7 @@ def _runtime(tmp_path, *, observe_scope=None, admit_observations=False, financia
     source = _Sources(transport)
     runtime = CompanySyncRuntime(normalized, facts, material, journal, inputs, event_policy=event_policy, sqlite_policy=policy,
         read_document=documents.read, financial_source=source, ratio_source=source, annual_source=source,
-        news_source=source, official_source=source, observe_scope=observe_scope, admit_observations=admit_observations,
+        official_source=source, observe_scope=observe_scope, admit_observations=admit_observations,
         financial_revision_proofs=financial_revision_proofs)
     return runtime, reader, transport, physical
 
@@ -109,6 +109,36 @@ def test_local_field_watermark_reacts_to_proof_inputs_and_coverage_only(tmp_path
         assert recovered != covered
         runtime.inputs.acknowledge_recovered(_SCOPE.identity, (proof,))
         assert runtime.field_watermark(_SCOPE, _SCOPE.codes, lambda: None) == recovered
+    assert physical == []
+
+
+def test_clean_download_reuses_the_ledger_but_not_the_old_active_cursor(tmp_path):
+    runtime, reader, transport, physical = _runtime(tmp_path)
+    runtime.journal.initialize()
+    plans = tuple(CompanySyncPhasePlan(family, CanonicalDigest(family)) for family in _SCOPE.families)
+    previous = runtime.journal.begin(_SCOPE, plans, max_source_calls=10)
+    for plan in plans:
+        announcement = plan.family is CompanySyncFamily.ANNOUNCEMENTS
+        runtime.journal.start(previous, plan.family, CompanySyncPhaseState(CanonicalDigest(plan), announcement))
+        if announcement:
+            runtime.journal.authorize_request(HttpRequest("POST", CNINFO_DIRECTORY_URL, 1, body=b"previous-page=1"))
+        runtime.journal.finish(previous, plan.family, CompanySyncStepResult(not announcement, False,
+            failure="source_attempt_unconfirmed" if announcement else None))
+
+    with transport:
+        with pytest.raises(CompanySyncRebuildActiveRound):
+            runtime.initialize(_SCOPE.codes, _SCOPE.cutoff + timedelta(hours=1))
+        assert not runtime.facts.path.exists() and not runtime.material.path.exists()
+        assert runtime.journal.active().round_id == previous
+        tomorrow = _SCOPE.cutoff + timedelta(days=1)
+        runtime.initialize(_SCOPE.codes, tomorrow)
+        assert runtime.journal.active() is None
+        assert reader.read(_SCOPE.codes)[0].financial is None
+        result = runtime.run(_SCOPE.codes, tomorrow, CompanySyncBudget(100, 0, 20, 10),
+            cancel_requested=lambda: False, monotonic=lambda: 0)
+    assert result.scope.cutoff == tomorrow and result.round_id != previous
+    assert runtime.journal.source_calls(previous) == 1 and runtime.journal.source_calls(result.round_id) == 0
+    assert runtime.journal.family(previous, CompanySyncFamily.ANNOUNCEMENTS).unknown_attempts == 1
     assert physical == []
 
 
@@ -216,7 +246,8 @@ def test_real_empty_target_initializes_unavailable_and_runs_finite_families_with
         result = runtime.run(_SCOPE.codes, _SCOPE.cutoff, CompanySyncBudget(100, 20, 20, 10),
             cancel_requested=lambda: False, monotonic=lambda: 0)
     assert result.processing_complete and not result.business_complete and not result.cancelled
-    assert len(result.families) == 7 and len(physical) == sum(item.source_calls for item in result.families)
+    assert tuple(item.family for item in result.families) == _SCOPE.families
+    assert len(physical) == sum(item.source_calls for item in result.families)
     assert result.publication_hash == reader.publication_identity()
     assert reader.read(_SCOPE.codes) == (initial,)
     assert runtime.journal.can_refresh(result.round_id)
@@ -255,74 +286,57 @@ def test_next_day_refresh_keeps_the_old_exhausted_ledger_and_starts_a_dated_roun
     assert snapshots == [(first.scope, 0), (second.scope, 1)]
 
 
-def test_fill_resumes_normal_round_and_leaves_frozen_news_for_normal_resume(tmp_path):
-    runtime, reader, transport, physical = _runtime(tmp_path)
-    codes = ("600001", "600002", "600003")
-    runtime.initialize(codes, _SCOPE.cutoff)
-    selected = []
-
-    def news(code, *, observed_at):
-        selected.append(code)
-        transport.get("https://example.test/news", timeout=1)
-        return ()
-
-    runtime._news_source.news = news
-    with transport:
-        first = runtime.run(codes, _SCOPE.cutoff, CompanySyncBudget(1, 20, 20, 10),
-            cancel_requested=lambda: False, monotonic=lambda: 0, news_codes=("600001", "600009"))
-        assert first.paused and not selected
-        filled = runtime.run(codes, _SCOPE.cutoff, CompanySyncBudget(100, 200, 20, 10),
-            cancel_requested=lambda: False, monotonic=lambda: 0, fill=True)
-        assert filled.round_id == first.round_id and filled.scope == first.scope
-        assert not selected and runtime.journal.active().max_source_calls == 20
-        skipped = next(item for item in filled.families if item.family is CompanySyncFamily.NEWS)
-        assert skipped.steps == 0 and skipped.result.gaps == ("news_skipped_by_fill",)
-        assert runtime.journal.family(first.round_id, CompanySyncFamily.NEWS) is None
-        calls_after_fill = runtime.journal.source_calls(first.round_id)
-        result = runtime.run(codes, _SCOPE.cutoff, CompanySyncBudget(100, 20, 20, 10),
-            cancel_requested=lambda: False, monotonic=lambda: 0, news_codes=("600002",))
-    assert result.round_id == first.round_id and result.processing_complete and selected == ["600001"]
-    assert physical.count("https://example.test/news") == 1
-    assert runtime.journal.source_calls(first.round_id) == calls_after_fill + 1
-    assert runtime.inputs.freeze_news_codes(result.scope.identity, ()) == ("600001",)
-
-
-def test_normal_resume_keeps_news_excluded_from_a_round_started_by_fill(tmp_path):
+def test_new_runtime_scope_excludes_news_and_resumes_same_request_budget(tmp_path):
     runtime, _, transport, physical = _runtime(tmp_path)
     runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
     with transport:
         first = runtime.run(_SCOPE.codes, _SCOPE.cutoff, CompanySyncBudget(1, 20, 20, 10),
-            cancel_requested=lambda: False, monotonic=lambda: 0, fill=True)
+            cancel_requested=lambda: False, monotonic=lambda: 0)
         resumed = runtime.run(_SCOPE.codes, _SCOPE.cutoff, CompanySyncBudget(100, 200, 20, 10),
-            cancel_requested=lambda: False, monotonic=lambda: 0, news_codes=_SCOPE.codes)
+            cancel_requested=lambda: False, monotonic=lambda: 0)
     assert resumed.round_id == first.round_id and resumed.processing_complete
     assert runtime.journal.active().max_source_calls == 20
+    assert CompanySyncFamily.NEWS not in resumed.scope.families
     assert "https://example.test/news" not in physical
-    news = next(item for item in resumed.families if item.family is CompanySyncFamily.NEWS)
-    assert news.result.gaps == ("news_skipped_by_fill",)
+    with SqliteSession(runtime.inputs.path) as connection:
+        assert connection.run("SELECT COUNT(*) FROM company_source_task WHERE family IN ('news','news_scope')").require_one()[0] == 0
 
 
-@pytest.mark.parametrize("rows,days", ((51, 0), (1, 8)))
-def test_news_rejects_excess_rows_or_old_items_before_registering_material(tmp_path, rows, days):
-    from trader.download.domain.company_evidence import Disclosure
-    from trader.download.domain.company_sync import CompanySyncFamily
-
-    runtime, reader, transport, physical = _runtime(tmp_path)
+def test_runtime_keeps_old_news_plan_and_metadata_while_settling_the_phase(tmp_path):
+    first, _, first_transport, _ = _runtime(tmp_path / "plans")
+    first.initialize(_SCOPE.codes, _SCOPE.cutoff)
+    with first_transport:
+        first.run(_SCOPE.codes, _SCOPE.cutoff, CompanySyncBudget(1, 20, 20, 10),
+            cancel_requested=lambda: False, monotonic=lambda: 0)
+    plans = first.journal.active().plans
+    old_scope = replace(_SCOPE, families=tuple(CompanySyncFamily))
+    news_plan = CompanySyncPhasePlan(CompanySyncFamily.NEWS, CanonicalDigest(("news", False, old_scope.codes)),
+        ("news_metadata_does_not_verify_issuer_risk",))
+    runtime, _, transport, physical = _runtime(tmp_path / "old")
     runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
+    round_id = runtime.journal.begin(old_scope, (*plans[:-1], news_plan, plans[-1]), max_source_calls=20)
+    code, = old_scope.codes
+    runtime.inputs.complete_task(old_scope.identity, "news", code, 1, CanonicalDigest("accepted_news"))
+    runtime.inputs.complete_task(old_scope.identity, "news_scope", code, 0, CanonicalDigest(code))
+    runtime.journal.start(round_id, CompanySyncFamily.NEWS, CompanySyncPhaseState(CanonicalDigest(code), False))
+    runtime.journal.finish(round_id, CompanySyncFamily.NEWS, CompanySyncStepResult(False, True, accepted_inputs=1))
+    runtime.material.register_disclosures((Disclosure("eastmoney_news", "old-news", old_scope.codes, "消息", old_scope.cutoff,
+        "https://example.test/item", "a" * 64, "news"),))
 
-    def news(code, *, observed_at):
-        transport.get("https://example.test/news", timeout=1)
-        return tuple(Disclosure("eastmoney_news", str(index), (code,), "消息", observed_at - timedelta(days=days),
-            "https://example.test/item", "a" * 64, "news") for index in range(rows))
-
-    runtime._news_source.news = news
     with transport:
-        result = runtime.run(_SCOPE.codes, _SCOPE.cutoff, CompanySyncBudget(100, 20, 20, 10),
-            cancel_requested=lambda: False, monotonic=lambda: 0, news_codes=_SCOPE.codes)
+        result = runtime.run(_SCOPE.codes, _SCOPE.cutoff, CompanySyncBudget(100, 200, 20, 10),
+            cancel_requested=lambda: False, monotonic=lambda: 0)
+
+    assert result.round_id == round_id and result.scope == old_scope
+    assert runtime.journal.active().plans[-2] == news_plan
     family = next(item for item in result.families if item.family is CompanySyncFamily.NEWS)
-    assert family.result.failure == "company_news_response_scope_mismatch"
+    assert family.accepted_inputs == 1 and family.source_calls == family.unknown_attempts == 0
+    assert "news_automatic_collection_retired" in family.result.gaps
+    assert IsCompanyNewsReference(family)
+    assert "https://example.test/news" not in physical
+    assert runtime.inputs.task_done(old_scope.identity, "news_scope", code)
     with SqliteSession(runtime.material.path) as connection:
-        assert connection.run("SELECT COUNT(*) FROM disclosures WHERE kind='news'").require_one()[0] == 0
+        assert connection.run("SELECT COUNT(*) FROM disclosures WHERE kind='news'").require_one()[0] == 1
 
 
 def test_unfinished_round_resumes_original_time_and_does_not_refill_request_allowance(tmp_path):

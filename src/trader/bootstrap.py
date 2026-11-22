@@ -248,7 +248,7 @@ def ExecuteSync(
         history=AdaptSyncDatabaseFailures(sync_history),
         company=AdaptSyncDatabaseFailures(lambda reference: report.run("company", lambda: ExecuteCompanySync(
             settings, CompanySyncRoundScope(tuple(item.code for item in reference.eligible_universe), clock.now()),
-            cancel_requested=cancel_requested, report=report, fill=fill_missing,
+            cancel_requested=cancel_requested, report=report,
         ))),
         cancelled=cancel_requested,
         failures=report.report_failure,
@@ -1291,9 +1291,9 @@ def _build_publication(
 
 def ExecuteCompanySync(
     settings: RuntimeSettings, scope: CompanySyncRoundScope, *,
-    cancel_requested: Callable[[], bool], report: SyncProgress, fill: bool, admit_observations: bool = False,
+    cancel_requested: Callable[[], bool], report: SyncProgress, admit_observations: bool = False,
 ) -> CompanySyncRoundResult:
-    from trader.download.domain.company_sync import CompanySyncBudget, CompanySyncInterrupted
+    from trader.download.domain.company_sync import COMPANY_SYNC_FAMILIES, CompanySyncBudget, CompanySyncInterrupted
     from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
     from trader.download.infra.company_document_files import CompanyDocumentFiles
     from trader.download.infra.company_document_ocr import CompanyOcrEngine, DetectCompanyOcr
@@ -1308,11 +1308,8 @@ def ExecuteCompanySync(
     from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
     from trader.download.infra.company_sync_runtime import CompanySyncRuntime
     from trader.download.infra.download_settings import LoadCompanySyncConfiguration
-    from trader.recommendation.application.pipeline.freeze_publish.recent_news_codes import RecentPublishedNewsCodes
-    from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords
-    from trader.infra.sqlite_connection import SqliteConnectionOptions
 
-    if scope.families != tuple(CompanySyncFamily):
+    if scope.families != COMPANY_SYNC_FAMILIES:
         raise ValueError("company_sync_full_scope_required")
     configuration = LoadCompanySyncConfiguration(settings.project_root)
     event_policy = LoadStrategySettings(settings.strategy_config_path).company_scoring.events
@@ -1336,8 +1333,10 @@ def ExecuteCompanySync(
         return cancel_requested() or time.monotonic() >= deadline
 
     with ExitStack() as resources:
-        resources.enter_context(ProcessLock(paths.company_collection.parent / "evidence.lock", label="sync company"))
-        formal_path = paths.company_published if admit_observations else paths.company
+        resources.enter_context(ProcessLock(paths.company_raw / "evidence.lock", label="sync company"))
+        if any(path.exists() or path.is_symlink() for path in paths.retired_company_databases):
+            raise company_evidence.CompanyDatabaseIncompatibleError(company_evidence.CompanyDownloadStore.RETIRED_LAYOUT)
+        formal_path = paths.company
         facts = SQLiteCompanyFactsIndex(formal_path, event_policy=event_policy, sqlite_policy=sqlite_policy,
                                        cancel_requested=stopped, io_budget=io_budget)
         reader = company_facts_reader.SQLiteCompanyEvidenceReader(formal_path, event_policy=event_policy,
@@ -1355,10 +1354,10 @@ def ExecuteCompanySync(
         def read_document(body_hash: bytes) -> str:
             return documents.read(body_hash, check=check_document)
 
-        raw_files = CompanyRawFiles(paths.company_collection.parent, capacity=configuration.raw_capacity_bytes,
+        raw_files = CompanyRawFiles(paths.company_raw, capacity=configuration.raw_capacity_bytes,
             analysis_reserve=configuration.raw_analysis_reserve_bytes, free_reserve=configuration.temporary_disk_reserve_bytes,
             maximum_document_bytes=configuration.extended_document_limits.max_bytes)
-        material = SQLiteCompanyMaterialIndex(paths.company_collection, facts=facts, documents=documents,
+        material = SQLiteCompanyMaterialIndex(paths.company_sources, facts=facts, documents=documents,
             event_policy=event_policy, sqlite_policy=sqlite_policy, raw_files=raw_files,
             cancel_requested=stopped, io_budget=io_budget)
 
@@ -1368,9 +1367,9 @@ def ExecuteCompanySync(
                 raise ValueError("company_sync_cleanup_scope_missing")
             material.clean_material(active.scope.cutoff)
 
-        normalized = SQLiteCompanyNormalizedIndex(paths.company_normalized, facts, event_policy=event_policy,
+        normalized = SQLiteCompanyNormalizedIndex(paths.company_sources, facts, event_policy=event_policy,
             sqlite_policy=sqlite_policy, clean_material=clean_material, cancel_requested=stopped, io_budget=io_budget)
-        inputs = SQLiteCompanySyncInputStore(paths.company_inputs, sqlite_policy=sqlite_policy, io_budget=io_budget)
+        inputs = SQLiteCompanySyncInputStore(paths.company_sources, sqlite_policy=sqlite_policy, io_budget=io_budget)
         transport = resources.enter_context(OpenExternalHttp(authorize=journal.authorize_request,
             observe=journal.observe_attempt, inspect_response=journal.retain_directory_response, deadline_limit=source_deadline))
         structured = EastmoneyCompanySource(transport, monotonic=time.monotonic,
@@ -1441,7 +1440,7 @@ def ExecuteCompanySync(
         runtime = CompanySyncRuntime(normalized, facts, material, journal, inputs=inputs,
             event_policy=event_policy, sqlite_policy=sqlite_policy, read_document=read_document,
             financial_source=structured, ratio_source=structured, annual_source=structured,
-            news_source=structured, official_source=official, io_budget=io_budget,
+            official_source=official, io_budget=io_budget,
             document_configuration=configuration, document_policies=policies, wall_clock=ShanghaiClock(_utc_now).now,
             observe_scope=observe_scope, observe=observe_family, activity=progress.activity,
             source_ready=lambda: time.monotonic() < source_deadline, admit_observations=admit_observations)
@@ -1449,14 +1448,7 @@ def ExecuteCompanySync(
             min(256, configuration.round_step_limit), deadline)
         try:
             runtime.initialize(codes, cutoff)
-            active = journal.active()
-            news_cutoff = cutoff if active is None else active.scope.cutoff
-            news_records = tuple(SQLiteFreezeRecords(paths.recommendation(profile) / "freeze.sqlite3", sqlite_policy=sqlite_policy,
-                read_session=lambda path: io_budget.session(path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy))
-                for profile in SCORING_PROFILE_IDS)
-            news_codes = () if fill else RecentPublishedNewsCodes(news_records, news_cutoff, check=io_budget.check)
-            result = runtime.run(codes, cutoff, budget, cancel_requested=cancel_requested, monotonic=time.monotonic, fill=fill,
-                news_codes=news_codes)
+            result = runtime.run(codes, cutoff, budget, cancel_requested=cancel_requested, monotonic=time.monotonic)
         except CompanySyncInterrupted:
             return paused()
         fields = read_counts(result.scope) if result.publication_hash else None

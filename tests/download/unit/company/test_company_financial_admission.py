@@ -24,11 +24,11 @@ from trader.download.domain.company_source_records import (
     CompanyFinancialSourceRecordHash,
     CompanyFinancialSourceValues,
 )
-from trader.download.infra.company_evidence_sql import SCHEMA
 from trader.download.infra.company_financial_publication import (
     CompanyFinancialAdmissionReceipts,
     PrepareCompanyFinancialAdmissions,
 )
+from trader.download.infra.company_source_schema import COMPANY_SOURCE_SCHEMA
 from trader.infra.sqlite_connection import EnsureSqliteSchema, SqliteSession
 
 _CUTOFF = AT + timedelta(days=1)
@@ -120,7 +120,7 @@ def test_extraction_qualified_issuer_body_requires_closed_directory_and_no_corre
     revision = CompanyFinancialRevisionProof(original, _PERIOD, _PERIOD, _CUTOFF, supplier.record_hash, b"a" * 32)
     args = (original.source, original.identity, original.kind, original.title, AT.isoformat(), original.url, original.digest, body_hash)
     with SqliteSession(tmp_path / "collection.sqlite3", sqlite_policy=SqlitePolicyFixture()) as collected:
-        EnsureSqliteSchema(collected, SCHEMA, allow_create=True, exact=True)
+        EnsureSqliteSchema(collected, COMPANY_SOURCE_SCHEMA, allow_create=True, exact=True)
         collected.run("INSERT INTO disclosures VALUES (1,?,?,?,?,?,?,?,?,1,1)", args)
         collected.run("INSERT INTO disclosure_codes VALUES ('600001',1)")
         collected.run("INSERT INTO document_extractions VALUES (1,?,?,'text','pdftotext',NULL,?)", (original.digest, b"p" * 32, AT.isoformat()))

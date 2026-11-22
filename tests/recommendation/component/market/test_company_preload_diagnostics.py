@@ -97,7 +97,7 @@ def test_incompatible_schema_warns_once_with_recovery_scope_without_verbose_fram
     assert len(caplog.records) == 1
     assert "公司正式资料结构不兼容" in caplog.text
     assert "备份" in caplog.text and "独立目录" in caplog.text
-    assert "company_facts.sqlite3" in caplog.text
+    assert "company_published.sqlite3" in caplog.text
     assert "frames" not in caplog.text and "/private/" not in caplog.text
     assert research.cached(codes, include_structured=True) == {}
 

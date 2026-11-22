@@ -25,8 +25,8 @@ def test_incompatible_stores_are_projected_without_scanning_or_modifying_them(tm
         budget_seconds=30, sqlite_policy=SqlitePolicyFixture())
     assert report["status"] == "failed"
     database = report["summary"]["database"]
-    assert database["incompatible_stores"] == ["collection", "facts"]
+    assert database["incompatible_stores"] == ["sources", "facts"]
     assert not database["complete"] and not database["budget_exhausted"]
     public = BuildReport("company-resume", (DiagnosticResult("company_resume", 1, 0, report, None),))
-    assert public["checks"][0]["summary"]["database"]["incompatible_stores"] == ["collection", "facts"]
+    assert public["checks"][0]["summary"]["database"]["incompatible_stores"] == ["sources", "facts"]
     assert (collection.read_bytes(), formal.read_bytes()) == before

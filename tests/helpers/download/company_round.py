@@ -3,7 +3,7 @@
 from datetime import datetime
 
 from trader.download.domain.company_sync import (
-    CompanySyncFamily, CompanySyncFamilyResult, CompanySyncRoundResult, CompanySyncRoundScope, CompanySyncStepResult,
+    COMPANY_SYNC_FAMILIES, CompanySyncFamily, CompanySyncFamilyResult, CompanySyncRoundResult, CompanySyncRoundScope, CompanySyncStepResult,
 )
 
 
@@ -22,8 +22,9 @@ def CompanySyncRoundFixture(
     families: tuple[CompanySyncFamilyResult, ...] | None = None,
     cancelled: bool = False, budget_exhausted: bool = False,
 ) -> CompanySyncRoundResult:
+    scope_families = tuple(CompanySyncFamily) if any(item.family is CompanySyncFamily.NEWS for item in families or ()) else COMPANY_SYNC_FAMILIES
     return CompanySyncRoundResult(
-        round_id="a" * 64, scope=CompanySyncRoundScope(codes, observed_at),
-        families=families if families is not None else tuple(CompanySyncFamilyFixture(family) for family in CompanySyncFamily),
+        round_id="a" * 64, scope=CompanySyncRoundScope(codes, observed_at, scope_families),
+        families=families if families is not None else tuple(CompanySyncFamilyFixture(family) for family in scope_families),
         cancelled=cancelled, budget_exhausted=budget_exhausted, publication_hash="b" * 64,
     )

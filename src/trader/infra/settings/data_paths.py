@@ -22,27 +22,28 @@ class DataPaths:
 
     @property
     def company(self) -> Path:
-        return self.root / "company/company_facts.sqlite3"
-
-    @property
-    def company_published(self) -> Path:
         return self.root / "company/company_published.sqlite3"
 
     @property
-    def company_collection(self) -> Path:
-        return self.root / "company/raw/company_collection.sqlite3"
+    def company_sources(self) -> Path:
+        return self.root / "company/company_sources.sqlite3"
+
+    @property
+    def company_raw(self) -> Path:
+        return self.root / "company/raw"
 
     @property
     def company_documents(self) -> Path:
-        return self.root / "company/raw/text"
+        return self.company_raw / "text"
 
     @property
-    def company_normalized(self) -> Path:
-        return self.root / "company/company_normalized.sqlite3"
-
-    @property
-    def company_inputs(self) -> Path:
-        return self.root / "company/company_inputs.sqlite3"
+    def retired_company_databases(self) -> tuple[Path, ...]:
+        return (
+            self.root / "company/company_facts.sqlite3",
+            self.root / "company/company_normalized.sqlite3",
+            self.root / "company/company_inputs.sqlite3",
+            self.company_raw / "company_collection.sqlite3",
+        )
 
     @property
     def company_sync(self) -> Path:

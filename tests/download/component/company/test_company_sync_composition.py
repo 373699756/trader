@@ -9,7 +9,7 @@ from tests.helpers.shared.configuration import RuntimeSettingsFixture
 from tests.helpers.shared.reference_fixtures import PreparedFixture
 from trader import bootstrap
 from trader.download.domain.company_evidence import CompanyDownloadStore
-from trader.download.domain.company_sync import CompanySyncFamily, CompanySyncRoundScope
+from trader.download.domain.company_sync import COMPANY_SYNC_FAMILIES, CompanySyncFamily, CompanySyncRoundScope
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 from trader.infra.http_transport import RequestsHttpTransport
@@ -44,7 +44,7 @@ def test_normal_composition_runs_local_fields_with_zero_source_allowance(tmp_pat
     assert result.exit_code == 1 and result.tasks[0].status == "pending"
     company = result.tasks[0].company
     assert company is not None and company.budget_exhausted and not company.business_complete
-    assert tuple(item.family for item in company.families) == tuple(CompanySyncFamily)
+    assert tuple(item.family for item in company.families) == COMPANY_SYNC_FAMILIES
     fields, = (item for item in company.families if item.family is CompanySyncFamily.FIELDS)
     assert fields.result.processed_scope_complete and not fields.result.can_continue
     assert physical == [] and sum(item.source_calls for item in company.families) == 0
@@ -69,25 +69,17 @@ def test_normal_composition_projects_confirmed_step_progress_without_http(tmp_pa
     assert len(messages) == before
 
 
-def test_normal_composition_uses_recent_published_news_population_without_creating_freezes(tmp_path, monkeypatch):
+def test_normal_composition_creates_only_three_company_stores(tmp_path, monkeypatch):
     settings, physical = _settings(tmp_path, monkeypatch)
-    observed = []
-
-    def selected(records, observed_at, *, check):
-        check()
-        assert len(records) == 4
-        observed.append(observed_at)
-        return ("600001", "600009")
-
-    monkeypatch.setattr("trader.recommendation.application.pipeline.freeze_publish.recent_news_codes.RecentPublishedNewsCodes", selected)
     result = bootstrap.ExecuteSync(settings.config_path, "company")
-    assert observed == [NOW] and not physical
-    scope = result.tasks[0].company.scope
-    with SqliteSession(settings.data_paths.company_inputs) as connection:
-        selected_codes = tuple(row[0] for row in connection.run(
-            "SELECT task FROM company_source_task WHERE scope=? AND family='news_scope' AND task<>'initialized' ORDER BY task",
-            (scope.identity,)))
-    assert selected_codes == ("600001",)
+    assert result.tasks[0].company is not None and not physical
+    paths = settings.data_paths
+    assert set(paths.company.parent.rglob("*.sqlite3")) == {paths.company, paths.company_sources, paths.company_sync}
+    with SqliteSession(paths.company_sources) as connection:
+        tables = {row[0] for row in connection.run("SELECT name FROM sqlite_schema WHERE type='table'")}
+        assert {"disclosures", "company_financial_observation", "company_source_task", "company_round_intent"} <= tables
+        assert not {"annual_income", "company_expired_ranges", "company_sync_job", "component_checks", "structured_members", "structured_progress"} & tables
+        assert not connection.run("SELECT 1 FROM company_source_task WHERE family='news_scope'").fetchall()
     assert all(not (settings.data_paths.recommendation(profile) / "freeze.sqlite3").exists()
         for profile in ("v1", "v2", "v3", "v5"))
 
@@ -103,10 +95,21 @@ def test_old_formal_schema_is_identified_before_other_company_stores_are_created
     task, = result.tasks
     assert task.status == "failed" and task.incompatible_company_store is CompanyDownloadStore.FACTS
     assert path.read_bytes() == before and physical == []
-    assert not settings.data_paths.company_collection.exists()
-    assert not settings.data_paths.company_normalized.exists()
-    assert not settings.data_paths.company_inputs.exists()
+    assert not settings.data_paths.company_sources.exists()
     assert not settings.data_paths.company_sync.exists()
+
+
+def test_retired_company_layout_is_rejected_without_creating_new_stores(tmp_path, monkeypatch):
+    settings, physical = _settings(tmp_path, monkeypatch)
+    paths = settings.data_paths
+    legacy = paths.retired_company_databases[0]
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"must remain intact")
+    result = bootstrap.ExecuteSync(settings.config_path, "company")
+    task, = result.tasks
+    assert task.incompatible_company_store is CompanyDownloadStore.RETIRED_LAYOUT
+    assert legacy.read_bytes() == b"must remain intact" and not physical
+    assert not any(path.exists() for path in (paths.company, paths.company_sources, paths.company_sync))
 
 
 @pytest.mark.parametrize("cancelled", (False, True))
@@ -142,5 +145,5 @@ def test_unknown_local_probe_interruption_keeps_its_original_exception(tmp_path,
     monkeypatch.setattr("trader.download.infra.company_document_ocr.DetectCompanyOcr", unknown)
     with pytest.raises(InterruptedError) as caught:
         bootstrap.ExecuteCompanySync(settings, CompanySyncRoundScope(("600001",), NOW), cancel_requested=lambda: False,
-            report=bootstrap.CreateSyncProgress(), fill=False)
+            report=bootstrap.CreateSyncProgress())
     assert caught.value is error and not physical

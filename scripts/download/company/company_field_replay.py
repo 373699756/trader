@@ -7,6 +7,7 @@ from trader.download.domain.company_field_results import CompanyFieldConclusion
 import gzip
 import hashlib
 import math
+import re
 import sqlite3
 import time
 from collections import Counter
@@ -25,7 +26,8 @@ from trader.download.domain.company_events import CompanyEventPolicy, CompanyPos
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_field_results import CompanyFieldSnapshot
 from trader.download.infra.company_document_files import CompanyDocumentFiles
-from trader.download.infra.company_evidence_sql import SCHEMA
+from trader.download.infra.company_evidence_sql import COMPANY_MATERIAL_STATEMENTS
+from trader.download.infra.company_source_schema import COMPANY_SOURCE_SCHEMA
 from trader.download.infra.company_facts_index import CompanyPublicationIdentity, ReadCompanyPublicationIdentity, SQLiteCompanyFactsIndex, CompanyInputReceipt
 from trader.download.infra.company_normalized_index import SQLiteCompanyNormalizedIndex, ReadCompanyNormalizationBaseline
 from trader.download.infra.company_material_index import SQLiteCompanyMaterialIndex
@@ -45,6 +47,10 @@ from trader.infra.sqlite_publication import PublishSqliteFile, VerifySqliteFile
 
 _MAX_TEXT_BYTES = 256 * 1024 * 1024
 _MAX_STOCKS = 10_000
+_MATERIAL_TABLES = frozenset(
+    match[1] for statement in COMPANY_MATERIAL_STATEMENTS
+    if (match := re.match(r"\s*CREATE TABLE (?:IF NOT EXISTS )?(\w+)", statement, re.IGNORECASE))
+)
 
 
 class _CountingDocuments(CompanyDocumentFiles):
@@ -119,20 +125,32 @@ def _source_files(path: Path, deadline: float) -> tuple[str | None, ...]:
     return tuple(_file_digest(item, deadline) if item.exists() else None for item in files)
 
 
-def BackupCompanyCollection(source_path: Path, target_path: Path, policy: SqliteIoPolicy, deadline: float) -> bool:
-    target_path.parent.mkdir(parents=True)
+def BackupCompanyCollection(
+    source_path: Path, target_path: Path, policy: SqliteIoPolicy, deadline: float, *, material_only: bool = False,
+) -> bool:
+    """Copy a current source store, optionally keeping only material for a new isolated round."""
+    target_path.parent.mkdir(parents=True, exist_ok=True)
     with target_path.open("xb"):
         pass
     with SqliteSession(
         source_path, SqliteConnectionOptions(read_only=True), sqlite_policy=policy,
         cancel_requested=lambda: time.monotonic() >= deadline,
     ) as source, SqliteSession(
-        target_path, sqlite_policy=policy, cancel_requested=lambda: time.monotonic() >= deadline,
+        target_path, SqliteConnectionOptions(foreign_keys=not material_only), sqlite_policy=policy,
+        cancel_requested=lambda: time.monotonic() >= deadline,
     ) as target:
         version = source.run("PRAGMA data_version").require_one()[0]
-        EnsureSqliteSchema(source, SCHEMA, exact=True)
+        EnsureSqliteSchema(source, COMPANY_SOURCE_SCHEMA, exact=True)
         source.backup_to(target, deadline=deadline, monotonic=time.monotonic)
         stable = bool(version == source.run("PRAGMA data_version").require_one()[0])
+        if material_only:
+            with SqliteTransaction(target, immediate=True):
+                tables = tuple(row[0] for row in target.run(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name"
+                ))
+                for table in tables:
+                    if table not in _MATERIAL_TABLES:
+                        target.run(f'DELETE FROM "{table}"')
         if tuple(row[0] for row in target.run("PRAGMA integrity_check")) != ("ok",):
             raise ValueError("company_field_replay_collection_integrity_failed")
         if target.run("PRAGMA foreign_key_check").fetchone() is not None:
@@ -146,7 +164,7 @@ def BackupCompanyFacts(
     def cancelled() -> bool:
         return time.monotonic() >= deadline
     VerifySqliteFile(source_path, sqlite_policy=policy, check=lambda: _check_deadline(deadline), file_only=True)
-    target_path.parent.mkdir(parents=True)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
     with target_path.open("xb"):
         pass
     with SqliteSession(
@@ -350,27 +368,28 @@ def AuditCompanyFieldReplay(
         with SqliteSession(facts_path, SqliteConnectionOptions(read_only=True), sqlite_policy=sqlite_policy) as formal:
             if ReadCompanyPublicationIdentity(formal) is None:
                 raise ValueError("company_field_replay_facts_publication_missing")
-        target_facts = directory / "facts" / "company_facts.sqlite3"
-        target_raw = directory / "raw" / "company_collection.sqlite3"
-        stable_backup = BackupCompanyCollection(collection_path, target_raw, sqlite_policy, deadline)
+        target_facts = directory / "company_published.sqlite3"
+        target_raw = directory / "company_sources.sqlite3"
+        target_text = directory / "raw" / "text"
+        stable_backup = BackupCompanyCollection(collection_path, target_raw, sqlite_policy, deadline, material_only=True)
         report["collection_backup_generation_stable"] = stable_backup
         configuration = LoadCompanySyncConfiguration(PROJECT_ROOT)
         hashes = _text_hashes(target_raw, sqlite_policy, deadline)
         copied, missing, compressed, expanded = _copy_texts(
-            collection_path.parent / "text", target_raw.parent / "text", hashes,
+            collection_path.parent / "raw" / "text", target_text, hashes,
             configuration.extended_document_limits.max_text_characters * 4, deadline,
         )
         report.update({"required_texts": len(hashes), "copied_texts": copied, "missing_texts": missing,
                        "compressed_text_bytes": compressed, "expanded_text_bytes": expanded})
         documents = _CountingDocuments(
-            target_raw.parent / "text", max_text_characters=configuration.extended_document_limits.max_text_characters,
+            target_text, max_text_characters=configuration.extended_document_limits.max_text_characters,
             max_bytes=configuration.temporary_text_capacity_bytes, reserve_bytes=configuration.temporary_disk_reserve_bytes,
         )
         research = ReadCompanyResearchBaseline(target_raw, facts_path, documents,
             event_policy=event_policy, sqlite_policy=sqlite_policy, check=lambda: _check_deadline(deadline),
             cancel_requested=lambda: time.monotonic() >= deadline)
         writer = SQLiteCompanyFactsIndex(target_facts, event_policy=event_policy, sqlite_policy=sqlite_policy)
-        index = SQLiteCompanyNormalizedIndex(directory / "normalized.sqlite3", writer,
+        index = SQLiteCompanyNormalizedIndex(target_raw, writer,
             event_policy=event_policy, sqlite_policy=sqlite_policy, clean_material=lambda: None)
         index.initialize()
         index.seed(research.baseline)
@@ -434,7 +453,7 @@ def AuditCompanyFieldReplay(
         for digest in required:
             _check_deadline(deadline)
             key = digest.hex()
-            missing += not (target_raw.parent / "text" / key[:2] / (key + ".txt.gz")).is_file()
+            missing += not (target_text / key[:2] / (key + ".txt.gz")).is_file()
         report["final_required_texts"] = len(required)
         report["missing_texts"] = missing
         original_valid = frozenset(baseline.valid_receipts)
@@ -525,11 +544,11 @@ def PrepareCompanyNormalNamespace(
         receipts = tuple(item for item in prepared.receipts if item.source != "eastmoney_financial" or item in original_receipts)
         baseline = replace(prepared, facts=facts, receipts=receipts, identity=source_identity, financial_observations=())
     paths = DataPaths(directory)
-    stable = BackupCompanyCollection(collection_path, paths.company_collection, sqlite_policy, deadline)
+    stable = BackupCompanyCollection(collection_path, paths.company_sources, sqlite_policy, deadline, material_only=True)
     target_documents = CompanyDocumentFiles(paths.company_documents, max_text_characters=2_000_000,
         max_bytes=2 * 1024 * 1024 * 1024, reserve_bytes=1)
     copied = missing = 0
-    with SqliteSession(paths.company_collection, options, sqlite_policy=sqlite_policy) as raw:
+    with SqliteSession(paths.company_sources, options, sqlite_policy=sqlite_policy) as raw:
         hashes = tuple(row[0] for row in raw.run("SELECT DISTINCT body_hash FROM disclosures WHERE body_retained=1 AND body_hash IS NOT NULL ORDER BY body_hash"))
     for digest in hashes:
         check()
@@ -548,11 +567,11 @@ def PrepareCompanyNormalNamespace(
                 raise ValueError("company_normal_namespace_original_body_hash_mismatch")
         copied += 1
     writer = SQLiteCompanyFactsIndex(paths.company, event_policy=event_policy, sqlite_policy=sqlite_policy)
-    normalized = SQLiteCompanyNormalizedIndex(paths.company_normalized, writer, event_policy=event_policy,
+    normalized = SQLiteCompanyNormalizedIndex(paths.company_sources, writer, event_policy=event_policy,
         sqlite_policy=sqlite_policy, clean_material=lambda: None)
     normalized.initialize()
     normalized.seed(baseline)
-    material = SQLiteCompanyMaterialIndex(paths.company_collection, facts=writer, documents=target_documents,
+    material = SQLiteCompanyMaterialIndex(paths.company_sources, facts=writer, documents=target_documents,
         event_policy=event_policy, sqlite_policy=sqlite_policy)
     material.initialize()
     material.validate_material()

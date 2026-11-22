@@ -24,11 +24,10 @@ DocumentRoute = Literal["standard", "ocr", "limits"]
 
 
 class CompanyDownloadStore(str, Enum):
-    COLLECTION = "collection"
+    SOURCES = "sources"
     FACTS = "facts"
-    NORMALIZED = "normalized"
-    INPUTS = "inputs"
     REQUEST_JOURNAL = "request_journal"
+    RETIRED_LAYOUT = "retired_layout"
 
 
 class CompanyDatabaseIncompatibleError(ValueError):

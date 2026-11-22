@@ -84,7 +84,6 @@ def RunCompanySyncRound(
     activity: Callable[[CompanySyncFamily], AbstractContextManager[None]] | None = None,
     recover_directory: CompanyDirectoryRecovery | None = None,
     source_ready: Callable[[], bool] | None = None,
-    skip_news: bool = False,
 )->CompanySyncRoundResult:
     """Run bounded steps, retain accepted work and never reissue an unconfirmed request.
 
@@ -142,15 +141,6 @@ def RunCompanySyncRound(
                 break
             state=producer.state(scope)
             outstanding=journal.outstanding(round_id,family)
-            if skip_news and family is CompanySyncFamily.NEWS and state.source_required and outstanding is None:
-                item.deferred = True
-                if current is None:
-                    item.result = CompanySyncFamilyResult(family, 0, 0, 0, CompanySyncStepResult(
-                        False, True, gaps=("news_skipped_by_fill",), deferred=True))
-                else:
-                    item.result = replace(current, result=replace(current.result,
-                        gaps=(*current.result.gaps, "news_skipped_by_fill"), deferred=True))
-                continue
             reconciled=outstanding is not None and (outstanding.source_required or state.source_required
                 or outstanding.identity!=state.identity)
             if reconciled and outstanding is not None:

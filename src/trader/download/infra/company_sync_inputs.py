@@ -8,41 +8,14 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from trader.download.infra.company_sync_io import CompanySyncIoBudget
+from trader.download.infra.company_source_schema import COMPANY_SOURCE_SCHEMA
 from trader.download.domain.company_annual_income import CompanyAnnualIncome, CompanyAnnualIncomeRequest
-from trader.download.domain.company_evidence import CompanyInputValidationFailure, CompanyRatio, EvidenceMarket, StructuredCompanyPage, StructuredCompanyQuery
+from trader.download.domain.company_evidence import CompanyInputValidationFailure, CompanyRatio, StructuredCompanyPage, StructuredCompanyQuery
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_connection import (
-    EnsureSqliteSchema, SqliteConnection, SqliteConnectionOptions, SqliteSchema, SqliteSession, SqliteTransaction,
+    EnsureSqliteSchema, SqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction,
 )
 from trader.infra.sqlite_policy import SqliteIoPolicy
-
-
-_SCHEMA = SqliteSchema((
-    """CREATE TABLE company_recovered_input (
-      scope TEXT NOT NULL,code TEXT NOT NULL,source TEXT NOT NULL,source_key TEXT NOT NULL,
-      record_hash TEXT NOT NULL,body_hash BLOB NOT NULL CHECK(length(body_hash)=32),prepared INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY(scope,code,source,source_key,record_hash,body_hash)
-    ) WITHOUT ROWID""",
-    "CREATE TABLE company_pledge_day(scope TEXT PRIMARY KEY,day TEXT NOT NULL) WITHOUT ROWID",
-    """CREATE TABLE company_source_page (
-      scope TEXT NOT NULL,component TEXT NOT NULL,page INTEGER NOT NULL,pages INTEGER NOT NULL,
-      total INTEGER NOT NULL,raw_count INTEGER NOT NULL,decoded_hash TEXT NOT NULL,
-      PRIMARY KEY(scope,component,page)
-    ) WITHOUT ROWID""",
-    """CREATE TABLE company_ratio_observation (
-      scope TEXT NOT NULL,component TEXT NOT NULL,code TEXT NOT NULL,day TEXT NOT NULL,ratio REAL NOT NULL,
-      PRIMARY KEY(scope,component,code,day)
-    ) WITHOUT ROWID""",
-    """CREATE TABLE company_source_task (
-      scope TEXT NOT NULL,family TEXT NOT NULL,task TEXT NOT NULL,accepted INTEGER NOT NULL,input_hash TEXT NOT NULL,
-      PRIMARY KEY(scope,family,task)
-    ) WITHOUT ROWID""",
-    """CREATE TABLE company_annual_income_observation (
-      scope TEXT NOT NULL,code TEXT NOT NULL,report_date TEXT NOT NULL,disclosed_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,observed_at TEXT NOT NULL,currency TEXT NOT NULL,revenue REAL,record_hash TEXT NOT NULL,
-      PRIMARY KEY(scope,code,report_date,disclosed_at,updated_at)
-    ) WITHOUT ROWID""",
-))
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,12 +46,12 @@ class SQLiteCompanySyncInputStore:
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection:
-            EnsureSqliteSchema(connection, _SCHEMA, allow_create=True, exact=True)
+            EnsureSqliteSchema(connection, COMPANY_SOURCE_SCHEMA, allow_create=True, exact=True)
 
     def validate_existing(self) -> None:
         if self.path.exists():
             with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
-                EnsureSqliteSchema(connection, _SCHEMA, exact=True)
+                EnsureSqliteSchema(connection, COMPANY_SOURCE_SCHEMA, exact=True)
 
     def ratio_cursor(self, scope: str, query: StructuredCompanyQuery, cutoff: datetime) -> StructuredCompanyQuery | None:
         _query(query, cutoff)
@@ -135,19 +108,6 @@ class SQLiteCompanySyncInputStore:
         with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
             return connection.run("SELECT 1 FROM company_source_task WHERE scope=? AND family=? AND task=?", (scope, family, task)).fetchone() is not None
 
-    def freeze_news_codes(self, scope: str, codes: tuple[str, ...]) -> tuple[str, ...]:
-        """Keep the authorized published population fixed for this request scope."""
-        with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
-            initialized = connection.run("SELECT 1 FROM company_source_task WHERE scope=? AND family='news_scope' AND task='initialized'", (scope,)).fetchone()
-            if initialized is None:
-                for code in codes:
-                    EvidenceMarket(code)
-                connection.run_many("INSERT INTO company_source_task VALUES(?,?,?,?,?)",
-                    ((scope, "news_scope", code, 0, CanonicalDigest(code)) for code in sorted(set(codes))))
-                connection.run("INSERT INTO company_source_task VALUES(?,?,?,?,?)",
-                    (scope, "news_scope", "initialized", 0, CanonicalDigest(tuple(sorted(set(codes))))))
-            return tuple(row[0] for row in connection.run(
-                "SELECT task FROM company_source_task WHERE scope=? AND family='news_scope' AND task<>'initialized' ORDER BY task", (scope,)))
 
     def field_input_identity(self, scope: str) -> str:
         """Bind only the structured inputs consumed by local field compilation."""

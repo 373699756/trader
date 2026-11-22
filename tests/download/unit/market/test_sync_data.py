@@ -13,7 +13,7 @@ from trader.download.application.prepare_reference import ReferenceDatabaseIncom
 from trader.download.application.sync_data import SyncData, SyncDatabaseError, SyncResult, SyncTaskResult
 from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDownloadStore
-from trader.download.domain.company_sync import CompanySyncFamily
+from trader.download.domain.company_sync import COMPANY_SYNC_FAMILIES, CompanySyncFamily
 from tests.helpers.download.company_round import CompanySyncFamilyFixture, CompanySyncRoundFixture
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.entrypoints.sync_projection import ProjectSyncResult
@@ -233,10 +233,11 @@ def test_company_terminal_reason_reaches_projection_and_cli(
     tmp_path, monkeypatch, capsys, pending, gaps, failure, cancelled, paused, reason, terminal_state,
 ):
     tested_family = CompanySyncFamily.NEWS if terminal_state == "采集结束" else CompanySyncFamily.FIELDS
+    selected = tuple(CompanySyncFamily) if tested_family is CompanySyncFamily.NEWS else COMPANY_SYNC_FAMILIES
     company = CompanySyncRoundFixture(
         _NOW, families=tuple(CompanySyncFamilyFixture(
             family, pending_count=pending, gaps=gaps, failure=failure,
-        ) if family is tested_family else CompanySyncFamilyFixture(family) for family in CompanySyncFamily),
+        ) if family is tested_family else CompanySyncFamilyFixture(family) for family in selected),
         cancelled=cancelled, budget_exhausted=paused,
     )
     result = SyncData(
@@ -274,10 +275,9 @@ def test_company_terminal_reason_reaches_projection_and_cli(
 
 
 @pytest.mark.parametrize("store,path", (
-    (CompanyDownloadStore.COLLECTION, "company/raw/company_collection.sqlite3"),
-    (CompanyDownloadStore.FACTS, "company/company_facts.sqlite3"),
-    (CompanyDownloadStore.NORMALIZED, "company/company_normalized.sqlite3"),
-    (CompanyDownloadStore.INPUTS, "company/company_inputs.sqlite3"),
+    (CompanyDownloadStore.SOURCES, "company/company_sources.sqlite3"),
+    (CompanyDownloadStore.FACTS, "company/company_published.sqlite3"),
+    (CompanyDownloadStore.RETIRED_LAYOUT, "raw/company_collection.sqlite3"),
     (CompanyDownloadStore.REQUEST_JOURNAL, "company/company_sync.sqlite3"),
 ))
 def test_company_incompatible_database_is_a_failure_with_explicit_material_scope(tmp_path, monkeypatch, capsys, store, path):

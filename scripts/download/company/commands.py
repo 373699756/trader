@@ -39,7 +39,7 @@ def BuildCommands(
         options = replace(
             options,
             company_evidence_database=options.company_evidence_database or paths.company,
-            company_collection_database=options.company_collection_database or paths.company_collection,
+            company_collection_database=options.company_collection_database or paths.company_sources,
         )
     if options.action_identity == "company-resume":
         commands = (DiagnosticCommand(

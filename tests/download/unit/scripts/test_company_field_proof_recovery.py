@@ -111,7 +111,7 @@ def test_changed_frozen_scope_rejects_before_network_or_directory_creation(tmp_p
 
 def test_preparation_text_budget_expiry_stops_before_first_http_and_never_passes(tmp_path, monkeypatch):
     index, path = _scope(tmp_path)
-    CompanyDocumentFilesFixture(index.path.parent / "text").write(_TEXT)
+    CompanyDocumentFilesFixture(index.path.parent / "raw" / "text").write(_TEXT)
     with SqliteSession(index.path) as raw:
         raw.run("UPDATE disclosures SET body_retained=1")
     clock = [0.0]
@@ -146,7 +146,7 @@ def test_resume_rejects_rebound_database_before_any_source_write_or_http(tmp_pat
     directory = tmp_path / "isolated"
     _recover(index, path, directory, [], lambda _: HttpResponse(200, _PDF))
     before = index.path.read_bytes(), index.facts_path.read_bytes()
-    clone = directory / "formal" / "company_facts.sqlite3"
+    clone = directory / "company_published.sqlite3"
     clone.unlink()
     if link == "hardlink":
         os.link(index.facts_path, clone)

@@ -62,7 +62,7 @@ def _observe_snapshot_read(
         if schema_unsupported:
             _LOGGER.warning(
                 "公司正式资料结构不兼容（sqlite_schema_unsupported），已停止加载；"
-                "请先备份公司资料，在独立目录重新下载验证，确认后替换 company_facts.sqlite3 并重启。stage=%s",
+                "请先备份公司资料，在独立目录重新下载验证，确认后替换 company_published.sqlite3 并重启。stage=%s",
                 stage,
             )
         else:

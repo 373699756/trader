@@ -91,7 +91,7 @@ def test_ocr_timeout_probe_copies_local_failed_pdf_without_downloading(tmp_path,
     digest = hashlib.sha256(payload).digest()
     index.document_failure(item, "old-policy", failure, fixtures.NOW, fixtures.NOW, digest)
     raw = CompanyRawFiles(
-        index.path.parent, capacity=1024 * 1024, analysis_reserve=1024, free_reserve=1, maximum_document_bytes=1024,
+        index.path.parent / "raw", capacity=1024 * 1024, analysis_reserve=1024, free_reserve=1, maximum_document_bytes=1024,
     )
     directory = raw.directory(item)
     directory.mkdir(parents=True, exist_ok=True)

@@ -18,7 +18,7 @@ from trader.download.domain.company_evidence import CompanyDocument, StructuredC
 from trader.download.domain.company_events import CompanyDataState
 from trader.download.domain.company_financial_report import ExtractCompanyFinancialReport, IsCompanyFinancialReportTitle
 from trader.download.domain.company_source_records import CompanyFinancialSourceObservation
-from trader.download.domain.company_sync import CompanyFinancialRequestIdentity, CompanySyncRoundScope
+from trader.download.domain.company_sync import CompanyFinancialRequestIdentity, CompanySyncFamily, CompanySyncRoundScope
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
@@ -211,8 +211,7 @@ def _materials(
 
 
 def _review_financial(
-    normalized: SqliteConnection,
-    collected: SqliteConnection,
+    sources: SqliteConnection,
     documents: CompanyDocumentFiles,
     scope: CompanySyncRoundScope,
     source_scope: str,
@@ -220,10 +219,10 @@ def _review_financial(
     policy: LongResearchPolicy,
     check: Callable[[], None],
 ) -> dict[str, object]:
-    pages = _pages(normalized.run(
+    pages = _pages(sources.run(
         "SELECT page,pages,total,raw_count FROM company_round_page WHERE scope=? ORDER BY page", (source_scope,),
     ).fetchall())
-    observations = ReadRoundCompanyFinancialObservations(normalized, source_scope)
+    observations = ReadRoundCompanyFinancialObservations(sources, source_scope)
     previous_complete: set[str] = set()
     latest: dict[str, CompanyFinancialSourceObservation] = {}
     population = set(scope.codes)
@@ -255,7 +254,7 @@ def _review_financial(
     for code in sorted(review):
         check()
         item = latest[code]
-        materials, truncated = _materials(collected, documents, item, scope.cutoff, check)
+        materials, truncated = _materials(sources, documents, item, scope.cutoff, check)
         reviewed.append({
             "code": code,
             "report_date": item.financial.report_date.isoformat(),
@@ -360,27 +359,32 @@ def AuditCompanySourceQualification(
 
     databases = tuple(
         path.resolve(strict=True)
-        for path in (paths.company_sync, paths.company_normalized, paths.company_inputs, paths.company_collection, paths.company)
+        for path in (paths.company_sync, paths.company_sources, paths.company)
     )
     if len(set(databases)) != len(databases):
         raise ValueError("company_source_qualification_same_input")
     before = _fingerprints(databases)
+    if len({member[:2] for member in before[::3] if member is not None}) != len(databases):
+        raise ValueError("company_source_qualification_same_input")
     with ExitStack() as stack:
         options = SqliteConnectionOptions(read_only=True, immutable=True)
-        journal, normalized, inputs, collected, formal = (
+        journal, sources, formal = (
             stack.enter_context(SqliteSession(
                 path, options, cancel_requested=lambda: monotonic() >= deadline, sqlite_policy=sqlite_policy,
             ))
             for path in databases
         )
-        for connection in (journal, normalized, inputs, collected, formal):
+        for connection in (journal, sources, formal):
             stack.enter_context(SqliteTransaction(connection))
         round_id, cutoff_text = journal.run("SELECT round_id,cutoff FROM company_sync_round WHERE active=1").require_one()
+        plans = {row[0]: row[1] for row in journal.run(
+            "SELECT family,request_hash FROM company_sync_plan WHERE round_id=? ORDER BY position", (round_id,),
+        )}
         scope = CompanySyncRoundScope(
             tuple(row[0] for row in journal.run("SELECT code FROM company_sync_code WHERE round_id=? ORDER BY code", (round_id,))),
             datetime.fromisoformat(cutoff_text),
+            tuple(CompanySyncFamily(family) for family in plans),
         )
-        plans = {row[0]: row[1] for row in journal.run("SELECT family,request_hash FROM company_sync_plan WHERE round_id=?", (round_id,))}
         cutoff_day = scope.cutoff.date()
         oldest_day = cutoff_day - timedelta(days=365)
         financial = StructuredCompanyQuery("financial", oldest_day, cutoff_day)
@@ -397,10 +401,10 @@ def AuditCompanySourceQualification(
         if qualified is None:
             raise ValueError("company_source_qualification_publication_missing")
         financial_review = _review_financial(
-            normalized, collected, documents, scope, source_scope, round_id, policy, check,
+            sources, documents, scope, source_scope, round_id, policy, check,
         )
-        pledge_review = _review_ratios(inputs, scope, pledge, policy.pledge_thresholds[0])
-        unlock_review = _review_ratios(inputs, scope, unlock, policy.unlock_thresholds[0])
+        pledge_review = _review_ratios(sources, scope, pledge, policy.pledge_thresholds[0])
+        unlock_review = _review_ratios(sources, scope, unlock, policy.unlock_thresholds[0])
         population = set(scope.codes)
         counts = [0, 0, 0]
         for row in formal.run("SELECT code,finance_state,pledge_state,unlock_state FROM company_facts ORDER BY code"):

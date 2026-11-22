@@ -79,7 +79,7 @@ def test_local_material_inspection_verifies_text_and_compares_formal_contract_wi
     from scripts.download.company.company_field_audit import InspectCompanyFieldMaterial
     from tests.helpers.download.company.company_annual_income import _contract
 
-    index = fixtures._index(tmp_path)
+    index = fixtures._index(tmp_path, text_root=tmp_path / "raw" / "text")
     _contract(index)
     before = (index.path.read_bytes(), index.facts_path.read_bytes())
     report = InspectCompanyFieldMaterial(index.path, index.facts_path, ("contract-income",), sqlite_policy=SqlitePolicyFixture(),
@@ -118,7 +118,7 @@ def test_material_pending_fields_remain_visible_without_text_and_exclude_other_e
     from tests.helpers.download.company.company_annual_income import _contract
     from trader.download.domain.company_evidence import DisclosurePartition
 
-    index = fixtures._index(tmp_path)
+    index = fixtures._index(tmp_path, text_root=tmp_path / "raw" / "text")
     _contract(index)
     other = fixtures._disclosure("another-contract", "关于签订重大合同的公告")
     index.commit_page(DisclosurePartition("sse", other.published_at.date(), other.published_at.date()),
@@ -150,7 +150,7 @@ def test_material_inspection_does_not_count_a_previous_extraction_receipt_as_cur
     from scripts.download.company.company_field_audit import InspectCompanyFieldMaterial
     from tests.helpers.download.company.company_annual_income import _contract
 
-    index = fixtures._index(tmp_path)
+    index = fixtures._index(tmp_path, text_root=tmp_path / "raw" / "text")
     _contract(index)
     with SqliteSession(index.facts_path) as formal, SqliteTransaction(formal, immediate=True):
         formal.run("UPDATE company_input_receipt SET extraction_hash=? WHERE outcome='valid'", (b"x" * 32,))

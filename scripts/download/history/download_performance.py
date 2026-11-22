@@ -42,7 +42,7 @@ def _measure(root: Path, *, sqlite_policy: SqliteIoPolicy, preload_settings: Com
     company_policy = strategy.company_scoring
     codes = tuple(str(600000 + offset) for offset in range(4402))
     index = SQLiteCompanyFactsIndex(
-        root / "company_facts.sqlite3",
+        root / "company_published.sqlite3",
         event_policy=company_policy.events, sqlite_policy=sqlite_policy,
     )
     index.initialize()

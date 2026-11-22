@@ -95,7 +95,7 @@ def AuditCompanyFieldProofs(
 
     configuration = LoadCompanySyncConfiguration(PROJECT_ROOT)
     documents = CompanyDocumentFiles(
-        collection_path.parent / "text",
+        collection_path.parent / "raw" / "text",
         max_text_characters=configuration.extended_document_limits.max_text_characters,
         max_bytes=configuration.temporary_text_capacity_bytes,
         reserve_bytes=configuration.temporary_disk_reserve_bytes,

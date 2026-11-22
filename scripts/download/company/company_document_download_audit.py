@@ -161,7 +161,7 @@ def InspectCompanyUnreprovedFields(
         raise ValueError("company_field_annotation_targets_invalid")
     configuration = LoadCompanySyncConfiguration(TOOL_ROOT)
     documents = CompanyDocumentFiles(
-        collection_path.parent / "text", max_text_characters=configuration.extended_document_limits.max_text_characters,
+        collection_path.parent / "raw" / "text", max_text_characters=configuration.extended_document_limits.max_text_characters,
         max_bytes=configuration.temporary_text_capacity_bytes, reserve_bytes=configuration.temporary_disk_reserve_bytes,
     )
     observations: list[dict[str, object]] = []
@@ -453,9 +453,9 @@ def _audit_company_field_proof_recovery(
     text_options = {"max_text_characters": configuration.extended_document_limits.max_text_characters,
                     "max_bytes": configuration.temporary_text_capacity_bytes,
                     "reserve_bytes": configuration.temporary_disk_reserve_bytes}
-    source_text = CompanyDocumentFiles(collection_path.parent / "text", **text_options)
+    source_text = CompanyDocumentFiles(collection_path.parent / "raw" / "text", **text_options)
     recovered_text = CompanyDocumentFiles(directory / "raw" / "text", **text_options)
-    collection, formal_path = directory / "raw" / "company_collection.sqlite3", directory / "formal" / "company_facts.sqlite3"
+    collection, formal_path = directory / "company_sources.sqlite3", directory / "company_published.sqlite3"
     for path in (collection, formal_path):
         for suffix in ("", "-wal", "-shm", ".sha256"):
             _recovery_output_path(Path(f"{path}{suffix}"), database=True)

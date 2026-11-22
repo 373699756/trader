@@ -3,12 +3,13 @@
 from dataclasses import replace
 from datetime import date, timedelta
 import json
+from pathlib import Path
 
 import pytest
 
 from tests.helpers.download.company import company_evidence as fixtures
 from tests.helpers.download.company.company_annual_income import _contract
-from tests.helpers.download.company_resources import SQLiteCompanyEvidenceReaderFixture, SQLiteCompanyFactsIndexFixture
+from tests.helpers.download.company_resources import CompanyDocumentFilesFixture, SQLiteCompanyEvidenceReaderFixture, SQLiteCompanyFactsIndexFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 from trader.download.application.company_financial_producer import BuildCompanyFinancialRoundQuery, CompanyFinancialProducer
 from trader.download.application.company_sync import RunCompanySyncRound
@@ -25,7 +26,10 @@ from trader.download.infra.company_field_publication import CompanyFieldProofRul
 from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity
 from trader.download.infra.company_facts_protocol import DecodeCompanyLabel, EVIDENCE_SOURCES, RequireCompanyTime
 from trader.download.infra.company_financial_observations import ReadCommittedCompanyFinancialReports, ReadCompanyFinancialObservations
+from trader.download.infra.company_material_index import SQLiteCompanyMaterialIndex
 from trader.download.infra.company_normalized_index import CompanyNormalizationBaseline, SQLiteCompanyNormalizedIndex
+from trader.download.infra.company_raw_files import CompanyRawFiles
+from trader.download.infra.company_sync_inputs import SQLiteCompanySyncInputStore
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
 from trader.infra.sqlite_publication import PublishSqliteFile, SqlitePublicationError
 
@@ -80,6 +84,52 @@ def _observation(*, code="600001", at=_NOTICE, cutoff=_CUTOFF, period=date(2026,
 
 def _page(*observations, page=1, pages=1, total=None):
     return CompanyFinancialSourcePage(page, pages, len(observations) if total is None else total, len(observations), tuple(observations), "a" * 64)
+
+
+def test_working_source_writes_preserve_the_formal_publication_seal(tmp_path):
+    baseline = _baseline(tmp_path / "source-baseline")
+    index, facts = _index(tmp_path / "candidate", baseline)
+    raw_root = tmp_path / "materials"
+    raw_files = CompanyRawFiles(
+        raw_root,
+        capacity=10_000_000,
+        analysis_reserve=1_000_000,
+        free_reserve=1000,
+        maximum_document_bytes=1024,
+    )
+    material = SQLiteCompanyMaterialIndex(
+        index.path,
+        facts=facts,
+        documents=CompanyDocumentFilesFixture(raw_root / "text"),
+        event_policy=fixtures.CompanyEventPolicy(),
+        sqlite_policy=SqlitePolicyFixture(),
+        raw_files=raw_files,
+    )
+    inputs = SQLiteCompanySyncInputStore(index.path, sqlite_policy=SqlitePolicyFixture())
+    material.initialize()
+    index.validate_existing()
+    inputs.validate_existing()
+    material.set_population(_CODES)
+    disclosure = fixtures._disclosure("separate-raw-dir", "公司回购公告")
+    original = raw_files.directory(disclosure) / "download.part"
+    original.parent.mkdir(parents=True)
+    original.write_bytes(b"%PDF-fixture")
+    document = raw_files.complete(disclosure, original)
+    material.document_stage(disclosure, "downloaded")
+    inputs.freeze_pledge_day("scope", _NOTICE.date(), _CUTOFF)
+    index.accept(_QUERY, _page(_observation()), _CODES, _CUTOFF)
+
+    assert material.raw_root == raw_root
+    assert inputs.pledge_day("scope") == _NOTICE.date()
+    assert index.latest_financial_observations(_QUERY, _CODES, _CUTOFF) == (_observation(),)
+    assert not Path(f"{index.path}.sha256").exists()
+    assert Path(f"{facts.path}.sha256").is_file()
+    facts.verify_publication()
+    with SqliteSession(index.path) as connection:
+        assert connection.run("SELECT code FROM company_population").require_one()[0] == _CODES[0]
+        assert connection.run("SELECT path FROM document_tasks").require_one()[0] == str(document.path.relative_to(raw_root))
+        assert connection.run("SELECT name FROM sqlite_schema WHERE name IN ('annual_income', 'structured_progress', 'ratios')").fetchall() == []
+    assert SQLiteCompanyEvidenceReaderFixture(facts.path).read(_CODES) == baseline.facts
 
 
 def test_financial_batch_coverage_counts_latest_observations_separately_from_pages_and_formal_facts(tmp_path):
@@ -431,7 +481,7 @@ def test_explicit_replay_rejects_unsealed_source_before_text_or_new_candidate_wr
 
 def test_normal_company_entrypoint_dispatches_a_finite_round_with_source_gaps(monkeypatch):
     from trader import bootstrap
-    from trader.download.domain.company_sync import CompanySyncFamily
+    from trader.download.domain.company_sync import COMPANY_SYNC_FAMILIES
     from tests.helpers.download.company_round import CompanySyncFamilyFixture, CompanySyncRoundFixture
     from tests.helpers.shared.configuration import RuntimeSettingsFixture
     from tests.helpers.shared.reference_fixtures import PreparedFixture
@@ -439,19 +489,19 @@ def test_normal_company_entrypoint_dispatches_a_finite_round_with_source_gaps(mo
     settings = RuntimeSettingsFixture()
     reference = PreparedFixture(_CUTOFF)
     expected = CompanySyncRoundFixture(_CUTOFF, families=tuple(
-        CompanySyncFamilyFixture(family, gaps=("source_qualification_pending",)) for family in CompanySyncFamily
+        CompanySyncFamilyFixture(family, gaps=("source_qualification_pending",)) for family in COMPANY_SYNC_FAMILIES
     ))
     monkeypatch.setattr(bootstrap, "LoadRuntimeSettings", lambda _: settings)
     monkeypatch.setattr(bootstrap, "_prepare_reference", lambda *args, **kwargs: reference)
     calls = []
 
     def execute(actual_settings, actual_scope, **kwargs):
-        calls.append((actual_settings, actual_scope.codes, kwargs["fill"]))
+        calls.append((actual_settings, actual_scope.codes, actual_scope.families))
         return expected
 
     monkeypatch.setattr(bootstrap, "ExecuteCompanySync", execute)
     result = bootstrap.ExecuteSync(settings.config_path, "company")
-    assert calls == [(settings, tuple(item.code for item in reference.eligible_universe), False)]
+    assert calls == [(settings, tuple(item.code for item in reference.eligible_universe), COMPANY_SYNC_FAMILIES)]
     assert result.tasks[0].company is expected and result.tasks[0].status == "pending"
     assert result.exit_code == 1
 

@@ -44,11 +44,11 @@ _TEXT = (
 def _sources(root):
     incoming = root / "input"
     incoming.mkdir()
-    raw = incoming / "raw" / "company_collection.sqlite3"
+    raw = incoming / "company_sources.sqlite3"
     scratch = incoming / "scratch.sqlite3"
     policy = fixtures.CompanyEventPolicy()
     index = CompanyResearchFixture(
-        raw, facts_path=scratch, documents=CompanyDocumentFilesFixture(raw.parent / "text"),
+        raw, facts_path=scratch, documents=CompanyDocumentFilesFixture(raw.parent / "raw" / "text"),
         listings=(CompanyListing("600001", _AT.date() - timedelta(days=365)),),
     )
     index.initialize()
@@ -61,8 +61,10 @@ def _sources(root):
     assert index.commit_document(item, extraction, _AT)
     with SqliteSession(raw, sqlite_policy=_IO) as collected:
         collected.run("INSERT OR IGNORE INTO company_population VALUES('600001')")
+        collected.run("INSERT INTO company_normalization_seed VALUES(1,?,?,?,?,1,?)",
+            (b"o" * 32, b"e" * 32, EncodeCompanyTime(_AT), "prior-source-baseline", b"r" * 32))
     # Both sources use the current structure; replay never upgrades a database.
-    source = incoming / "company_facts.sqlite3"
+    source = incoming / "company_published.sqlite3"
     at = EncodeCompanyTime(_AT)
     with SqliteSession(source) as connection:
         EnsureSqliteSchema(connection, COMPANY_FACTS_SCHEMA, allow_create=True)
@@ -169,7 +171,7 @@ def test_real_publication_proves_local_fields_and_second_restart_reuses_them(tmp
     assert report["round_2_risk_comparison"]["all_old_risks_and_evidence_preserved"]
     assert report["first_publication_hash"] == report["second_publication_hash"]
     assert (raw.read_bytes(), facts.read_bytes(), Path(f"{facts}.sha256").read_bytes()) == before
-    target = directory / "facts" / "company_facts.sqlite3"
+    target = directory / "company_published.sqlite3"
     reader = SQLiteCompanyEvidenceReader(target, event_policy=policy, sqlite_policy=_IO)
     fields = reader.read_fields(("600001",)).results
     assert {item.field for item in fields} == {"actual_pct", "repurchase_purpose"}
@@ -184,7 +186,7 @@ def test_real_publication_proves_local_fields_and_second_restart_reuses_them(tmp
 
 def test_missing_local_material_is_counted_and_never_downloaded(tmp_path, monkeypatch):
     raw, facts, policy = _sources(tmp_path)
-    for path in (raw.parent / "text").glob("*/*.txt.gz"):
+    for path in (raw.parent / "raw" / "text").glob("*/*.txt.gz"):
         path.unlink()
     monkeypatch.setattr(socket, "create_connection", _no_network)
     report = _run(raw, facts, tmp_path / "replay", policy)
@@ -267,7 +269,7 @@ def test_global_old_risks_and_unselected_facts_are_checked_independently_of_vali
 
 def test_explicit_same_hash_text_is_recovered_only_in_the_copy_then_normally_published(tmp_path, monkeypatch):
     raw, facts, policy = _sources(tmp_path)
-    for path in (raw.parent / "text").glob("*/*.txt.gz"):
+    for path in (raw.parent / "raw" / "text").glob("*/*.txt.gz"):
         path.unlink()
     supplied = tmp_path / "recovered.txt"
     supplied.write_text(_TEXT, encoding="utf-8")
@@ -280,13 +282,13 @@ def test_explicit_same_hash_text_is_recovered_only_in_the_copy_then_normally_pub
     assert report["original_valid_receipts_unchanged"] and report["second_fields_and_publication_unchanged"]
     assert report["second_new_field_attempted"] == report["network_requests"] == report["source_data_writes"] == 0
     assert (raw.read_bytes(), facts.read_bytes(), Path(f"{facts}.sha256").read_bytes()) == before
-    assert not tuple((raw.parent / "text").glob("*/*.txt.gz"))
+    assert not tuple((raw.parent / "raw" / "text").glob("*/*.txt.gz"))
 
 
 @pytest.mark.parametrize("guard", ("text", "receipt", "revision"))
 def test_recovered_text_requires_exact_current_hash_and_formal_receipt(tmp_path, guard):
     raw, facts, policy = _sources(tmp_path)
-    for path in (raw.parent / "text").glob("*/*.txt.gz"):
+    for path in (raw.parent / "raw" / "text").glob("*/*.txt.gz"):
         path.unlink()
     supplied = tmp_path / "recovered.txt"
     supplied.write_text(_TEXT + ("different" if guard == "text" else ""), encoding="utf-8")
@@ -322,11 +324,11 @@ def test_external_nonempty_wal_change_cannot_be_reported_unchanged(tmp_path, mon
     # This writer represents the independent live producer, after the audit's
     # consistent collection snapshot. It is not a replay-owned write path.
     with SqliteSession(raw, sqlite_policy=_IO) as producer:
-        producer.run("INSERT INTO component_checks VALUES('external','before',?,'')", (_AT.isoformat(),))
+        producer.run("INSERT INTO company_dirty_codes VALUES('600009')")
 
-        def backup_then_external_commit(*args):
-            result = backup(*args)
-            producer.run("INSERT INTO component_checks VALUES('external','after',?,'')", (_AT.isoformat(),))
+        def backup_then_external_commit(*args, **kwargs):
+            result = backup(*args, **kwargs)
+            producer.run("INSERT INTO company_dirty_codes VALUES('600010')")
             return result
 
         monkeypatch.setattr(replay, "BackupCompanyCollection", backup_then_external_commit)
@@ -387,7 +389,7 @@ def test_source_context_and_text_path_must_be_unambiguous(tmp_path, problem):
             connection.run("UPDATE company_facts SET announcement_start_date=?", (EncodeCompanyDate(_AT.date()),))
         PublishSqliteFile(facts, sqlite_policy=_IO)
     else:
-        text_path, = (raw.parent / "text").glob("*/*.txt.gz")
+        text_path, = (raw.parent / "raw" / "text").glob("*/*.txt.gz")
         outside = tmp_path / "untrusted.gz"
         text_path.rename(outside)
         text_path.symlink_to(outside)

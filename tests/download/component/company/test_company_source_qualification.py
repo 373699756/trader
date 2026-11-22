@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts.download.company.company_field_audit import AuditCompanyFields
 from scripts.download.company.company_source_qualification import AuditCompanySourceQualification, ProjectCompanySourceQualification
 from tests.download.component.company.test_company_normalized_round import _CUTOFF, _NOTICE, _observation, _page
 from tests.helpers.download.company.company_evidence import _disclosure, _extraction
@@ -22,6 +23,7 @@ from trader.download.domain.company_sync import (
 )
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
+from trader.download.infra.company_facts_protocol import EncodeCompanyDate
 from trader.download.infra.company_material_index import SQLiteCompanyMaterialIndex
 from trader.download.infra.company_normalized_index import SQLiteCompanyNormalizedIndex
 from trader.download.infra.company_sync_inputs import SQLiteCompanySyncInputStore
@@ -29,6 +31,7 @@ from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJou
 from trader.download.infra.company_sync_runtime import CompanySyncRuntime
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.settings.data_paths import DataPaths
+from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
 from trader.recommendation.domain.market.research import LongResearchPolicy
 
 _CODES = ("600001", "600002")
@@ -41,7 +44,7 @@ class _UnusedSource:
 
 def _inputs(tmp_path: Path):
     paths = DataPaths(tmp_path)
-    paths.company_collection.parent.mkdir(parents=True)
+    paths.company_sources.parent.mkdir(parents=True)
     sqlite_policy = SqlitePolicyFixture()
     policy = CompanyEventPolicyFixture()
     facts = SQLiteCompanyFactsIndex(paths.company, event_policy=policy, sqlite_policy=sqlite_policy)
@@ -49,14 +52,14 @@ def _inputs(tmp_path: Path):
         paths.company_documents, max_text_characters=100_000, max_bytes=1_000_000, reserve_bytes=1,
     )
     material = SQLiteCompanyMaterialIndex(
-        paths.company_collection,
+        paths.company_sources,
         facts=facts,
         documents=documents,
         event_policy=policy,
         sqlite_policy=sqlite_policy,
     )
     normalized = SQLiteCompanyNormalizedIndex(
-        paths.company_normalized,
+        paths.company_sources,
         facts,
         event_policy=policy,
         sqlite_policy=sqlite_policy,
@@ -65,7 +68,7 @@ def _inputs(tmp_path: Path):
     journal = SQLiteCompanySyncRoundJournal(
         paths.company_sync, sqlite_policy=sqlite_policy, publication_identity=lambda: "",
     )
-    inputs = SQLiteCompanySyncInputStore(paths.company_inputs, sqlite_policy=sqlite_policy)
+    inputs = SQLiteCompanySyncInputStore(paths.company_sources, sqlite_policy=sqlite_policy)
     source = _UnusedSource()
     runtime = CompanySyncRuntime(
         normalized,
@@ -79,7 +82,6 @@ def _inputs(tmp_path: Path):
         financial_source=source,
         ratio_source=source,
         annual_source=source,
-        news_source=source,
         official_source=source,
     )
     runtime.initialize(_CODES, _CUTOFF)
@@ -143,7 +145,7 @@ def _audit(paths, documents, unlock_days):
 
 def test_source_qualification_reads_original_candidates_without_admitting_observations(tmp_path):
     paths, documents, unlock_days = _inputs(tmp_path)
-    databases = (paths.company, paths.company_sync, paths.company_normalized, paths.company_inputs, paths.company_collection)
+    databases = (paths.company, paths.company_sync, paths.company_sources)
     before = [path.read_bytes() for path in databases]
     audit = _audit(paths, documents, unlock_days)
     assert audit["network_requests"] == audit["source_data_writes"] == 0
@@ -170,6 +172,35 @@ def test_source_qualification_reads_original_candidates_without_admitting_observ
 
 def test_source_qualification_refuses_uncheckpointed_inputs(tmp_path):
     paths, documents, unlock_days = _inputs(tmp_path)
-    paths.company_normalized.with_name("company_normalized.sqlite3-wal").write_bytes(b"pending transaction")
+    paths.company_sources.with_name("company_sources.sqlite3-wal").write_bytes(b"pending transaction")
     with pytest.raises(ValueError, match="company_source_qualification_uncheckpointed_database"):
         _audit(paths, documents, unlock_days)
+
+
+def test_field_audit_compares_source_observations_without_certifying_ratio_coverage(tmp_path):
+    paths, _, _ = _inputs(tmp_path)
+    policy = SqlitePolicyFixture()
+    pledge_day = _CUTOFF.date() - timedelta(days=1)
+    unlock_day = _CUTOFF.date() + timedelta(days=1)
+    with (
+        SqliteSession(paths.company_sources, sqlite_policy=policy) as sources,
+        SqliteSession(paths.company, sqlite_policy=policy) as formal,
+    ):
+        sources.run("INSERT INTO company_ratio_observation VALUES(?,?,?,?,?)",
+            ("prior-scope", "pledge", _CODES[0], pledge_day.isoformat(), 15.0))
+        sources.run("UPDATE company_ratio_observation SET ratio=1.503 WHERE component='unlock'")
+        formal.run("UPDATE company_facts SET pledge_pct=15.0,pledge_date=? WHERE code=?",
+            (EncodeCompanyDate(pledge_day), _CODES[0]))
+        formal.run("UPDATE company_facts SET pledge_pct=0,pledge_date=?,unlock_state=1 WHERE code=?",
+            (EncodeCompanyDate(pledge_day), _CODES[1]))
+        formal.run("INSERT INTO company_unlock VALUES(?,?,?)", (_CODES[1], EncodeCompanyDate(unlock_day), 1.5))
+    options = SqliteConnectionOptions(read_only=True)
+    with (
+        SqliteSession(paths.company_sources, options, sqlite_policy=policy) as sources,
+        SqliteSession(paths.company, options, sqlite_policy=policy) as formal,
+    ):
+        audit = AuditCompanyFields(formal, paths.company_sources, raw=sources, observed_at=_CUTOFF)
+    agreement = audit["source_agreement"]
+    assert (agreement["pledge_rows"], agreement["pledge_observation_matches"], agreement["pledge_without_matching_observation"]) == (2, 1, 1)
+    assert (agreement["unlock_rows"], agreement["unlock_observation_matches"], agreement["unlock_without_matching_observation"]) == (1, 0, 1)
+    assert "company_field_integrity_failed" not in audit["findings"]

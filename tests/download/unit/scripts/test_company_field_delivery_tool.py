@@ -201,7 +201,7 @@ def test_material_conclusions_are_bound_to_the_exact_current_source_version(tmp_
     from trader.download.domain.company_field_results import CompanyFieldEvidence
     from trader.infra.sqlite_connection import SqliteSession
 
-    index = fixtures._index(tmp_path)
+    index = fixtures._index(tmp_path, text_root=tmp_path / "raw" / "text")
     _contract(index)
     with SqliteSession(index.path) as raw, SqliteSession(index.facts_path) as formal:
         row = raw.run("SELECT record_hash,body_hash,published_at FROM disclosures WHERE source_key='contract-income'").require_one()

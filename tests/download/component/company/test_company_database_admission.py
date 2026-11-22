@@ -18,7 +18,9 @@ from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
     ("collection", "DROP TABLE company_material_dependencies"),
     ("collection", "DROP TABLE company_field_repairs"),
     ("collection", "DROP TABLE document_contract_link_rules"),
-    ("collection", "DROP TABLE annual_income"),
+    ("collection", "DROP TABLE document_tasks"),
+    ("collection", "DROP TABLE company_annual_income_observation"),
+    ("collection", "DROP TABLE company_round_page"),
     ("collection", "DROP TABLE download_failure"),
     ("collection", "DROP INDEX disclosure_query_source_rows"),
     ("collection", "ALTER TABLE document_retries RENAME COLUMN ocr_policy_id TO removed_policy"),
@@ -51,7 +53,7 @@ def test_incompatible_pair_is_rejected_before_initialization_or_file_recovery(tm
 def test_invalid_collection_does_not_initialize_an_empty_formal_file(tmp_path):
     index = fixtures._index(tmp_path)
     with SqliteSession(index.path) as connection:
-        connection.run("DROP TABLE annual_income")
+        connection.run("DROP TABLE document_tasks")
     # Represent an uninitialized file, rather than an older structure to upgrade.
     index.facts_path.write_bytes(b"")
     before = index.path.read_bytes()

@@ -11,15 +11,15 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from scripts.download.company.company_field_replay import BackupCompanyCollection
 from scripts.download.company.output_paths import RequireIsolatedReplay
 from trader.bootstrap import BuildSqlitePolicy, CreateSyncProgress, ExecuteCompanySync, LoadStrategySettings
 from trader.download.domain.company_sync import CompanySyncRoundScope
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
-from trader.download.infra.company_evidence_sql import SCHEMA
 from trader.infra.settings import RuntimeSettings
 from trader.infra.settings.data_paths import DataPaths
-from trader.infra.sqlite_connection import EnsureSqliteSchema, SqliteConnectionOptions, SqliteSession
+from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
 
 
 def PrepareCompanySyncCliAudit(
@@ -83,7 +83,7 @@ def AuditCompanySyncRounds(
         (policy_root / "config/download.json").write_text(json.dumps(configuration, ensure_ascii=False), encoding="utf-8")
         isolated = replace(isolated, project_root=policy_root)
     if collection_snapshot is not None:
-        _copy_directory_metadata(settings, collection_snapshot, isolated.data_paths.company_collection, directory)
+        _copy_directory_metadata(settings, collection_snapshot, isolated.data_paths.company_sources, directory)
     scope = CompanySyncRoundScope(tuple(sorted(codes)), datetime.now(ZoneInfo("Asia/Shanghai")))
     observations: list[dict[str, object]] = []
     for number in (1, 2):
@@ -93,7 +93,7 @@ def AuditCompanySyncRounds(
             return time.monotonic() >= stop_at
         result = ExecuteCompanySync(
             isolated, scope, cancel_requested=cancelled,
-            report=CreateSyncProgress(), fill=False, admit_observations=True,
+            report=CreateSyncProgress(), admit_observations=True,
         )
         observations.append({
             "invocation": number, "round_id": result.round_id, "scope_identity": result.scope.identity,
@@ -124,14 +124,13 @@ def _copy_directory_metadata(settings: RuntimeSettings, source: Path, target: Pa
     if not source.is_absolute() or source.is_symlink():
         raise ValueError("company_sync_audit_source_invalid")
     RequireIsolatedReplay(directory, (source.parent,))
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with SqliteSession(source, SqliteConnectionOptions(read_only=True), sqlite_policy=BuildSqlitePolicy(settings)) as original:
-        EnsureSqliteSchema(original, SCHEMA, exact=True)
-        if original.run("SELECT 1 FROM disclosures WHERE body_retained=1 LIMIT 1").fetchone() is not None or original.run(
+    policy = BuildSqlitePolicy(settings)
+    if not BackupCompanyCollection(source, target, policy, time.monotonic() + 15, material_only=True):
+        raise ValueError("company_sync_audit_source_changed_during_copy")
+    with SqliteSession(target, SqliteConnectionOptions(read_only=True), sqlite_policy=policy) as snapshot:
+        if snapshot.run("SELECT 1 FROM disclosures WHERE body_retained=1 LIMIT 1").fetchone() is not None or snapshot.run(
             "SELECT 1 FROM document_tasks WHERE path IS NOT NULL LIMIT 1").fetchone() is not None:
             raise ValueError("company_sync_audit_requires_directory_only_sample")
-        with SqliteSession(target, sqlite_policy=BuildSqlitePolicy(settings)) as replica:
-            original.backup_to(replica, deadline=time.monotonic() + 15, monotonic=time.monotonic)
 
 
 def AuditCompanySyncRestart(
@@ -144,7 +143,7 @@ def AuditCompanySyncRestart(
     RequireIsolatedReplay(directory, (settings.project_root, settings.data_paths.root, settings.runtime_dir))
     isolated = replace(settings, data_paths=DataPaths(directory / "data"), runtime_dir=directory / "runtime")
     policy = BuildSqlitePolicy(isolated)
-    reader = SQLiteCompanyEvidenceReader(isolated.data_paths.company_published,
+    reader = SQLiteCompanyEvidenceReader(isolated.data_paths.company,
         event_policy=LoadStrategySettings(isolated.strategy_config_path).company_scoring.events, sqlite_policy=policy)
     journal = SQLiteCompanySyncRoundJournal(isolated.data_paths.company_sync, sqlite_policy=policy,
         publication_identity=reader.publication_identity)
@@ -158,10 +157,10 @@ def AuditCompanySyncRestart(
         or before_calls < active.max_source_calls
     ):
         raise ValueError("company_sync_restart_audit_cutoff_invalid")
-    requested_scope = scope if requested_cutoff is None else CompanySyncRoundScope(scope.codes, requested_cutoff, scope.families)
+    requested_scope = CompanySyncRoundScope(scope.codes, requested_cutoff or scope.cutoff)
     stop_at = time.monotonic() + seconds
     result = ExecuteCompanySync(isolated, requested_scope, cancel_requested=lambda: time.monotonic() >= stop_at,
-        report=CreateSyncProgress(), fill=False, admit_observations=True)
+        report=CreateSyncProgress(), admit_observations=True)
     calls = tuple(item.source_calls for item in result.families)
     after_calls = sum(value for value in calls if value is not None) if len(calls) == len(scope.families) and all(value is not None for value in calls) else None
     return {

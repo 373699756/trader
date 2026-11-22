@@ -53,7 +53,7 @@ ST状态同时保留来源、检查时间和发布身份。仅凭unknown或未�
 
 下表中其余资料在第2层ST及其他静态资格通过后才预加载，并在首轮采集前完成；不是第1层先把所有股票资料读完。
 
-来源：证券/ST取自 `data/market/reference/company_st.sqlite3`；日历按已发布参考及历史身份读取，行业采用已发布当前分类，训练每轮固定同一份最新有效映射；历史来自 `data/market/history/catalog.sqlite3` 与年度 `prices_<year>.sqlite3`；公司资料来自 `data/company/company_facts.sqlite3`。模型来自 `data/training/models/<档位>/<策略>/model.json`、`metadata.json`，不是数据库列。配置来自 `config/runtime.json` 及b第7章列出的各业务JSON文件。上述路径以 `data_dir=data` 举例。
+证券和ST取自 `data/market/reference/company_st.sqlite3`。日历按已发布参考及历史身份读取，行业采用已发布当前分类，训练每轮固定同一份最新有效映射。历史来自 `data/market/history/catalog.sqlite3` 与年度 `prices_<year>.sqlite3`，公司资料来自 `data/company/company_published.sqlite3`。模型来自 `data/training/models/<档位>/<策略>/model.json` 和 `metadata.json`。配置来自 `config/runtime.json` 及b第7章列出的各业务JSON文件。上述路径以 `data_dir=data` 举例。
 
 | 加载内容 | 来源 | 保留什么 | 不做什么 |
 | --- | --- | --- | --- |
@@ -238,7 +238,7 @@ flowchart TD
 
 以下辅助字段也要列清用途，不能因为“程序有算”就当作新增生产权重：
 
-来源：历史输入来自 `data/market/history/prices_<year>.sqlite3`，公司输入来自 `data/company/company_facts.sqlite3`，实时输入来自本轮报价/分钟；新闻取自有来源和时间的新闻证据。字段定义见 `config/features.json`，转换参数以 `config/scoring.json` 及实际消费者为准。它们是程序计算/研究字段，不表示存在一张同名数据库表。
+历史输入来自 `data/market/history/prices_<year>.sqlite3`，公司输入来自 `data/company/company_published.sqlite3`，实时输入来自本轮报价和分钟数据。新闻使用有来源和时间的独立研究证据。字段定义见 `config/features.json`，转换参数见 `config/scoring.json` 及实际消费者。
 
 | 字段 | 中文说明/来源与计算 | 作用和缺失 |
 | --- | --- | --- |
@@ -262,7 +262,7 @@ flowchart TD
 
 ### 6.2 公司字段怎样进入荐股
 
-来源：`data/company/company_facts.sqlite3` 的 `company_facts` 提供财务、质押和覆盖；`company_unlock` 提供解禁；`company_risk_event`、`company_reduction_plan` 及证据表提供风险；`company_positive_event`、里程碑和证据表提供利好。下表风险等级和评分值由这些事实派生，使用 `config/filter.json`、`config/risk.json`、`config/scoring.json` 的相应规则；它们不一定是物理列名。
+`data/company/company_published.sqlite3` 的 `company_facts` 提供财务、质押和覆盖，`company_unlock` 提供解禁。`company_risk_event`、`company_reduction_plan` 及证据表提供风险，`company_positive_event`、里程碑和证据表提供利好。下表风险等级和评分值由这些事实按 `config/filter.json`、`config/risk.json`、`config/scoring.json` 的规则计算。
 
 | 评分字段/事实 | 来自哪里 | 生效层 | 含义和缺失处理 |
 | --- | --- | --- | --- |

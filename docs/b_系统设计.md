@@ -162,7 +162,7 @@ flowchart TD
 | 完整历史目录和年库 | `data/market/history/catalog.sqlite3`、`prices_<year>.sqlite3` | d 第3、8章 | 下载批写，训练按日期顺序读，启动按窗口读 |
 | 各档行情窗口 | 同一已发布年度历史 | d 第3、4章 | 按需读取配对记录，不另写行情库 |
 | 证券、ST、行业 | `data/market/reference/company_st.sqlite3`、`industry.sqlite3` | d 第2、8章 | 手动更新、启动批量读取 |
-| 公司采集与正式事实 | `data/company/raw/company_collection.sqlite3`、`company_facts.sqlite3` | d 第5、8章 | 采集账本和轻量正式事实分开 |
+| 公司采集与正式事实 | `data/company/company_sources.sqlite3`、`company_published.sqlite3`、`company_sync.sqlite3` | d 第5、8章 | 来源观测与材料、正式事实、请求账本分别存储 |
 | 样本与模型 | `data/training/` | e 第3、7章 | 身份固定、有界批读、各档双头发布 |
 | 训练到期与提醒 | `data/training/maintenance.sqlite3` | e 第3.7节 | 训练owner独立事务、同日提醒first-wins；历史catalog只读，不随历史重排复制 |
 | 冻结、序号、研究 | `data/recommendation/<profile>/`、`data/research/<profile>/` | c 第12章、e 第8章 | 追加正式事实、按日期查询、研究隔离 |
@@ -187,7 +187,7 @@ flowchart TD
 
 每张表必须写清用途、唯一写入者、全部读者、主键、索引、事务、发布边界、保留范围和预计读写量。每列按下表逐项说明，不允许“用于业务”“相关数据”等空话。
 
-下面是字段说明模板。示例来自 `data/company/company_facts.sqlite3` 的 `company_facts` 表；这里的 `published_at` 是本地正式快照发布时间，财报原披露时间是另一列 `disclosed_at`。
+下面是字段说明模板。示例来自 `data/company/company_published.sqlite3` 的 `company_facts` 表。`published_at` 是本地正式快照发布时间，`disclosed_at` 是财报原披露时间。
 
 | 列名 | 中文含义 | 类型和单位 | 来源及原始字段 | 空值含义 | 更新比较规则 | 荐股层/训练用途 | 写入与读取代码 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -203,7 +203,7 @@ flowchart TD
 | 历史发布/年度价格 | catalog与prices_<year>.sqlite3 → ReadPublishedHistoryUseCase、HistoryTrainingRow/Point；A共享预载、C共享历史fanout | 固定snapshot/revision/sequence，取消与只读名单在解码前生效；不另建子集manifest；d3/8、e3.1及3.4 |
 | 独立短窗 | daily_window.sqlite3 → 同一历史只读端口的短窗adapter → A启动历史投影 | 原始/前复权配对、成员和发布凭据独立；不借完整历史断点，不在运行期补历史；d4/6.1 |
 | 行业 | industry.sqlite3 → CurrentIndustryCache → A的PublishedReferences展示／模型路由；组合根另冻结CurrentIndustrySnapshot → C四档全历史分组 | 当前映射、缺口、收到／刷新期限及原件凭据各保留含义；最新映射用于正常训练，不冒充历史当时分类。历史点时研究另验，旧发布不回写；d2.5、c7及e3.1 |
-| 公司正式事实 | company_facts.sqlite3 → CompanyEvidenceReadPort/CompanyFacts → PublishedCompanyResearch内存投影 → A过滤/评分/风险 | 采集库、文件/PDF/OCR不是正式评分输入；未知不填无风险，披露日与本地published_at不同；d5.4/5.9/5.10、c6/16.4 |
+| 公司正式事实 | company_published.sqlite3 → CompanyEvidenceReadPort/CompanyFacts → PublishedCompanyResearch内存投影 → A过滤/评分/风险 | 评分使用正式事实，保留未知状态及实际披露时点。见d5.4/5.9/5.10、c6/16.4。 |
 | 模型/样本 | C的封存samples.sqlite3/complete.json及双头model.json → 严格profile加载 → A模型排序/净效用/动作门 | V1/V5独立排序，V2/V3仍local_score；数值重放、质量、收益与实际采用分别取证；e3.4–3.6/7.1、c7–12 |
 | 实时报价/分钟 | A行情adapter → 不可变批次 → 特征/横截面/四档决策 → 只读快照/HTTP/SSE | 固定同轮输入，正常轮不访问业务数据库；Long独立、旧结果保留，不能拿启动查询替代运行轮观测；c1/4/13、b8 |
 | SQLite页缓存/mmap | 公共sqlite.json → SqliteIoPolicy → download/荐股已有连接边界；训练样本连接采用training.json.resources.samples的独立设置 | 技术primitive不成为第二业务owner；保留样本独立作用域，不把纯I/O参数写成模型语义；b7.2、e6.2 |

@@ -31,7 +31,7 @@ from trader.download.infra.company_disclosure_queries import (
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_document_recovery import RepairCompanyDocumentFiles
 from trader.download.infra.company_material_cleanup import ReleaseCompanyMaterialFiles
-from trader.download.infra.company_evidence_sql import SCHEMA
+from trader.download.infra.company_source_schema import COMPANY_SOURCE_SCHEMA
 from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
 from trader.download.infra.company_field_recovery import RecoverRequiredCompanyText
 from trader.download.infra.company_link_codec import EncodeCompanyLink
@@ -63,6 +63,7 @@ class SQLiteCompanyMaterialIndex:
             raise ValueError("company_material_paths_must_differ")
         self.path, self._facts, self.facts_path = path, facts, facts.path
         self._documents, self._raw_files = documents, raw_files
+        self.raw_root = documents.root.parent
         self._event_policy, self._sqlite_policy, self._cancel_requested = event_policy, sqlite_policy, cancel_requested
         self._io_budget = io_budget
 
@@ -81,7 +82,7 @@ class SQLiteCompanyMaterialIndex:
         self._check_cancelled()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
-            EnsureSqliteSchema(connection, SCHEMA, allow_create=True, exact=True)
+            EnsureSqliteSchema(connection, COMPANY_SOURCE_SCHEMA, allow_create=True, exact=True)
             if connection.run("PRAGMA journal_mode=WAL").require_one()[0] != "wal":
                 raise RuntimeError("company_material_journal_unavailable")
             with SqliteTransaction(connection, immediate=True):
@@ -95,7 +96,7 @@ class SQLiteCompanyMaterialIndex:
     def validate_existing(self) -> None:
         if self.path.exists():
             with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
-                EnsureSqliteSchema(connection, SCHEMA, exact=True)
+                EnsureSqliteSchema(connection, COMPANY_SOURCE_SCHEMA, exact=True)
 
     def clean_material(self, cutoff: datetime) -> None:
         """Run physical maintenance independently of any formal publication."""
@@ -565,7 +566,7 @@ class SQLiteCompanyMaterialIndex:
                 "INSERT INTO document_tasks(source,source_key,record_hash,stage,path,payload_hash,size) VALUES(?,?,?,?,?,?,?) "
                 "ON CONFLICT(source,source_key,record_hash) DO UPDATE SET stage=excluded.stage,"
                 "path=COALESCE(excluded.path,path),payload_hash=COALESCE(excluded.payload_hash,payload_hash),size=COALESCE(excluded.size,size)",
-                (item.source, item.identity, item.digest, stage, str(local.path.relative_to(self.path.parent)) if local else None,
+                (item.source, item.identity, item.digest, stage, str(local.path.relative_to(self.raw_root)) if local else None,
                  local.payload_hash if local else None, local.size if local else None),
             )
 

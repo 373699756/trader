@@ -418,17 +418,18 @@ def AuditCompanyPipeline(
     for number, (count, independent_hosts) in enumerate(variants, 1):
         check()
         run_directory = directory / f"pipeline-{number}"
-        raw_files = CompanyRawFiles(run_directory, capacity=configuration.raw_capacity_bytes,
+        raw_files = CompanyRawFiles(run_directory / "raw", capacity=configuration.raw_capacity_bytes,
             analysis_reserve=configuration.raw_analysis_reserve_bytes, free_reserve=configuration.temporary_disk_reserve_bytes,
             maximum_document_bytes=configuration.extended_document_limits.max_bytes)
-        documents = CompanyDocumentFiles(run_directory / "text",
+        documents = CompanyDocumentFiles(run_directory / "raw" / "text",
             max_text_characters=configuration.extended_document_limits.max_text_characters,
             max_bytes=configuration.temporary_text_capacity_bytes, reserve_bytes=configuration.temporary_disk_reserve_bytes)
-        writer = SQLiteCompanyFactsIndex(run_directory / "facts.sqlite3", event_policy=event_policy, sqlite_policy=sqlite_policy)
-        normalized = SQLiteCompanyNormalizedIndex(run_directory / "normalized.sqlite3", writer,
+        writer = SQLiteCompanyFactsIndex(run_directory / "company_published.sqlite3", event_policy=event_policy, sqlite_policy=sqlite_policy)
+        sources_path = run_directory / "company_sources.sqlite3"
+        normalized = SQLiteCompanyNormalizedIndex(sources_path, writer,
             event_policy=event_policy, sqlite_policy=sqlite_policy, clean_material=lambda: None, cancel_requested=cancelled)
         normalized.initialize()
-        material = SQLiteCompanyMaterialIndex(run_directory / "collection.sqlite3", facts=writer,
+        material = SQLiteCompanyMaterialIndex(sources_path, facts=writer,
             documents=documents, raw_files=raw_files, event_policy=event_policy, sqlite_policy=sqlite_policy,
             cancel_requested=cancelled)
         material.initialize()

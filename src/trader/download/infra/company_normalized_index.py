@@ -25,7 +25,6 @@ from trader.download.infra.company_facts_index import (
     CompanyInputReceipt, CompanyPublicationIdentity, ReadCompanyPublicationIdentity, SQLiteCompanyFactsIndex,
 )
 from trader.download.infra.company_facts_protocol import DecodeCompanyLabel, EncodeCompanyTime, EVIDENCE_SOURCES, RequireCompanyTime
-from trader.download.infra.company_facts_schema import COMPANY_FACTS_SCHEMA
 from trader.download.infra.company_financial_observations import (
     ReadCompanyFinancialObservations,
     ReadRoundCompanyFinancialBatch,
@@ -35,37 +34,12 @@ from trader.download.infra.company_financial_observations import (
 )
 from trader.download.infra.company_fact_inputs import BindCompanyEvidenceSource
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
+from trader.download.infra.company_source_schema import COMPANY_SOURCE_SCHEMA
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_connection import (
-    EnsureSqliteSchema, SqliteConnection, SqliteConnectionOptions, SqliteSchema, SqliteSession, SqliteTransaction,
+    EnsureSqliteSchema, SqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction,
 )
 from trader.infra.sqlite_policy import SqliteIoPolicy
-
-
-_SCHEMA = SqliteSchema((*COMPANY_FACTS_SCHEMA.statements,
-    """CREATE TABLE company_normalization_seed (
-      singleton INTEGER PRIMARY KEY CHECK(singleton=1),source_content_hash BLOB NOT NULL,
-      source_extraction_hash BLOB NOT NULL,source_published_at INTEGER NOT NULL,baseline_digest TEXT NOT NULL,
-      complete INTEGER NOT NULL CHECK(complete IN (0,1)),field_rules_hash BLOB NOT NULL
-    )""",
-    """CREATE TABLE company_round_page (
-      scope TEXT NOT NULL,page INTEGER NOT NULL,pages INTEGER NOT NULL,total INTEGER NOT NULL,
-      raw_count INTEGER NOT NULL,response_hash TEXT NOT NULL,PRIMARY KEY(scope,page)
-    ) WITHOUT ROWID""",
-    """CREATE TABLE company_round_member (
-      scope TEXT NOT NULL,code TEXT NOT NULL,report_date TEXT NOT NULL,
-      record_hash TEXT,
-      PRIMARY KEY(scope,code,report_date),
-      FOREIGN KEY(code,report_date,record_hash) REFERENCES company_financial_observation(code,report_date,record_hash)
-    ) WITHOUT ROWID""",
-    """CREATE TABLE company_round_intent (
-      scope TEXT PRIMARY KEY,generation BLOB NOT NULL,parent_content_hash BLOB,
-      parent_extraction_hash BLOB,parent_published_at INTEGER,confirmed_content_hash BLOB
-    ) WITHOUT ROWID""",
-    """CREATE TABLE company_round_generation (
-      scope TEXT PRIMARY KEY,generation BLOB NOT NULL,normalized_hash BLOB NOT NULL
-    ) WITHOUT ROWID""",
-))
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,7 +70,14 @@ class SQLiteCompanyNormalizedIndex:
             raise ValueError("company_normalization_paths_must_differ")
         self.path, self._facts, self._sqlite_policy = path, facts, sqlite_policy
         self._clean_material, self._cancel_requested = clean_material, cancel_requested
-        self._normalized = SQLiteCompanyFactsIndex(path, event_policy=event_policy, sqlite_policy=sqlite_policy, io_budget=io_budget, cancel_requested=cancel_requested)
+        self._normalized = SQLiteCompanyFactsIndex(
+            path,
+            event_policy=event_policy,
+            sqlite_policy=sqlite_policy,
+            io_budget=io_budget,
+            cancel_requested=cancel_requested,
+            seal_file=False,
+        )
         self._io_budget = io_budget
 
     @contextmanager
@@ -113,13 +94,13 @@ class SQLiteCompanyNormalizedIndex:
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._session(self.path, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy) as connection:
-            EnsureSqliteSchema(connection, _SCHEMA, allow_create=True, exact=True)
+            EnsureSqliteSchema(connection, COMPANY_SOURCE_SCHEMA, allow_create=True, exact=True)
         self._facts.initialize()
 
     def validate_existing(self) -> None:
         if self.path.exists():
             with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
-                EnsureSqliteSchema(connection, _SCHEMA, exact=True)
+                EnsureSqliteSchema(connection, COMPANY_SOURCE_SCHEMA, exact=True)
 
     def seed(self, baseline: CompanyNormalizationBaseline) -> None:
         """Accept an explicit immutable baseline once; never read or migrate its source database."""

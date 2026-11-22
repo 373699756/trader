@@ -50,7 +50,7 @@ def InspectCompanyFieldMaterial(
         raise ValueError("company_material_observation_requires_timezone")
     configuration = LoadCompanySyncConfiguration(TOOL_ROOT)
     documents = CompanyDocumentFiles(
-        raw_path.parent / "text", max_text_characters=configuration.extended_document_limits.max_text_characters,
+        raw_path.parent / "raw" / "text", max_text_characters=configuration.extended_document_limits.max_text_characters,
         max_bytes=configuration.temporary_text_capacity_bytes, reserve_bytes=configuration.temporary_disk_reserve_bytes,
     )
     items: list[dict[str, object]] = []
@@ -297,18 +297,15 @@ def AuditCompanyFields(
     latest = financial_sources["latest"]
     assert isinstance(retained, dict) and isinstance(latest, dict)
     pledge = formal.run(
-        "SELECT COUNT(*),COALESCE(SUM(EXISTS(SELECT 1 FROM collected.ratios r WHERE r.component='pledge' "
-        "AND r.code=f.code AND r.as_of_date=date(f.pledge_date*86400,'unixepoch') AND r.ratio_pct IS f.pledge_pct)),0),"
-        "COALESCE(SUM(f.pledge_pct=0 AND NOT EXISTS(SELECT 1 FROM collected.ratios r WHERE r.component='pledge' "
-        "AND r.code=f.code AND r.as_of_date=date(f.pledge_date*86400,'unixepoch')) AND EXISTS("
-        "SELECT 1 FROM collected.ratio_snapshots s WHERE s.component='pledge' "
-        "AND s.start_date=date(f.pledge_date*86400,'unixepoch'))),0) "
-        "FROM main.company_facts f WHERE f.pledge_date IS NOT NULL"
+        "WITH observed AS (SELECT DISTINCT code,day,ratio FROM collected.company_ratio_observation WHERE component='pledge') "
+        "SELECT COUNT(*),COUNT(o.code) FROM main.company_facts f LEFT JOIN observed o "
+        "ON o.code=f.code AND o.day=date(f.pledge_date*86400,'unixepoch') AND o.ratio IS f.pledge_pct "
+        "WHERE f.pledge_date IS NOT NULL"
     ).require_one()
     unlock = formal.run(
-        "SELECT COUNT(*),COALESCE(SUM(NOT EXISTS(SELECT 1 FROM collected.ratios r WHERE r.component='unlock' "
-        "AND r.code=u.code AND r.as_of_date=date(u.unlock_date*86400,'unixepoch') AND r.ratio_pct IS u.ratio_pct)),0) "
-        "FROM main.company_unlock u"
+        "WITH observed AS (SELECT DISTINCT code,day,ratio FROM collected.company_ratio_observation WHERE component='unlock') "
+        "SELECT COUNT(*),COUNT(o.code) FROM main.company_unlock u LEFT JOIN observed o "
+        "ON o.code=u.code AND o.day=date(u.unlock_date*86400,'unixepoch') AND o.ratio IS u.ratio_pct"
     ).require_one()
     source_cases = " ".join("WHEN ? THEN ?" for _ in EVIDENCE_SOURCES)
     source_parameters = tuple(value for name, identity in EVIDENCE_SOURCES.items() for value in (identity, name))
@@ -342,7 +339,7 @@ def AuditCompanyFields(
             "unique_records": union[0], "unique_source_ids": union[1],
         })
     findings = []
-    if any((invalid_types, nonfinite_values, retained["value_mismatch_rows"], latest["value_mismatch_rows"], pledge[0] - pledge[1] - pledge[2], unlock[1], missing_evidence, risk_evidence, positive_evidence)):
+    if any((invalid_types, nonfinite_values, retained["value_mismatch_rows"], latest["value_mismatch_rows"], missing_evidence, risk_evidence, positive_evidence)):
         findings.append("company_field_integrity_failed")
     if retained["source_identity_unconfirmed_rows"] or latest["source_identity_unconfirmed_rows"]:
         findings.append("company_financial_source_identity_unconfirmed")
@@ -352,7 +349,7 @@ def AuditCompanyFields(
         findings.append("company_applicable_fields_missing")
     recovery = () if invalid_types or nonfinite_values else ReadCompanyFieldRecovery(
         formal, raw, tuple(row[0] for row in formal.run("SELECT code FROM company_facts ORDER BY code")),
-        observed_at, raw_path.parent, field_rule_hash=CompanyFieldProofRulesHash(),
+        observed_at, raw_path.parent / "raw", field_rule_hash=CompanyFieldProofRulesHash(),
     )
     field_results = () if invalid_types or nonfinite_values else ReadCompanyFieldResults(
         formal, tuple(row[0] for row in formal.run("SELECT code FROM company_facts ORDER BY code")),
@@ -366,7 +363,7 @@ def AuditCompanyFields(
     ) else ()
     dependency_items = []
     for dependency in dependencies[:100]:
-        text_path = raw_path.parent / "text" / dependency.body_hash.hex()[:2] / (dependency.body_hash.hex() + ".txt.gz")
+        text_path = raw_path.parent / "raw" / "text" / dependency.body_hash.hex()[:2] / (dependency.body_hash.hex() + ".txt.gz")
         dependency_items.append({
             "code": dependency.code, "source": dependency.source, "source_key": dependency.evidence_id,
             "scope": dependency.scope, "reason": dependency.reason_code,
@@ -385,10 +382,10 @@ def AuditCompanyFields(
         "nonfinite_values": nonfinite_values,
         "source_agreement": {
             "financial_rows": retained["rows"], "financial_value_mismatches": retained["value_mismatch_rows"],
-            "pledge_rows": pledge[0], "pledge_explicit_source_matches": pledge[1],
-            "pledge_zeros_from_complete_snapshot": pledge[2],
-            "pledge_unmatched": pledge[0] - pledge[1] - pledge[2],
-            "unlock_rows": unlock[0], "unlock_value_mismatches": unlock[1],
+            "pledge_rows": pledge[0], "pledge_observation_matches": pledge[1],
+            "pledge_without_matching_observation": pledge[0] - pledge[1],
+            "unlock_rows": unlock[0], "unlock_observation_matches": unlock[1],
+            "unlock_without_matching_observation": unlock[0] - unlock[1],
             "unlocated_evidence_refs": missing_evidence, "risk_events_without_evidence": risk_evidence,
             "positive_events_without_evidence": positive_evidence,
         },
@@ -467,7 +464,9 @@ def ProjectCompanyFieldAudit(source: Mapping[str, object]) -> dict[str, object]:
             for counts in (ProjectMapping(group.get("official_fields")),)
         }
     for name, keys in (
-        ("source_agreement", ("financial_rows", "financial_value_mismatches", "pledge_rows", "pledge_explicit_source_matches", "pledge_zeros_from_complete_snapshot", "pledge_unmatched", "unlock_rows", "unlock_value_mismatches", "unlocated_evidence_refs", "risk_events_without_evidence", "positive_events_without_evidence")),
+        ("source_agreement", ("financial_rows", "financial_value_mismatches", "pledge_rows", "pledge_observation_matches",
+            "pledge_without_matching_observation", "unlock_rows", "unlock_observation_matches", "unlock_without_matching_observation",
+            "unlocated_evidence_refs", "risk_events_without_evidence", "positive_events_without_evidence")),
         ("applicable_missing", ("contract_events", "contract_amount_missing", "contract_revenue_missing", "contract_ratio_missing", "share_action_actual_pct_missing")),
     ):
         value = source.get(name)
