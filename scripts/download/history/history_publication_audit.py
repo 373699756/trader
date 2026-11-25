@@ -465,7 +465,7 @@ def _history_plan(root: Path, budget: PriceAuditBudget, policy: SqliteIoPolicy) 
     budget.check()
     with budget.connection(catalog, policy) as connection:
         recorded = ReadControlRecord(
-            SqliteConnection(connection, policy), "universe", str(row[11]).lower(),
+            connection, "universe", str(row[11]).lower(),
             SQLiteReferenceIndex(reference_path, sqlite_policy=policy),
         )
     budget.check()

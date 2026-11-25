@@ -5,7 +5,7 @@ from __future__ import annotations
 import queue
 import threading
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
 
@@ -53,6 +53,7 @@ class FreezeReplacementPatch:
     top_scores: tuple[FreezeItem, ...] = ()
     pipeline: RecommendationPipelineStatus | HistoricalPipelineAudit | None = None
     preview_context: PreviewContext | None = None
+    publication_sequence: int = field(kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -299,6 +300,7 @@ def _freeze_payload(event: FreezeCommitted, *, profile: str | None = None) -> Fr
             top_scores,
             freeze.pipeline,
             freeze.preview_context,
+            publication_sequence=freeze.sequence,
         )
     return FreezeEventPayload(
         event.strategy,

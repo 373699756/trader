@@ -167,7 +167,7 @@ def test_public_route_keeps_one_json_document_and_the_measurement_evidence(tmp_p
 
     arguments, _output = _arguments(tmp_path)
 
-    def measured(_configuration, destination, *, fill_missing):
+    def measured(_configuration, destination):
         print("product progress")
         destination.write_text(json.dumps(_measurement()), encoding="utf-8")
         return 0

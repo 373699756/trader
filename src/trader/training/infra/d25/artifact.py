@@ -205,6 +205,8 @@ def ReadD25ProbabilityIdentity(
 def LoadD25ScoringProfile(
     model_root: Path, profile: ScoringProfileId, target: PredictionTarget,
 ) -> LoadedScoringProfile:
+    if profile == "v5" and find_spec("torch") is None:
+        raise ImportError("D25 V5 requires torch")
     profile_root = model_root / profile
     documents = _read_pair(profile_root)
     try:
@@ -212,8 +214,6 @@ def LoadD25ScoringProfile(
             loaded_profile = DecodeV1D25Utility(documents)
         else:
             if profile == "v5":
-                if find_spec("torch") is None:
-                    raise ImportError("D25 V5 requires torch")
                 from trader.training.infra.tcn.network import ConfigureTcnRuntime
 
                 ConfigureTcnRuntime(training=False)
@@ -320,7 +320,7 @@ def _decode(
         or doc["target"] != binding.target.identity or doc["features"] != list(features)
         or doc["utility_hash"] != binding.utility_hash or doc["input_hash"] != binding.input_hash
         or doc["utility_metadata_hash"] != binding.utility_metadata_hash
-        or not isinstance(doc["implementation_hash"], str) or not _valid_hash(doc["implementation_hash"])
+        or doc["implementation_hash"] != LaneTrainingImplementationIdentity(Strategy.D25, profile)
     ):
         raise ValueError("d25_probability_artifact_contract_mismatch")
     fitting, calibration = _dates(doc["fitting_dates"]), _dates(doc["calibration_dates"])

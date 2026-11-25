@@ -10,6 +10,7 @@
 
   function recommendationPatchFreeze(patch, payload, currentVersion, strategy, view) {
     if (!patchVersionValid(patch) || !Array.isArray(patch.upserts)
+      || !Number.isSafeInteger(patch.publication_sequence) || patch.publication_sequence < 1
       || typeof patch.base_projection_version !== "string"
       || !Array.isArray(patch.removed_codes) || !Array.isArray(patch.removals)) return "schema_mismatch";
     if (!patchCoverageValid(patch.coverage) || patch.coverage.selected_count > patch.upserts.length) {
@@ -22,6 +23,12 @@
     if (expectedDate && patch.trade_date !== expectedDate) return "identity_mismatch";
     if (["current", "official"].includes(view) && payload && payload.frozen === true && patch.frozen !== true) {
       return "ignore_late_draft";
+    }
+    if (payload && patch.frozen !== true && Number.isInteger(payload.publication_sequence)
+      && (patch.publication_sequence < payload.publication_sequence
+        || (patch.publication_sequence === payload.publication_sequence
+          && Date.parse(patch.published_at) < Date.parse(payload.observed_at)))) {
+      return "ignore_stale_publication";
     }
     const baseVersion = patch.base_projection_version;
     if (baseVersion && baseVersion !== currentVersion) return "base_mismatch";
@@ -56,6 +63,7 @@
       score_status: "scored",
       freeze_version: patch.snapshot_id,
       publication_id: patch.publication_id,
+      publication_sequence: patch.publication_sequence,
       content_hash: patch.content_hash,
       snapshot_id: patch.snapshot_id,
       projection_version: patch.projection_version,

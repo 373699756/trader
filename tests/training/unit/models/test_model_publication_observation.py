@@ -41,6 +41,13 @@ from trader.training.infra.model_bundles.profile_publication import (
 from trader.training.infra.d25.v1 import models as v1_models
 from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
 from trader.training.infra.history.history_training_due import PublishedTrainingState
+from trader.training.infra.d25.artifact import (
+    D25ProbabilityArtifact, D25ProbabilityBinding, LoadD25ScoringProfile, StageD25Probability,
+)
+from trader.training.infra.d25.contracts import StandardD25Profile
+from trader.training.infra.d25.v3.probability import D25LogisticModel
+from trader.training.infra.d25.model_document import D25_MAXIMUM_METADATA_BYTES
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 
 
 def test_standard_observation_matches_loaded_identity_without_reading_model_payload(tmp_path, monkeypatch):
@@ -49,7 +56,8 @@ def test_standard_observation_matches_loaded_identity_without_reading_model_payl
     reads = []
 
     def metadata_only(path, *, maximum_bytes):
-        assert path.name == "metadata.json" and maximum_bytes == 8 * 1024 * 1024
+        assert path.name == "metadata.json"
+        assert maximum_bytes == (D25_MAXIMUM_METADATA_BYTES if path.parent.name == "d25" else 8 * 1024**2)
         reads.append(path)
         return ReadRegularFile(path, maximum_bytes=maximum_bytes)
 
@@ -63,6 +71,113 @@ def test_standard_observation_matches_loaded_identity_without_reading_model_payl
     )
     assert actual == expected
     assert reads == [tmp_path / "v3/tomorrow/metadata.json", tmp_path / "v3/d25/metadata.json"]
+
+
+def test_production_observation_tracks_probability_changes_and_absence_without_reloading(tmp_path, monkeypatch):
+    import shutil
+    from trader.training.infra.d25 import model_document
+    from trader.training.infra.model_bundles.profile_publication import PublishStrategyModelDirectory
+
+    profile = StandardD25Profile("v3")
+    _publish_profile(tmp_path, profile)
+    root = tmp_path / "v3"
+    utility, = ReadPublishedProfileIdentities(root, profile, cancel_requested=lambda: False)
+    original = {path.name: path.read_bytes() for path in (root / "d25").iterdir()}
+    target = PredictionTarget(Strategy.D25, 100)
+    features = profile.head_for_strategy(Strategy.D25).feature_manifest.names
+    width = len(features)
+    artifact = D25ProbabilityArtifact(
+        "v3", D25ProbabilityBinding(target, utility.model_hash, utility.training_history_hash, utility.metadata_hash),
+        features, (date(2026, 8, 1),), (date(2026, 8, 2),), (0.0, 1.0),
+        (("银行", D25LogisticModel((0.0,) * width, (1.0,) * width, 0.0, (0.1,) * width)),),
+    )
+
+    def publish(model):
+        staging = tmp_path / "new-d25"
+        staging.mkdir()
+        for name, payload in original.items():
+            (staging / name).write_bytes(payload)
+        if model is not None:
+            StageD25Probability(staging, model)
+        PublishStrategyModelDirectory(root, Strategy.D25, staging)
+        if staging.exists():
+            shutil.rmtree(staging)
+
+    publish(artifact)
+    reads = []
+    def read(path, *, maximum_bytes):
+        reads.append(path.name)
+        return ReadRegularFile(path, maximum_bytes=maximum_bytes)
+
+    monkeypatch.setattr(model_document, "ReadRegularFile", read)
+    loaded = LoadD25ScoringProfile(tmp_path, "v3", target)
+    assert reads == ["model.json", "metadata.json"]
+    assert ReadPublishedProfileIdentities(root, profile, cancel_requested=lambda: False) == loaded.publications
+    with monkeypatch.context() as scope:
+        scope.setattr("trader.training.infra.d25.artifact.LaneTrainingImplementationIdentity", lambda *_args: "f" * 64)
+        with pytest.raises(ValueError, match="artifact_contract_mismatch"):
+            LoadD25ScoringProfile(tmp_path, "v3", target)
+    state = PublishedTrainingState(
+        tmp_path / "history", tmp_path, loaded.publications, owned_profile="v3", d25_only=True,
+        tomorrow_target=PredictionTarget(Strategy.TOMORROW, 500),
+        maintenance_path=tmp_path / "maintenance.sqlite3", load_expectation=HistoryTrainingExpectationFixture,
+        wall_clock=lambda: datetime(2026, 11, 25, tzinfo=ZoneInfo("Asia/Shanghai")), sqlite_policy=SqlitePolicyFixture(),
+    )
+    state.initialize()
+    initial = next(item for item in state.status() if item.owned and item.strategy is Strategy.D25)
+    assert initial.disk == initial.loaded and not initial.restart_required
+    publish(replace(artifact, calibration=(0.2, 1.0)))
+    state.observe_publication(lambda: False)
+    updated = next(item for item in state.status() if item.owned and item.strategy is Strategy.D25)
+    assert updated.loaded == initial.loaded and updated.disk != initial.disk and updated.restart_required
+    assert updated.disk == LoadD25ScoringProfile(tmp_path, "v3", target).publications[0]
+    publish(None)
+    state.observe_publication(lambda: False)
+    missing = next(item for item in state.status() if item.owned and item.strategy is Strategy.D25)
+    assert missing.disk is None and missing.loaded == initial.loaded and missing.restart_required
+
+
+def test_tomorrow_observation_uses_the_loaded_target_and_keeps_startup_model(tmp_path, monkeypatch):
+    from trader.training.infra.tomorrow.artifact import (
+        LoadTomorrowProbabilityModel, PublishTomorrowProbabilityModel, TomorrowProbabilityArtifact, TomorrowFeatureNames,
+    )
+    from trader.training.infra.tomorrow.settings import LoadTomorrowFitSettings
+    from trader.training.infra.tomorrow.v3.model import LogisticTomorrowModel
+    from pathlib import Path
+
+    target = PredictionTarget(Strategy.TOMORROW, 500)
+    project = Path(__file__).resolve().parents[4]
+    width = len(TomorrowFeatureNames("v3"))
+    settings = LoadTomorrowFitSettings(project, "v3")
+    artifact = TomorrowProbabilityArtifact(
+        "v3", target, "a" * 64, settings.identity, (date(2026, 8, 1),), (date(2026, 8, 2),),
+        0.0, 1.0, LogisticTomorrowModel(0.0, (0.1,) * width, (0.0,) * width, (1.0,) * width), None,
+        fit_settings_hash=LoadTomorrowFitSettings(project, "v3").fitting_identity,
+    )
+    PublishTomorrowProbabilityModel(tmp_path, artifact)
+    loaded = LoadTomorrowProbabilityModel(tmp_path, "v3", target, project_root=project)
+    assert loaded is not None
+    with monkeypatch.context() as scope:
+        scope.setattr("trader.training.infra.tomorrow.settings.LaneTrainingImplementationIdentity", lambda *_args: "f" * 64)
+        with pytest.raises(ValueError, match="training_contract_mismatch"):
+            LoadTomorrowProbabilityModel(tmp_path, "v3", target, project_root=project)
+    state = PublishedTrainingState(
+        tmp_path / "history", tmp_path, (loaded.publication,), owned_profile="v3", d25_only=True,
+        tomorrow_target=target, maintenance_path=tmp_path / "maintenance.sqlite3",
+        load_expectation=HistoryTrainingExpectationFixture,
+        wall_clock=lambda: datetime(2026, 11, 25, tzinfo=ZoneInfo("Asia/Shanghai")), sqlite_policy=SqlitePolicyFixture(),
+    )
+    state.initialize()
+    def head():
+        return next(item for item in state.status() if item.owned and item.strategy is Strategy.TOMORROW)
+    assert head().loaded == head().disk == loaded.publication and not head().restart_required
+    changed = PublishTomorrowProbabilityModel(tmp_path, replace(artifact, calibration_intercept=0.1))
+    state.observe_publication(lambda: False)
+    assert head().loaded == loaded.publication and head().disk.model_hash == changed and head().restart_required
+    PublishTomorrowProbabilityModel(tmp_path, replace(artifact, target=PredictionTarget(Strategy.TOMORROW, 600)))
+    state.observe_publication(lambda: False)
+    assert head().disk is None and head().restart_required
+    assert head().failure == "tomorrow_probability_model_unavailable"
 
 
 @pytest.mark.parametrize("change", ["rewrite", "replace", "symlink", "extra_file", "cancel"])
@@ -269,17 +384,20 @@ def _v1_pair() -> LearnedRankFinalPair:
 
 
 def test_v1_metadata_observation_keeps_its_actual_loaded_identity_without_native_models(tmp_path, monkeypatch):
+    from trader.training.infra.d25 import model_document
     monkeypatch.setattr(v1_models, "LearnedRankPredictor", lambda head: None)
     v1_models.PublishLearnedRankPair(tmp_path, _v1_pair())
     expected = v1_models.LoadV1ScoringProfile(tmp_path).publications
     reads = []
 
     def metadata_only(path, *, maximum_bytes):
-        assert path.name == "metadata.json" and maximum_bytes == 8 * 1024 * 1024
+        assert path.name == "metadata.json"
+        assert maximum_bytes == (D25_MAXIMUM_METADATA_BYTES if path.parent.name == "d25" else 8 * 1024**2)
         reads.append(path)
         return ReadRegularFile(path, maximum_bytes=maximum_bytes)
 
     monkeypatch.setattr(v1_models, "ReadRegularFile", metadata_only)
+    monkeypatch.setattr(model_document, "ReadRegularFile", metadata_only)
     monkeypatch.setattr(v1_models, "ReadLearnedRankPair", lambda *args: pytest.fail("no V1 model pair loading"))
     monkeypatch.setattr(v1_models, "LearnedRankPredictor", lambda head: pytest.fail("no V1 native predictors"))
     actual = v1_models.ReadV1PublicationIdentities(tmp_path, cancel_requested=lambda: False)

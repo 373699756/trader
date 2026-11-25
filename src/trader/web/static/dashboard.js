@@ -674,6 +674,8 @@
           if (value.scoring_profile !== profile || value.strategy !== strategy || value.view !== "current") {
             throw new Error("整批推荐快照身份不匹配");
           }
+          if (value.freeze_version !== null && (!Number.isSafeInteger(value.publication_sequence)
+            || value.publication_sequence < 1)) throw new Error("整批推荐发布序号缺失");
           const cacheKey = `${profile}:${strategy}:current`;
           replacements.set(cacheKey, normalizeFreezePayload(value, strategy, "", "current"));
         }
@@ -1228,7 +1230,7 @@
         const verdict = patches.recommendationPatchFreeze(
           patch, current, patches.projectionVersion(current), strategy, "current",
         );
-        if (verdict === "ignore_late_draft") return false;
+        if (["ignore_late_draft", "ignore_stale_publication"].includes(verdict)) return false;
         if (verdict !== "apply" || !patches.topKValid(patch.upserts, strategy)) {
           requestRecommendationResync(verdict === "apply" ? "topk_mismatch" : verdict);
           return false;
@@ -1258,7 +1260,7 @@
   function applyRecommendationPatch(patch) {
     const currentVersion = state.projectionVersion || patches.projectionVersion(state.payload);
     const freeze = patches.recommendationPatchFreeze(patch, state.payload, currentVersion, state.strategy, state.view);
-    if (freeze === "ignore_late_draft") return false;
+    if (["ignore_late_draft", "ignore_stale_publication"].includes(freeze)) return false;
     if (freeze !== "apply") {
       requestRecommendationResync(freeze);
       return false;

@@ -54,6 +54,13 @@ class _Watch:
     expires: float
 
 
+@dataclass
+class _MonthScan:
+    pending: tuple[tuple[int, Strategy, date], ...]
+    position: int
+    codes: set[str]
+
+
 class HistoryQuotes:
     def __init__(self, records: tuple[FreezeHistoryReader, ...], source: HistoryQuoteSource,
                  now: Callable[[], datetime], open_dates: Callable[[], tuple[date, ...]],
@@ -68,6 +75,7 @@ class HistoryQuotes:
         self._quotes: dict[str, MarketQuote] = {}
         self._due: dict[str, float] = {}
         self._month_codes: dict[HistoryQuoteMonth, tuple[float, frozenset[str]]] = {}
+        self._month_scans: dict[HistoryQuoteMonth, _MonthScan] = {}
         self._wake, self._stop = threading.Event(), threading.Event()
         self._thread: threading.Thread | None = None
         self._error = ""
@@ -132,27 +140,28 @@ class HistoryQuotes:
         with self._lock:
             self._expire()
             months = {month for watch in self._watches.values() for month in watch.months}
+        self._month_scans = {month: scan for month, scan in self._month_scans.items() if month in months}
         codes: set[str] = set()
         for month in sorted(months):
             cached = self._month_codes.get(month)
-            if cached is not None and cached[0] > self._monotonic():
+            if cached is not None and (cached[0] > self._monotonic()
+                                       or self._month_scans and month not in self._month_scans):
                 codes.update(cached[1])
                 continue
-            monthly: set[str] = set()
-            for reader in self._records:
-                for strategy in (Strategy.TOMORROW, Strategy.D25):
-                    for day in reader.list_dates(strategy, year=month.year, month=month.month):
-                        if self._stop.is_set():
-                            return
-                        if self._monotonic() >= scan_deadline:
-                            raise RuntimeError("history month scan deadline exceeded")
-                        record = reader.load_history(strategy, day)
-                        if record is not None:
-                            monthly.update(item.code for item in VisibleScoredSeats(record.freeze))
-            self._month_codes[month] = (self._monotonic() + self.settings.interval_seconds, frozenset(monthly))
+            monthly = self._scan_month(month, scan_deadline)
+            if monthly is None:
+                with self._lock:
+                    self._error = "history_month_scan_pending"
+                return
+            self._month_codes[month] = (self._monotonic() + self.settings.interval_seconds, monthly)
             codes.update(monthly)
         self._month_codes = {month: value for month, value in self._month_codes.items() if month in months}
         with self._lock:
+            if self._error == "history_month_scan_pending":
+                self._error = ""
+            self._expire()
+            if {month for watch in self._watches.values() for month in watch.months} != months:
+                return
             self._quotes = {code: quote for code, quote in self._quotes.items() if code in codes}
             self._due = {code: due for code, due in self._due.items() if code in codes}
         if not codes:
@@ -170,6 +179,8 @@ class HistoryQuotes:
         market_day = max(eligible_dates)
         if market_day == now.date() and minute < self._sessions.morning_open:
             market_day = max(day for day in calendar if day < now.date())
+        if self._stop.is_set():
+            return
         with self._lock:
             due_codes = tuple(sorted(code for code in codes if self._due.get(code, 0) <= self._monotonic()
                                      and (trading or not self._rest_valid(self._quotes.get(code), now, market_day))))
@@ -177,10 +188,7 @@ class HistoryQuotes:
                 self._due[code] = self._monotonic() + self.settings.interval_seconds
         if not due_codes:
             return
-        remaining = scan_deadline - self._monotonic()
-        if remaining <= 0 or self._stop.is_set():
-            return
-        quotes = self._source(due_codes, now, now + timedelta(seconds=remaining), self._stop)
+        quotes = self._source(due_codes, now, now + timedelta(seconds=self.settings.timeout_seconds), self._stop)
         completed = self._now().astimezone(SHANGHAI)
         with self._lock:
             self._expire()
@@ -194,6 +202,28 @@ class HistoryQuotes:
                         and quote.source_time.astimezone(SHANGHAI).date() == market_day
                         and (previous is None or quote.source_time >= previous.source_time)):
                     self._quotes[quote.code] = quote
+
+    def _scan_month(self, month: HistoryQuoteMonth, deadline: float) -> frozenset[str] | None:
+        scan = self._month_scans.get(month)
+        if scan is None:
+            pending = tuple(
+                (index, strategy, day)
+                for index, reader in enumerate(self._records)
+                for strategy in (Strategy.TOMORROW, Strategy.D25)
+                for day in reader.list_dates(strategy, year=month.year, month=month.month)
+            )
+            scan = _MonthScan(pending, 0, set())
+            self._month_scans[month] = scan
+        while scan.position < len(scan.pending):
+            if self._stop.is_set() or self._monotonic() >= deadline:
+                return None
+            index, strategy, day = scan.pending[scan.position]
+            record = self._records[index].load_history(strategy, day)
+            if record is not None:
+                scan.codes.update(item.code for item in VisibleScoredSeats(record.freeze))
+            scan.position += 1
+        self._month_scans.pop(month, None)
+        return frozenset(scan.codes)
 
     def _rest_valid(self, quote: MarketQuote | None, now: datetime, market_day: date) -> bool:
         if quote is None or quote.source_time.astimezone(SHANGHAI).date() != market_day:

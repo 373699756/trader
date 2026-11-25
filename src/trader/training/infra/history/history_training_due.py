@@ -600,8 +600,8 @@ class PublishedTrainingState:
                 for strategy in self._strategies
             )
         if self._tomorrow_target is not None and not cancelled():
-            identity, failure = self._read_tomorrow(cancelled)
-            results.append(self._tomorrow_status(identity, failure))
+            tomorrow_identity, failure = self._read_tomorrow(cancelled)
+            results.append(self._tomorrow_status(tomorrow_identity, failure))
         if not cancelled():
             with self._lock:
                 self._status = tuple(results)
@@ -641,8 +641,7 @@ class PublishedTrainingState:
                 if not cancelled():
                     with self._lock:
                         self._status = tuple(
-                            replace(item, disk=identity if failure is None else item.disk,
-                                    publication_observation_failure=failure)
+                            self._tomorrow_status(identity if failure is None else item.disk, failure)
                             if item.strategy is Strategy.TOMORROW and item.owned else item for item in self._status
                         )
         finally:

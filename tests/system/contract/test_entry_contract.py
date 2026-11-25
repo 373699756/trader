@@ -210,7 +210,7 @@ def test_run_script_help_lists_retained_download_and_training_commands(tmp_path:
     assert "--allow-partial-history" not in completed.stdout
     assert "research-r7-dossier" not in completed.stdout
     assert "档位以逗号分隔，可自由组合；省略时选择全部。" in completed.stdout
-    assert "未完成可重跑原命令续传；fill用于补缺，仍需处理具体失败原因。" in completed.stdout
+    assert "未完成可重跑原命令续传，仍需处理具体失败原因。" in completed.stdout
     assert "./run.sh serve" not in completed.stdout
     assert not missing_venv.exists()
 

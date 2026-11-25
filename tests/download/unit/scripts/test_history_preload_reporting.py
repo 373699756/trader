@@ -45,7 +45,6 @@ def test_preload_report_projects_the_bound_inputs(monkeypatch, tmp_path, tomorro
     )
     reports = []
     monkeypatch.setattr(preload, "PublishedReferences", lambda *_args, **_kwargs: references)
-    monkeypatch.setattr(preload, "LoadD25UtilityProfile", lambda *_args, **_kwargs: "utility")
     monkeypatch.setattr(preload, "LoadD25ScoringProfile", lambda *_args, **_kwargs: loaded_d25)
     monkeypatch.setattr(preload, "LoadTomorrowProbabilityModel", lambda *_args, **_kwargs: (
         SimpleNamespace(identity=tomorrow_identity) if tomorrow_identity is not None else None

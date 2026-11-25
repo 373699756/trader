@@ -58,8 +58,7 @@ def test_replay_identity_binds_each_loaded_tomorrow_and_d25_model(monkeypatch) -
     def report_preparation(_settings, prepared, identity, *_options):
         return {"identity": identity, "profile_results": performance._project_profile_loads(prepared.profiles)}
 
-    monkeypatch.setattr(performance, "LoadD25UtilityProfile", lambda profile, **_: profile)
-    monkeypatch.setattr("trader.training.infra.d25.artifact.LoadD25ScoringProfile", bind_d25)
+    monkeypatch.setattr(performance, "LoadProductionD25Profile", bind_d25)
     monkeypatch.setattr("trader.training.infra.tomorrow.artifact.LoadTomorrowProbabilityModel", load_tomorrow)
     monkeypatch.setattr(performance, "BuildPerformanceFixtures", lambda *_args, **_options: ((), (), (1,)))
     monkeypatch.setattr(performance, "_continuous_report", report_preparation)
@@ -196,7 +195,7 @@ def test_all_profiles_report_load_failures_without_fabricating_measurements(monk
     def unavailable(*_args, **_kwargs):
         raise ScoringModelsUnavailableError(reason)
 
-    monkeypatch.setattr(performance, "LoadD25UtilityProfile", unavailable)
+    monkeypatch.setattr(performance, "LoadProductionD25Profile", unavailable)
     report = performance.Run(Path("config/runtime.json"), scoring_profile="v1,v2,v3,v5")
     assert report["measurements"] == {} and report["memory"] == {}
     assert report["failures"] == ["model_unavailable"]

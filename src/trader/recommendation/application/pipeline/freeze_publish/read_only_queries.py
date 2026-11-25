@@ -211,6 +211,7 @@ class FreezeView:
     outcome_summaries: tuple[OutcomeTierSummary, ...] = ()
     preview_context: PreviewContext | None = field(default=None, kw_only=True)
     head_gap: ScoredHeadGap | None = field(default=None, kw_only=True)
+    publication_sequence: int | None = field(default=None, kw_only=True)
 
     @property
     def projection_version(self) -> str | None:
@@ -567,6 +568,7 @@ def _scored_view(freeze: ScoredFreeze | HistoricalFreezeSnapshot, now: datetime,
         top_scores=top_scores,
         pipeline=freeze.pipeline,
         preview_context=freeze.preview_context if isinstance(freeze, ScoredFreeze) else None,
+        publication_sequence=freeze.sequence if isinstance(freeze, ScoredFreeze) else None,
     )
 
 

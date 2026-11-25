@@ -234,7 +234,7 @@ def _round_cleanup_runtime() -> SchedulerRuntime:
             data=DataRefresh(), freezes=Freezes(), reviews=SharedReviews(), index=UnifiedFreezeIndex(),
             observer=AsyncFreezeObserver((), capacity=4, thread_name="test-round-cleanup-observer"),
             sealing=Sealing(), settlement=Settlement(), research_factory=noop_research_factory,
-            publish_freeze=lambda _event: None, publish_overlay=lambda _overlay: None,
+            publish_freeze=lambda _event: None,
         ),
         config_version="runtime-current",
         shutdown_timeout_seconds=2.0,

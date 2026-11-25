@@ -61,7 +61,6 @@ def dependencies(data: PreviewData) -> RuntimeDependencies:
         settlement=Settlement(),
         research_factory=noop_research_factory,
         publish_freeze=lambda _event: pytest.fail("runner published a freeze directly"),
-        publish_overlay=lambda _overlay: pytest.fail("runner published an overlay directly"),
         monotonic=lambda: 0.0,
         rounds=RecommendationRounds(monotonic=lambda: 0.0),
     )

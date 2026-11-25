@@ -200,8 +200,9 @@ def LoadTomorrowProbabilityModel(
         raise ValueError("tomorrow_probability_artifact_contract_mismatch")
     if target != published_target:
         return None
-    fit_identity = LoadTomorrowFitSettings(project_root, profile).fitting_identity
-    if fit_identity != source["fit_settings_hash"]:
+    settings = LoadTomorrowFitSettings(project_root, profile)
+    fit_identity = settings.fitting_identity
+    if fit_identity != source["fit_settings_hash"] or settings.identity != source["training_contract_hash"]:
         raise ValueError("tomorrow_probability_training_contract_mismatch")
     training_identity = source["training_contract_hash"]
     snapshot = source["history_snapshot_hash"]

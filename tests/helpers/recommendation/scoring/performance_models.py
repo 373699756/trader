@@ -53,17 +53,13 @@ def _install_performance_models(monkeypatch) -> None:
     from trader.entrypoints import performance
     from trader.recommendation.domain.publication.models import Strategy
 
-    def load_utility(profile, **_settings):
-        loaded = _profile(profile)
-        return replace(loaded, heads={Strategy.D25: loaded.heads[Strategy.D25]})
-
-    def bind_d25(_root, loaded, target):
+    def bind_d25(_root, profile, target):
         assert target.strategy is Strategy.D25
+        loaded = _profile(profile)
         head = loaded.heads[Strategy.D25]
         return replace(loaded, heads={Strategy.D25: replace(head, predictor=_D25FixturePredictor(head.predictor))})
 
-    monkeypatch.setattr(performance, "LoadD25UtilityProfile", load_utility)
-    monkeypatch.setattr("trader.training.infra.d25.artifact.LoadD25ScoringProfile", bind_d25)
+    monkeypatch.setattr(performance, "LoadProductionD25Profile", bind_d25)
     monkeypatch.setattr(
         "trader.training.infra.tomorrow.artifact.LoadTomorrowProbabilityModel",
         lambda _root, profile, _target, **_settings: _TomorrowFixturePredictor(profile),

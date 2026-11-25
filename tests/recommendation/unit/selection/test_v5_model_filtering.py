@@ -25,7 +25,8 @@ from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EX
 
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
 
-from trader.recommendation.infra.scoring.profile_factory import LoadD25UtilityProfile, ScoringModelsUnavailableError
+from trader.recommendation.infra.scoring.profile_factory import LoadProductionD25Profile, ScoringModelsUnavailableError
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 
 from tests.helpers.recommendation.selection.v5_model_filtering import (
     _SequencePredictor,
@@ -63,9 +64,9 @@ def test_v5_sequence_prediction_cost_once_and_missing_input_closes_admission(app
 
 
 def test_v5_missing_optional_runtime_is_classified_without_loading_other_models(tmp_path, monkeypatch):
-    monkeypatch.setattr("trader.recommendation.infra.scoring.profile_factory.find_spec", lambda _name: None)
+    monkeypatch.setattr("trader.training.infra.d25.artifact.find_spec", lambda _name: None)
     with pytest.raises(ScoringModelsUnavailableError) as error:
-        LoadD25UtilityProfile("v5", training_root=tmp_path)
+        LoadProductionD25Profile(tmp_path, "v5", PredictionTarget(Strategy.D25, 100))
     assert error.value.reason == "dependency_missing"
 
 

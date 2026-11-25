@@ -477,7 +477,7 @@ class SQLiteTrainingSampleIndex:
         *,
         batch_size: int = 256,
         d25_probability: bool = False,
-    ) -> Iterator[TrainingSampleBatch]:
+    ) -> Generator[TrainingSampleBatch, None, None]:
         """Stream one industry's ordered partition without allocating its full matrix."""
         yield from self._iter_batches(
             contract, split_name, industry=industry, batch_size=batch_size, d25_probability=d25_probability,

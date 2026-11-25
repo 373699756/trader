@@ -145,7 +145,6 @@ def test_old_inflight_result_cannot_replace_visible_snapshot_after_clock_jump(ju
             settlement=Settlement(),
             research_factory=noop_research_factory,
             publish_freeze=events.append,
-            publish_overlay=lambda _overlay: None,
         ),
         config_version="test",
         shutdown_timeout_seconds=2.0,

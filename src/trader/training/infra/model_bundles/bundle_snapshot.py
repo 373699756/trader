@@ -117,7 +117,8 @@ def ReadPublishedHeadIdentity(
     if model_path.is_symlink() or not model_path.is_file():
         raise ValueError("trained head fixed file is invalid")
     metadata_path = head_root / "metadata.json"
-    fingerprint = _metadata_fingerprint(metadata_path)
+    maximum_bytes = D25_MAXIMUM_METADATA_BYTES if strategy is Strategy.D25 else 8 * 1024**2
+    fingerprint = _metadata_fingerprint(metadata_path, maximum_bytes)
     cache_identity = None
     if metadata_cache is not None:
         if observed_at is None or observed_at.utcoffset() is None:
@@ -132,18 +133,20 @@ def ReadPublishedHeadIdentity(
             if cached.value.contract == profile:
                 if cancel_requested():
                     raise InterruptedError("model_publication_observation_cancelled")
-                if _metadata_fingerprint(metadata_path) != fingerprint:
+                if _metadata_fingerprint(metadata_path, maximum_bytes) != fingerprint:
                     raise ModelBundleContractError("publication metadata changed while being observed")
                 return cached.value.identity
-    document: object = json.loads(ReadRegularFile(metadata_path, maximum_bytes=D25_MAXIMUM_METADATA_BYTES))
+    document: object = json.loads(ReadRegularFile(metadata_path, maximum_bytes=maximum_bytes))
     if cancel_requested():
         raise InterruptedError("model_publication_observation_cancelled")
     if strategy is Strategy.D25:
+        if isinstance(document, dict) and document.get("strategy_head") != strategy.value:
+            raise ModelBundleContractError("trained strategy-head publication metadata is invalid")
         metadata = DecodeD25MetadataDocument(document)
         identity = metadata.scoring_identity(DecodeHeadPublicationIdentity(metadata.utility, strategy, profile))
     else:
         identity = DecodeHeadPublicationIdentity(document, strategy, profile)
-    if _metadata_fingerprint(metadata_path) != fingerprint:
+    if _metadata_fingerprint(metadata_path, maximum_bytes) != fingerprint:
         raise ModelBundleContractError("publication metadata changed while being observed")
     if cancel_requested():
         raise InterruptedError("model_publication_observation_cancelled")
@@ -155,9 +158,9 @@ def ReadPublishedHeadIdentity(
     return identity
 
 
-def _metadata_fingerprint(path: Path) -> tuple[int, ...]:
+def _metadata_fingerprint(path: Path, maximum_bytes: int) -> tuple[int, ...]:
     info = path.lstat()
-    if not stat.S_ISREG(info.st_mode) or info.st_size > D25_MAXIMUM_METADATA_BYTES:
+    if not stat.S_ISREG(info.st_mode) or info.st_size > maximum_bytes:
         raise ValueError("regular_file metadata must be bounded and regular")
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 

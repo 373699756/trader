@@ -35,7 +35,7 @@ def test_composed_preview_long_publishes_without_formal_database_or_models(
         )
 
     monkeypatch.setattr("trader.bootstrap._utc_now", lambda: STARTED_AT)
-    monkeypatch.setattr("trader.bootstrap.LoadD25UtilityProfile", missing_model)
+    monkeypatch.setattr("trader.bootstrap.LoadProductionD25Profile", missing_model)
     monkeypatch.setattr("trader.bootstrap.PublishedReferences.initialize", lambda self: None)
     monkeypatch.setattr("trader.bootstrap.ChinaTradingCalendar.open_dates", lambda self: (MARKET_DATE,))
     monkeypatch.setattr("trader.bootstrap.MarketDataGateway.fetch_long_quotes", quotes)
@@ -117,7 +117,7 @@ def test_preview_long_recovers_missing_quotes_on_cadence_then_stops(
         )
 
     monkeypatch.setattr("trader.bootstrap._utc_now", lambda: wall[0])
-    monkeypatch.setattr("trader.bootstrap.LoadD25UtilityProfile", missing_model)
+    monkeypatch.setattr("trader.bootstrap.LoadProductionD25Profile", missing_model)
     monkeypatch.setattr("trader.bootstrap.PublishedReferences.initialize", lambda self: None)
     monkeypatch.setattr("trader.bootstrap.ChinaTradingCalendar.open_dates", lambda self: (MARKET_DATE,))
     monkeypatch.setattr("trader.bootstrap.MarketDataGateway.fetch_long_quotes", quotes)

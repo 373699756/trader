@@ -17,7 +17,7 @@
 
 `train`只调用`bootstrap.ExecuteSelectedTraining`，读取已经发布的本地资料。缺资料时提示用户手动执行`./run.sh sync history`。`train`或`train <档位列表>`选择两个策略，`train tomorrow`和`train d25`选择对应策略的全部档位，`train tomorrow v3`和`train d25 v5`分别选择策略和档位。Bash和PowerShell入口转发到同一个CLI，线程和磁盘资源继续由组合根准备。
 
-`run.sh sync`先准备公共参考，再依次更新history和company；`sync history|company`用于单项更新，只有company另有`fill`。Shell与PowerShell启动器使用相同的精简命令范围，训练仅接受`train [档位列表]`；训练JSON／诊断文件参数在环境准备前拒绝，独立`trader-cli`继续提供这两项能力。历史／行情手动补缺、定向范围及专属辅助字段扫描已从启动器、CLI、组合根及业务执行链删除，不保留隐藏入口或兼容分支；普通同步的自动缺价处理、断点和有界停牌复核保留。公司补缺使用位置参数`fill`，全部入口拒绝旧`--fill`写法。普通sync已支持续传，company fill不承诺全部错误恢复，具体选择及限制以d第1章为准。
+`run.sh sync`先准备公共参考，再依次更新history和company；`sync history|company`用于单项更新。公司补缺和续传统一使用`sync company`，沿原轮次和请求账本推进；单项公司同步读取本地行业发布，不触发全市场行业刷新。Shell与PowerShell启动器使用相同的精简命令范围，训练支持`train [tomorrow|d25] [档位列表]`；训练JSON／诊断文件参数在环境准备前拒绝，独立`trader-cli`继续提供这两项能力。历史／行情手动补缺、定向范围及专属辅助字段扫描已从启动器、CLI、组合根及业务执行链删除；普通同步的自动缺价处理、断点和有界停牌复核保留。完成条件及限制以d第1章为准。
 
 正常训练固定一个已发布历史。D25 使用同一份有效 `CurrentIndustrySnapshot`，两项策略各按档位使用独立模型。当前、SSE 和冻结均按所选档位读取。配置、模型或资料更新后按运行采用规则重启加载，缺匹配工件的策略头显示未就绪。此前已共享的冻结保留原历史归属。独立点时研究须具备逐日总体和当时可见的输入证据，训练合同见 [e 第1章](e_训练设计.md#1-输入固定双头独立)。
 
@@ -202,7 +202,7 @@ flowchart TD
 | --- | --- | --- |
 | 证券/ST/日历 | reference的company_st.sqlite3 → PreparedReference/HistoryStEvidence → 发布参考；A的PublishedReferences/StaticMarketCache与B的PrepareReference使用各自资格，训练按发布总体/日历读取 | 下载与荐股排除当前／曾ST，unknown通过ST门并保留未核实标记；行业、历史／公司预载与行情请求采用同一放行名单。原检查日与本次观察时点分开；d2.3、c2/16.2；功能证据不等于实际整链采用 |
 | 历史发布/年度价格 | catalog与prices_<year>.sqlite3 → ReadPublishedHistoryUseCase、HistoryTrainingRow/Point；A共享预载、C共享历史fanout | 固定snapshot/revision/sequence，取消与只读名单在解码前生效；不另建子集manifest；d3/8、e3.1及3.4 |
-| 独立短窗 | `data/daily_window.sqlite3` → 同一历史只读端口的短窗adapter → A启动历史投影 | 原始/前复权配对、成员和发布凭据独立；不借完整历史断点，不在运行期补历史；d4/6.1 |
+| 独立短窗 | `data/daily_window.sqlite3` → 同一历史只读端口的短窗adapter → 独立诊断 | 荐股启动读取年度History；原始/前复权配对、成员和发布凭据独立，不借完整历史断点，不在运行期补历史；d4/6.1 |
 | 行业 | industry.sqlite3 → CurrentIndustryCache → A的PublishedReferences展示／模型路由；组合根另冻结CurrentIndustrySnapshot → C四档全历史分组 | 当前映射、缺口、收到／刷新期限及原件凭据各保留含义；最新映射用于正常训练，不冒充历史当时分类。历史点时研究另验，旧发布不回写；d2.5、c7及e3.1 |
 | 公司正式事实 | company_published.sqlite3 → CompanyEvidenceReadPort/CompanyFacts → PublishedCompanyResearch内存投影 → A过滤/评分/风险 | 评分使用正式事实，保留未知状态及实际披露时点。见d5.4/5.9/5.10、c6/16.4。 |
 | 模型/样本 | C的封存samples.sqlite3/complete.json及双头model.json → 严格profile加载 → A模型排序/净效用/动作门 | V1/V5独立排序，V2/V3仍local_score；数值重放、质量、收益与实际采用分别取证；e3.4–3.6/7.1、c7–12 |
@@ -579,7 +579,7 @@ flowchart TD
 
 用户授权的HTTP窄例外为`PUT /api/freezes/history/watches/<viewer>`（body仅含months数组，每项year/month整数，最多两个去重月份）与同路径DELETE；viewer为最长64字符ASCII字母数字及短横线。PUT只登记内存需求并返回202及error/viewers/quotes诊断，不读业务库、不等待行情。非法参数400、容量已满429、通道未就绪503。每标签页登记打开日历月份及所选历史日期月份，30秒续期、120秒失效，隐藏／关闭释放，恢复重新登记。后台读取月份记录并批量采集，GET仍只读；单档位server同样经过统一档位组合入口。启动无查看需求时不采集，重启后由页面续期恢复，不建立第二份行情持久库。
 
-月份切换先更新界面，不等待预取；历史名单与锚点先展示，两列未就绪显示行情加载中，现有轮询取得报价后更新；保留行情／非当日报价展示来源日期。任何行情更新都不修改冻结名单、排名、动作、分数及锚点。旧查询对盘中行情缓存的依赖在生产组合时切换为专用行情池，Long状态和刷新规则不变。
+月份切换先更新界面，不等待预取；历史名单与锚点先展示，两列未就绪显示行情加载中，现有轮询取得报价后更新；保留行情／非当日报价展示来源日期。后台按月份保存有界扫描游标，扫描超时继续原进度，完整扫描后才发布股票集合；其它月份扫描期间保留已完成的集合，解除需求后清理对应进度。扫描和行情请求各受timeout_seconds限制，避免扫描耗尽供应商请求时间。任何行情更新都不修改冻结名单、排名、动作、分数及锚点。旧查询对盘中行情缓存的依赖在生产组合时切换为专用行情池，Long状态和刷新规则不变。
 
 默认打开 Tomorrow，刷新保留用户已选档位、策略和日期。当前股票列表的评分单元格最多两行。第一行显示排序所用评分及达标概率。Tomorrow 的模型排序分为本档达标概率换算成 0–100 分。第二行显示本地评分、基础分、加分及扣分。各档配置的涨幅阈值用于计算达标概率及命中状态。历史结算显示命中状态及实际涨幅。六席可包含推荐、关注和回避。Long 显示固定名单及自加入锚点涨跌幅，独立刷新。
 
@@ -649,7 +649,7 @@ flowchart TD
 
 真实页面检测使用统一入口的`recommendation/web/browser-live`，访问已运行服务，选择可用Chrome/Chromium或Firefox/geckodriver，并在报告注明实际浏览器；不启动模拟服务。检测自身的浏览器资源由会话及统一工具进程组有界回收。页面/API一致、SSE已连接与短线结果ready分项判断，空结果一致不能签荐股成功。
 
-慢SSE客户端不得阻塞发布。游标超前、过期、不连续或身份不匹配时重同步；策略/日期切换后，迟到结果不能覆盖当前页。具体队列和超时参数由delivery配置逐字段解释。
+慢SSE客户端不得阻塞发布。HEAD不占用订阅名额，响应关闭和迭代结束均幂等释放订阅。当前HTTP投影与SSE替换事件携带同一正式计算发布序号`publication_sequence`，同日旧发布不得回退较新缓存，完整批次验证后一次替换；进程重启沿持久发布序号核对，事件游标仍只属于当前事件流。游标超前、过期、不连续或身份不匹配时重同步；策略/日期切换后，迟到结果不能覆盖当前页。具体队列和超时参数由delivery配置逐字段解释。
 
 ## 9. 工具脚本全面重整：按业务和功能划分，只留一个接口
 

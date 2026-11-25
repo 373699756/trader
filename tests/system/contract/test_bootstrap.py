@@ -89,14 +89,28 @@ def _static_bootstrap_models(monkeypatch):
     class Predictor:
         identity = "a" * 64
 
+        def __init__(self, profile):
+            self.publication = ModelPublicationIdentity(
+                profile, Strategy.TOMORROW, self.identity, self.identity, date(2026, 8, 1),
+                "b" * 64, "c" * 64, probability_hash=self.identity,
+            )
+
         def predict_probabilities(self, features):
             return (0.25,) * len(features)
 
     monkeypatch.setattr(
         "trader.training.infra.tomorrow.artifact.LoadTomorrowProbabilityModel",
-        lambda *_args, **_kwargs: Predictor(),
+        lambda _root, profile, _target, **_kwargs: Predictor(profile),
     )
-    monkeypatch.setattr("trader.training.infra.d25.artifact.LoadD25ScoringProfile", lambda _root, profile, _target: profile)
+    from trader.training.infra.d25.contracts import StandardD25Profile
+    from trader.training.infra.model_bundles.profile import BuildTrainedScoringProfile
+    from trader.training.infra.model_bundles.profile_publication import InspectPublishedProfileBundles
+
+    def load(root, profile, _target):
+        bundles = InspectPublishedProfileBundles(root / profile, StandardD25Profile(profile))
+        return BuildTrainedScoringProfile(profile, tuple(bundle.model for bundle in bundles))
+
+    monkeypatch.setattr("trader.training.infra.d25.artifact.LoadD25ScoringProfile", load)
 
 
 def test_recommendation_pipeline_requires_every_canonical_stage() -> None:
@@ -314,8 +328,9 @@ def test_startup_input_preloader_never_downloads_and_keeps_web_readable(
             payload = client.get("/api/status").get_json()
         assert payload["market_data"]["published_history_snapshot_hash"] is None
         maintenance = payload["scoring_profile"]["maintenance"]
-        assert len(maintenance) == 2
-        assert {head["strategy"] for head in maintenance} == {"d25"}
+        assert len(maintenance) == 3
+        assert {head["strategy"] for head in maintenance} == {"tomorrow", "d25"}
+        assert len([head for head in maintenance if head["owned"]]) == 2
         assert not (tmp_path / "data/history").exists()
     finally:
         assert preloader.stop(wait=True).completed is True
@@ -340,18 +355,20 @@ def test_build_system_selects_an_explicit_scoring_profile_without_rewriting_conf
 
 
 def test_build_system_passes_project_training_root_for_v3(tmp_path, monkeypatch) -> None:
-    from trader.recommendation.infra.scoring.profile_factory import LoadD25UtilityProfile
+    from trader.recommendation.infra.scoring.profile_factory import LoadProductionD25Profile
+    from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 
     observed: list[Path] = []
     config_path = _config_with_strategy_profile(tmp_path, "v3")
-    v3_profile = LoadD25UtilityProfile("v3", training_root=tmp_path / "data/train")
+    target = PredictionTarget(Strategy.D25, 100)
+    v3_profile = LoadProductionD25Profile(tmp_path / "data/train", "v3", target)
 
-    def load(profile: str, *, training_root: Path | None = None):
-        assert profile == "v3"
-        observed.append(training_root or Path())
+    def load(training_root, profile, prediction_target):
+        assert profile == "v3" and prediction_target == target
+        observed.append(training_root)
         return v3_profile
 
-    monkeypatch.setattr("trader.bootstrap.LoadD25UtilityProfile", load)
+    monkeypatch.setattr("trader.bootstrap.LoadProductionD25Profile", load)
 
     BuildSystem(config_path)
 

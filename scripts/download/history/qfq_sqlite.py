@@ -204,7 +204,7 @@ def AuditQfqPriceFields(
             "LEFT JOIN window_completion c ON c.code=a.code WHERE a.profile='v2' AND "
             "(b.code IS NULL OR c.code IS NULL OR a.source<>b.source OR a.end_date<>b.end_date "
             "OR a.source<>c.source OR a.end_date<>c.cutoff_date)"
-        ).fetchone()[0])
+        ).require_one()[0])
     plan = PriceAuditPlan(
         CanonicalDigest(tuple(identities)), tuple(units), ((path, True), (reference_database, False)),
         cutoff=DecodeDate(units[0].dates[-1]).isoformat(), metadata_integrity=True, metadata_sources=metadata_sources,

@@ -31,7 +31,6 @@ from scripts.training.output_paths import RequireIndependentOutput
 from scripts.training.resources.execution_selection import (
     CpuCandidate, ExecutionCandidate, ExecutionComponent, FanoutCandidate, ParseExecutionComponents,
 )
-from trader.infra.settings.data_paths import DataPaths
 
 if TYPE_CHECKING:
     from scripts.training.resources.execution_candidates import TrainingExecutionExperiment
@@ -70,6 +69,7 @@ def PrepareTrainingHistoryCopy(
     from trader.infra.atomic_files.json import AtomicWriteJson
     from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
     from trader.infra.sqlite_publication import PublishSqliteFile, VerifySqliteFile
+    from trader.infra.settings.data_paths import DataPaths
     from trader.bootstrap import ReadIndustrySnapshot
     from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 
@@ -162,6 +162,7 @@ def PrepareTrainingHistoryCopy(
 
 
 def _require_history_copy_reference(history: Path, sqlite_policy: SqliteIoPolicy) -> None:
+    from trader.infra.settings.data_paths import DataPaths
     from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
 
     catalog = history / "catalog.sqlite3"
@@ -255,6 +256,7 @@ def _probe(
 
     from trader.bootstrap import ReadIndustrySnapshot
     from trader.infra.settings import LoadRuntimeSettings
+    from trader.infra.settings.data_paths import DataPaths
     from trader.recommendation.domain.market.history_alignment import HISTORY_ALIGNMENT_CONTRACT
     from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
     from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
@@ -438,6 +440,8 @@ def _write_workload_checkpoint(
 
 
 def _published_input_signature(history: Path) -> tuple[tuple[str, int, int, int, int, int], ...]:
+    from trader.infra.settings.data_paths import DataPaths
+
     data_paths = DataPaths(history.parent)
     files = (
         history / "catalog.sqlite3", *sorted(history.glob("prices_*.sqlite3")),

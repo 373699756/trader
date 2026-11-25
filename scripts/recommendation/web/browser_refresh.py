@@ -39,7 +39,6 @@ from trader.recommendation.application.pipeline.freeze_publish.draft_index impor
 )
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import (  # noqa: E402
     UnifiedFreezeEventStream,
-    UnifiedPublishedEvent,
 )
 from trader.recommendation.application.pipeline.freeze_publish.freeze_observers import (  # noqa: E402
     AsyncFreezeObserver,
@@ -54,6 +53,7 @@ from trader.recommendation.application.ports.read_only_queries import InputQuali
 from trader.recommendation.application.ports.runtime import (  # noqa: E402
     CycleRequest,
     FreezeUnavailableError,
+    HeadInputFailure,
     PipelineTaskRequest,
     RefreshOutcome,
     ResearchIntent,
@@ -154,6 +154,11 @@ class _RecordingData:
     def refresh_pair(self, requests: tuple[CycleRequest, CycleRequest]) -> None:
         for request in requests:
             self.refresh(request)
+
+    def refresh_round_heads(self, requests: tuple[CycleRequest, ...]) -> tuple[HeadInputFailure, ...]:
+        for request in requests:
+            self.refresh(request)
+        return ()
 
     def release_scoring_input(self, request: CycleRequest) -> None:
         del request
@@ -518,24 +523,7 @@ def _run(
         _seed(index, strategy, simulated_start - timedelta(seconds=1), code)
     data = _RecordingData()
     events = UnifiedFreezeEventStream(history_size=64, client_queue_size=16, subscriber_limit=4)
-    event_times: list[dict[str, object]] = []
-    event_lock = threading.Lock()
     measurement_started = 0.0
-
-    def publish_overlay(overlay: FreezeOverlay) -> UnifiedPublishedEvent:
-        with event_lock:
-            event_times.append(
-                {
-                    "wall": time.monotonic(),
-                    "strategy": overlay.strategy.value,
-                    "observed_at": overlay.observed_at.isoformat(),
-                    "price": overlay.quotes[0].price if overlay.quotes else None,
-                }
-            )
-        current = index.snapshot(overlay.strategy).current
-        if not isinstance(current, ScoredFreeze):
-            raise RuntimeError("measurement overlay parent is unavailable")
-        return events.publish_overlay(overlay, parent_version=current.version)
 
     runtime_settings = LoadRuntimeSettings(args.runtime_config)
     cadence = CadencePlanner(
@@ -563,7 +551,6 @@ def _run(
             settlement=_Settlement(),
             research_factory=_research_factory,
             publish_freeze=lambda _event: None,
-            publish_overlay=publish_overlay,
         ),
         config_version="measurement",
         shutdown_timeout_seconds=5.0,
@@ -714,8 +701,9 @@ def _run(
                         server_thread.join(timeout=5.0)
 
     refresh_calls = data.snapshot()
-    with event_lock:
-        overlay_events = [dict(event) for event in event_times]
+    # The current scheduler does not publish overlays from scored cycles.
+    # Keep this legacy diagnostic's empty measurements explicit.
+    overlay_events: list[dict[str, object]] = []
     target_refreshes = [
         _numeric_field(call, "wall") for call in refresh_calls if call["strategy"] == target_strategy.value
     ]

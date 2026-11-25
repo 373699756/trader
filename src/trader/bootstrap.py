@@ -6,13 +6,12 @@ from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.infra.sqlite_verification_cache import SqliteVerificationCache
 
 import logging
-import sqlite3
 import time
 import threading
 from collections.abc import Callable
 from contextlib import ExitStack, suppress
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import date, datetime
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -310,7 +309,9 @@ def _prepare_reference(
             ).fetch
         else:
             cached_industry = CurrentIndustryCache(industry_path, sqlite_policy=sqlite_policy)
-            industries = lambda cut, _eligible, _calendar: cached_industry.load(cut)
+            def industries(cut: datetime, _eligible: tuple[BaoStockSecurity, ...],
+                           _calendar: tuple[date, ...]) -> tuple[IndustryVersionPort, ...]:
+                return cached_industry.load(cut)
         dependencies = ReferencePreparationDependencies(
             source.fetch,
             partial(publication.calendar, observed_at.date(), fetch=calendar, progress=progress, source="新浪/Akshare"),

@@ -1861,6 +1861,7 @@ const payload = {
 };
 const patch = {
   publication_id: "tomorrow-next",
+  publication_sequence: 2,
   base_projection_version: "tomorrow-base",
   projection_version: "tomorrow-next",
   snapshot_id: "tomorrow-next",
@@ -2491,6 +2492,7 @@ async function verifyAtomicBatchCache() {
           ...coveragePatch, strategy, scoring_profile: profile,
           base_projection_version: "",
           publication_id: version, snapshot_id: version, projection_version: version,
+          publication_sequence: sequence,
         }];
       })),
     ])),
@@ -2501,6 +2503,20 @@ async function verifyAtomicBatchCache() {
   for (const value of ui.payloads.values()) assert.strictEqual(value.round_sequence, 1);
   assert.strictEqual(ui.payloads.get("v1:d25:current").snapshot_id, "v1-d25-1");
   assert.strictEqual(ui.payloads.get("v5:d25:current").scoring_profile, "v5");
+  const firstBatch = ui.payloads;
+  assert.strictEqual(dashboard.applyRecommendationBatch(batch(1)), true);
+  assert.strictEqual(dashboard.applyRecommendationBatch(batch(2)), true);
+  const newerBatch = ui.payloads;
+  assert.strictEqual(dashboard.applyRecommendationBatch(batch(1)), false);
+  assert.strictEqual(ui.payloads, newerBatch, "same-day old event must not roll back any head");
+  const restarted = batch(1);
+  for (const pair of Object.values(restarted.profiles)) {
+    for (const value of Object.values(pair)) value.publication_sequence = 3;
+  }
+  assert.strictEqual(dashboard.applyRecommendationBatch(restarted), true,
+    "a restarted event stream must use the actual publication watermark, not its reset round counter");
+  ui.payloads = firstBatch;
+  painted.length = 1;
 
   const before = ui.payloads;
   const incomplete = batch(2);
@@ -2584,6 +2600,13 @@ async function verifyAtomicBatchCache() {
   assert.strictEqual(fetches, 1, "short strategies must share one complete HTTP response");
   assert.strictEqual(tomorrow.trade_date, "2026-07-26");
   assert.strictEqual(d25.trade_date, tomorrow.trade_date);
+  const httpCurrent = ui.payloads;
+  const oldSameDay = batch(2);
+  for (const pair of Object.values(oldSameDay.profiles)) {
+    for (const value of Object.values(pair)) value.trade_date = "2026-07-26";
+  }
+  assert.strictEqual(dashboard.applyRecommendationBatch(oldSameDay), false);
+  assert.strictEqual(ui.payloads, httpCurrent, "HTTP watermark must reject old SSE replay after reconnect");
   const completeCache = ui.payloads;
   delete responseBatch.profiles.v5.d25;
   await assert.rejects(dashboard.requestRecommendations("tomorrow", "", "current"));
@@ -2650,7 +2673,37 @@ function verifyTodayNavigation() {
   assert.strictEqual(sandbox.window.TraderSelection.shanghaiDate(new Date("2026-12-31T16:01:00Z")), "2027-01-01");
 }
 
+function verifyClosedStreamCannotDeliverOrDisconnectItsReplacement() {
+  const streams = [], applied = [];
+  const streamState = { strategy: "tomorrow", profile: "v1", lastEventId: 0 };
+  sandbox.EventSource = class {
+    constructor() { this.events = {}; streams.push(this); }
+    close() {}
+    addEventListener(name, callback) { this.events[name] = callback; }
+  };
+  sandbox.performance = { now: () => 0 };
+  sandbox.window.requestAnimationFrame = () => {};
+  const controller = sandbox.window.TraderDashboardStream.create({
+    state: streamState, els: { streamStatus: {} }, patches: {},
+    diagnostics: { incrementalSseBytes: 0 }, patchToPaintSamples: [],
+    formatters: { utf8Bytes: () => 2 }, applyRecommendationBatch: (payload) => applied.push(payload),
+    requestRecommendationResync: () => assert.fail("closed stream cannot resync"),
+    recordBrowserError: () => assert.fail("closed stream cannot report errors"),
+  });
+  controller.connect();
+  controller.connect();
+  streams[0].events.batch({ lastEventId: "9", data: "{}" });
+  streams[0].onerror();
+  assert.strictEqual(streamState.stream, streams[1]);
+  assert.strictEqual(streamState.lastEventId, 0);
+  assert.strictEqual(applied.length, 0);
+  streams[1].events.batch({ lastEventId: "1", data: "{}" });
+  assert.strictEqual(streamState.lastEventId, 1);
+  assert.strictEqual(applied.length, 1);
+}
+
 verifyAtomicBatchCache().then(verifyLongCurrentQuote).then(() => {
+  verifyClosedStreamCannotDeliverOrDisconnectItsReplacement();
   verifyTodayNavigation();
   console.log("dashboard state contract passed");
 }).catch((error) => {

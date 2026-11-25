@@ -153,3 +153,70 @@ def test_http_watch_returns_before_background_source_and_get_never_fetches():
     assert payload["items"][0]["anchor_to_now_pct"] is not None
     assert client.delete("/api/freezes/history/watches/tab1").status_code == 200
     assert client.put("/api/freezes/history/watches/tab1", json={"months": [{"year": True, "month": 1}]}).status_code == 400
+
+
+@pytest.mark.parametrize("month_count", (1, 2))
+def test_bounded_month_scan_resumes_all_profiles_without_repeating_the_first_records(month_count):
+    tick = [0.0]
+    reads, calls = [], []
+    record = CommittedFreezeRecord(_freeze(), NOW.replace(hour=15), "scheduled")
+
+    class Reader(_FreezeRecords):
+        def __init__(self, profile):
+            super().__init__(record)
+            self.profile = profile
+
+        def list_dates(self, strategy, *, limit=31, year=None, month=None):
+            return tuple(NOW.date().replace(year=year, month=month, day=index + 1) for index in range(8))
+
+        def load_history(self, strategy, trade_date):
+            reads.append((self.profile, strategy, trade_date))
+            tick[0] += 3
+            return super().load_history(strategy, NOW.date())
+
+    def source(codes, now, deadline, cancelled):
+        calls.append(tuple(codes))
+        assert len(reads) == 64 * month_count
+        return (_quote(),)
+
+    owner = HistoryQuotes(tuple(Reader(profile) for profile in range(4)), source,
+                          lambda: NOW, lambda: (NOW.date(),), DEFAULT_QUOTE_SESSION_TIMES,
+                          monotonic=lambda: tick[0])
+    months = tuple(HistoryQuoteMonth(NOW.year, NOW.month - index) for index in range(month_count))
+    for _ in range(40):
+        owner.watch("a", months)
+        owner.refresh()
+        if calls:
+            break
+    assert len(reads) == len(set(reads)) == 64 * month_count
+    assert calls == [("600000",)]
+    assert owner.cached_quotes(("600000",))["600000"].price == 11
+
+
+def test_partial_month_scan_discards_released_demand_and_cancelled_scan_never_fetches():
+    tick = [0.0]
+    reads = []
+
+    class Reader(_FreezeRecords):
+        def list_dates(self, strategy, *, limit=31, year=None, month=None):
+            return (NOW.date(),) * 8
+
+        def load_history(self, strategy, trade_date):
+            reads.append(trade_date)
+            tick[0] += 3
+            return None
+
+    owner = HistoryQuotes((Reader(),), lambda *args: pytest.fail("no partial demand fetch"),
+                          lambda: NOW, lambda: (NOW.date(),), DEFAULT_QUOTE_SESSION_TIMES,
+                          monotonic=lambda: tick[0])
+    owner.watch("a", (HistoryQuoteMonth(NOW.year, NOW.month),))
+    owner.refresh()
+    assert len(reads) == 4
+    owner.release("a")
+    owner.refresh()
+    assert not owner._month_scans and not owner._month_codes
+    assert owner.diagnostic()[0] == ""
+    owner.watch("a", (HistoryQuoteMonth(NOW.year, NOW.month),))
+    owner.stop(wait=False)
+    owner.refresh()
+    assert len(reads) == 4

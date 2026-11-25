@@ -545,6 +545,30 @@ def test_not_ready_current_keeps_observation_draft_separate_and_private_from_sta
     assert draft.version not in status.get_data(as_text=True)
 
 
+def test_sse_head_and_unstarted_response_release_subscriber_capacity() -> None:
+    from trader.http_api.freeze_sse import FreezeEventResponse
+
+    app, _, stream = _app()
+    client = app.test_client()
+    for _ in range(40):
+        response = client.head("/api/events")
+        assert response.status_code == 200 and response.data == b""
+        response.close()
+        assert stream.status().subscriber_count == 0
+    with app.test_request_context("/api/events"):
+        subscription = stream.open_subscription(None)
+        response = FreezeEventResponse(stream, subscription, heartbeat_seconds=1)
+        assert stream.status().subscriber_count == 1
+        response.close()
+        response.close()
+        assert stream.status().subscriber_count == 0
+    for _ in range(40):
+        response = client.get("/api/events", buffered=False)
+        assert response.status_code == 200 and stream.status().subscriber_count == 1
+        response.close()
+        assert stream.status().subscriber_count == 0
+
+
 def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
     app, queries, stream = _app()
     stream.publish_committed(BuildFreezeCommitted(_freeze()))
@@ -561,6 +585,8 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
     assert "event: freeze" in event
     freeze_patch = json.loads(event.split("data: ", 1)[1])
     assert freeze_patch["strategy"] == "tomorrow"
+    assert freeze_patch["publication_sequence"] == _freeze().sequence
+    assert client.get("/api/freezes/current").get_json()["profiles"]["v2"]["tomorrow"]["publication_sequence"] == freeze_patch["publication_sequence"]
     assert "patch_schema_version" not in freeze_patch
     assert freeze_patch["publication_id"] == _freeze().version
     assert freeze_patch["replace"] is True

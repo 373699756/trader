@@ -47,6 +47,7 @@ def FreezeEventResponse(
             stream.unsubscribe(subscriber)
 
     response = Response(stream_with_context(generate()), mimetype="text/event-stream")
+    response.call_on_close(lambda: stream.unsubscribe(subscription.queue))
     response.headers["Cache-Control"] = "no-cache, no-transform"
     response.headers["X-Accel-Buffering"] = "no"
     response.headers["Connection"] = "keep-alive"

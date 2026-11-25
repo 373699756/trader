@@ -73,7 +73,7 @@ def test_selected_train_delivers_four_independent_tomorrow_and_d25_heads(tmp_pat
         fit_targets.append(binding.target.threshold_bps)
         return object()
 
-    def fit_industry(_samples, request, _checkpoint):
+    def fit_industry(_samples, request, _checkpoint, *, progress=None):
         fit_profiles.append(request.profile)
         fit_targets.append(request.binding.target.threshold_bps)
         return object()

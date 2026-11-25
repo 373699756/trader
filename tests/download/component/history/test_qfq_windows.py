@@ -9,7 +9,6 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -25,7 +24,6 @@ from trader.download.domain.qfq_window import (
 )
 from trader.infra.shutdown import ShutdownBudget
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
-from trader.download.domain.qfq_planning import QfqNonTradingFact
 from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, TencentQfqSupplier
 from trader.infra.sqlite_codec import EncodeDate
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction

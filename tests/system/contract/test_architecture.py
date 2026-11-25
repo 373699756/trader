@@ -253,7 +253,9 @@ def test_v2_and_v3_profiles_share_one_neutral_trained_head_owner() -> None:
         assert not retired.exists()
     assert "TomorrowHistoricalModelSnapshot" not in model_port
     assert "ModelPredictorPort" in model_port
-    assert "BuildTrainedScoringProfile" in factory
+    assert "LoadD25ScoringProfile" in factory
+    d25_loader = source_text(SOURCE_ROOT / "training/infra/d25/artifact.py")
+    assert "BuildTrainedScoringProfile" in d25_loader
     assert not (SOURCE_ROOT / "recommendation/application/ports/tomorrow_model.py").exists()
 
 
@@ -406,10 +408,8 @@ def test_bootstrap_does_not_wire_retired_shortline_overlay_events() -> None:
     assert "publish_overlay=publish_overlay_event" not in source
 
 
-def test_retired_overlay_boundary_is_inert_and_input_quality_remains_typed() -> None:
-    publisher = next(field for field in fields(RuntimeDependencies) if field.name == "publish_overlay")
-
-    assert publisher.default is None
+def test_retired_overlay_boundary_is_absent_and_input_quality_remains_typed() -> None:
+    assert "publish_overlay" not in {field.name for field in fields(RuntimeDependencies)}
     assert "input_quality_status" in FreezeBuilderPort.__dict__
 
 

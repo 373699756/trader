@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
+from functools import partial
 import numpy as np
 
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
@@ -23,7 +24,7 @@ from trader.training.infra.d25.v2.probability import FitD25Lightgbm
 from trader.training.infra.d25.v3.probability import FitD25Logistic
 from trader.training.infra.d25.v5.probability import FitD25Tcn
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
-from trader.training.infra.fitting_settings import LightGBMFittingParameters, ModelFittingParameters, RidgeFittingParameters
+from trader.training.infra.fitting_settings import LightGBMFittingParameters, ModelFittingParameters
 from trader.training.infra.tcn.settings import TcnFittingParameters
 from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingSampleMatrix
 
@@ -64,6 +65,9 @@ def FitIndustryD25Probability(
             ))
 
     report("started")
+    def report_epoch(industry: str, rows: int, epochs: int, epoch: int, completed: int, total: int) -> None:
+        report("running", TrainingFitDetail(industry, rows, "training", epoch, epochs, completed, total))
+
     for count in counts:
         check()
         industry = count.industry
@@ -76,9 +80,7 @@ def FitIndustryD25Probability(
                 if HasD25ProbabilityLabels(training.labels):
                     model_result = _fit_industry(
                         training, request.parameters, request.compute_threads, check,
-                        lambda epoch, completed, total: report("running", TrainingFitDetail(
-                            industry, count.training, "training", epoch, epochs, completed, total,
-                        )),
+                        partial(report_epoch, industry, count.training, epochs),
                     )
         if model_result is None:
             skipped += 1

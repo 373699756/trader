@@ -346,6 +346,10 @@ def _events(services: WebServices | None) -> RouteResponse:
     cursor = _cursor(raw_cursor)
     if raw_cursor is not None and cursor is None:
         return _error("invalid_cursor", "event cursor must be a non-negative integer", 400)
+    if request.method == "HEAD":
+        response = Response(mimetype="text/event-stream")
+        response.headers["Cache-Control"] = "no-cache, no-transform"
+        return response
     try:
         subscription = lane.events.open_subscription(cursor)
     except UnifiedSubscriberLimitError:

@@ -48,7 +48,7 @@ def test_all_publication_sequences_are_ready_before_first_profile_tick(tmp_path,
     def missing_model(*args, **kwargs):
         raise ScoringModelsMissingError()
 
-    monkeypatch.setattr("trader.bootstrap.LoadD25UtilityProfile", missing_model)
+    monkeypatch.setattr("trader.bootstrap.LoadProductionD25Profile", missing_model)
     system = BuildProfiledSystem(_config(tmp_path), profiles=profiles)
     errors = []
     admissions = []

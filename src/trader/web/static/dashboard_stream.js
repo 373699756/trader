@@ -53,6 +53,7 @@
       state.stream = stream;
       els.streamStatus.textContent = "连接中";
       stream.onopen = () => {
+        if (state.stream !== stream) return;
         els.streamStatus.textContent = "实时";
         stopPolling();
         if (state.streamRetry) window.clearTimeout(state.streamRetry);
@@ -60,6 +61,7 @@
         state.streamRetryDelayMs = STREAM_RETRY_INITIAL_MS;
       };
       const refreshFreeze = (event) => {
+        if (state.stream !== stream) return;
         const receivedAt = performance.now();
         rememberEvent(event);
         diagnostics.incrementalSseBytes += formatters.utf8Bytes(event.data || "");
@@ -69,6 +71,7 @@
         }
       };
       const refreshOverlay = (event) => {
+        if (state.stream !== stream) return;
         const receivedAt = performance.now();
         rememberEvent(event);
         diagnostics.incrementalSseBytes += formatters.utf8Bytes(event.data || "");
@@ -78,6 +81,7 @@
         }
       };
       const replaceBatch = (event) => {
+        if (state.stream !== stream) return;
         const receivedAt = performance.now();
         rememberEvent(event);
         diagnostics.incrementalSseBytes += formatters.utf8Bytes(event.data || "");
@@ -90,10 +94,12 @@
       stream.addEventListener("freeze", refreshFreeze);
       stream.addEventListener("overlay", refreshOverlay);
       stream.addEventListener("resync_required", (event) => {
+        if (state.stream !== stream) return;
         rememberEvent(event);
         if (!state.date) requestRecommendationResync("server_resync");
       });
       stream.onerror = () => {
+        if (state.stream !== stream) return;
         stream.close();
         if (state.stream === stream) state.stream = null;
         els.streamStatus.textContent = "轮询";

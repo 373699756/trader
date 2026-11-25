@@ -19,7 +19,6 @@ from trader.recommendation.application.pipeline.freeze_publish.publication_io im
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedFreezeIndex
 from trader.recommendation.application.ports.clock import Clock, TradingCalendarPort
 from trader.recommendation.application.ports.long import LongRefreshPort
-from trader.recommendation.application.ports.publisher import OverlayPublisher
 from trader.recommendation.application.ports.runtime import (
     DataRefreshPort,
     DeepSeekUpgradePort,
@@ -52,7 +51,6 @@ class RuntimeDependencies:
     settlement: SettlementPort
     research_factory: ResearchRuntimeFactoryPort
     publish_freeze: Callable[[FreezeCommitted], object]
-    publish_overlay: OverlayPublisher | None = None
     latency: LatencyWaterfall = field(default_factory=LatencyWaterfall)
     publication_io: PublicationIoTracker | None = None
     monotonic: Callable[[], float] = time.monotonic

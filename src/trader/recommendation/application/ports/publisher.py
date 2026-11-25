@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import Protocol
 
 from trader.recommendation.domain.publication.freeze_identity import FreezeIdentity, FreezeOverlay, ScoredFreeze
-
-OverlayPublisher = Callable[[FreezeOverlay], object]
-
 
 class PublishResultPort(Protocol):
     @property
@@ -42,4 +38,4 @@ class FreezePublisherPort(Protocol):
     ) -> PublishResultPort: ...
 
 
-__all__ = ["FreezePublisherPort", "OverlayPublisher", "PublishResultPort"]
+__all__ = ["FreezePublisherPort", "PublishResultPort"]
