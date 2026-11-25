@@ -17,6 +17,7 @@ from trader.download.domain.company_source_records import (
     CompanyFinancialScoringObservation,
     CompanyFinancialSourceObservation,
     CompanyFinancialSourceRecordHash,
+    CompanyFinancialSourceValues,
 )
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.market.research import (
@@ -151,8 +152,9 @@ def test_supplier_financial_observation_scores_only_d25_after_actual_availabilit
     assert features["financial_deterioration"] is None
     assert features["quality_score"] is None
 
-    verified = FinancialReport(date(2026, 3, 31), NOW - timedelta(days=20), basic_eps=2.0, parent_net_profit=-3.0)
-    confirmed = replace(observation, financial=verified, financial_history=(verified,))
+    verified = FinancialReport(date(2026, 3, 31), NOW - timedelta(days=20), 2.0, 6.0, 10.0, 10.0, 10.0, 12.0, 3.0, 2.0)
+    latest = FinancialReport(date(2026, 6, 30), NOW - timedelta(hours=3), 1.0, None, -10.0, -22.0, None, 12.0, -3.0, -2.0)
+    confirmed = replace(observation, financial=verified, financial_history=(verified, latest))
     assert DeriveD25FinancialScores(confirmed, 20.0, _long_policy(), observed_at=NOW) is None
     assert DeriveLatestDisclosedReportLoss(confirmed, NOW) == 1.0
 
@@ -184,6 +186,68 @@ def test_supplier_financial_observation_scores_only_d25_after_actual_availabilit
             assert after.components["financial_contribution"] > 0.0
     assert supplied.values == original.values
     assert supplied.missing_fields == original.missing_fields
+
+
+@pytest.mark.parametrize(("period_order", "eps", "bps", "observed_after_disclosure", "usable"), (
+    pytest.param("same", 1.0, 5.0, True, True, id="same-report-supplies-bps"),
+    pytest.param("same", 2.0, 5.0, True, False, id="conflicting-eps"),
+    pytest.param("same", None, 5.0, True, False, id="missing-known-eps"),
+    pytest.param("same", 1.0, None, True, False, id="no-numeric-improvement"),
+    pytest.param("same", 1.0, 5.0, False, False, id="observed-before-official-disclosure"),
+    pytest.param("older", 1.0, 5.0, True, False, id="older-supplier-period"),
+    pytest.param("newer", 2.0, 5.0, True, True, id="newer-supplier-period"),
+    pytest.param("newer_sparse", 2.0, None, True, False, id="newer-eps-only-preserves-formal-scores"),
+))
+def test_d25_supplier_scores_respect_latest_partial_financial_report(
+    period_order: str, eps: float | None, bps: float | None, observed_after_disclosure: bool, usable: bool,
+) -> None:
+    quarter, half_year = date(2026, 3, 31), date(2026, 6, 30)
+    published_at = NOW - timedelta(hours=4)
+    formal = FinancialReport(
+        quarter if period_order in {"newer", "newer_sparse"} else half_year, published_at,
+        1.0, None, -12.0, -22.0, -25.0, 12.0, -3.0, 2.0,
+    )
+    notice_at = NOW.replace(hour=0, minute=0)
+    financial = CompanyFinancial(
+        "600001", quarter if period_order == "older" else half_year, notice_at,
+        eps, bps, -12.0, -22.0, -25.0, 12.0, -3.0, 2.0,
+    )
+    if period_order == "newer":
+        financial = replace(financial, revenue_growth_pct=15.0, net_profit_growth_pct=20.0,
+                            core_profit_growth_pct=25.0, parent_net_profit=3.0)
+    elif period_order == "newer_sparse":
+        financial = CompanyFinancial("600001", half_year, notice_at, eps, bps, None, None, None, None, None, None)
+    supplier_observed = published_at + timedelta(hours=1 if observed_after_disclosure else -1)
+    record_hash = CompanyFinancialSourceRecordHash(financial, "600001.SH", notice_at, None, "CNY")
+    supplier = CompanyFinancialSourceObservation(
+        financial, "600001.SH", notice_at, None, supplier_observed, "CNY", record_hash,
+        tuple(CompanyFinancialMissingField(field) for field, value in CompanyFinancialSourceValues(financial) if value is None),
+    )
+    source = CompanyFinancialScoringObservation(supplier, NOW)
+    if period_order == "older":
+        retained = replace(formal, report_date=quarter, published_at=published_at - timedelta(days=1))
+        without_supplier = ResearchObservation(financial=retained, financial_history=(retained, formal))
+    else:
+        without_supplier = ResearchObservation(financial=formal, financial_history=(formal,))
+    adopted_at = NOW + timedelta(seconds=1)
+    observation = replace(without_supplier, financial_scoring_observation=source, financial_scoring_adopted_at=adopted_at)
+    policy = _long_policy()
+
+    assert DeriveD25FinancialScores(observation, 20.0, policy, observed_at=NOW) is None
+    scores = DeriveD25FinancialScores(observation, 20.0, policy, observed_at=adopted_at)
+    assert (scores is not None) is usable
+    if scores is not None:
+        assert scores.source == source and scores.adopted_at == adopted_at
+    assert DeriveLatestDisclosedReportLoss(observation, adopted_at) == 1.0
+    inputs = LongResearchInputs(20, 80, 70, 80)
+    weights = _feature_component_weights()
+    before = DeriveLongResearchFeatures(without_supplier, inputs, policy, weights, observed_at=adopted_at)
+    after = DeriveLongResearchFeatures(observation, inputs, policy, weights, observed_at=adopted_at)
+    assert before["financial_deterioration"] == 1.0
+    assert before["quality_score"] is not None and before["growth_score"] is not None
+    assert after == before
+    if period_order == "same" and scores is not None:
+        assert scores.value is not None and scores.value != before["value_score"]
 
 
 @pytest.mark.parametrize("age", (550, 551, 900))

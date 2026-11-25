@@ -354,22 +354,57 @@ def DeriveD25FinancialScores(
     *,
     observed_at: datetime,
 ) -> D25FinancialScores | None:
-    """Use one visible supplier report only when a fresh formal report is absent."""
-    if FinancialReportIsFresh(observation.financial, observed_at, maximum_age_days=policy.financial_max_age_days):
+    """Use one visible supplier report when there is no fresh, complete formal report."""
+    maximum_age = policy.financial_max_age_days
+    formal = observation.financial
+    formal_fresh = FinancialReportIsFresh(formal, observed_at, maximum_age_days=maximum_age)
+    if formal_fresh and formal is not None and all(value is not None for value in _financial_values(formal)):
         return None
     source = observation.financial_scoring_observation
     if source is None or not FinancialScoringObservationIsVisible(observation, observed_at):
         return None
     report = ProjectCompanyFinancialReport(source.observation.financial, observed_at)
-    if not FinancialReportIsFresh(report, observed_at, maximum_age_days=policy.financial_max_age_days):
+    if report is None or not FinancialReportIsFresh(report, observed_at, maximum_age_days=maximum_age):
         return None
+    history = observation.financial_history or ((formal,) if formal is not None else ())
+    latest_formal = max(
+        (item for item in history if FinancialReportIsFresh(item, observed_at, maximum_age_days=maximum_age)),
+        key=lambda item: (item.report_date, item.published_at), default=None,
+    )
+    if latest_formal is not None:
+        if report.report_date < latest_formal.report_date:
+            return None
+        if report.report_date == latest_formal.report_date and (
+            source.observation.observed_at < latest_formal.published_at or not _supplements_formal_report(latest_formal, report)
+        ):
+            return None
     quality = _quality_score(report, policy)
     value = _valuation_score(report, price, policy)
     growth = _growth_score(report, policy)
     if quality is None and value is None and growth is None:
         return None
+    if formal_fresh and (
+        quality is None and _quality_score(formal, policy) is not None
+        or value is None and _valuation_score(formal, price, policy) is not None
+        or growth is None and _growth_score(formal, policy) is not None
+    ):
+        return None
     adopted_at = observation.financial_scoring_adopted_at or observation.loaded_at
     return D25FinancialScores(source, quality, value, growth, adopted_at)
+
+
+def _financial_values(report: FinancialReport) -> tuple[float | None, ...]:
+    return tuple(_finite_or_none(value) for value in (
+        report.basic_eps, report.book_value_per_share, report.revenue_growth_pct, report.net_profit_growth_pct,
+        report.core_profit_growth_pct, report.roe_pct, report.parent_net_profit, report.core_net_profit,
+    ))
+
+
+def _supplements_formal_report(formal: FinancialReport, supplier: FinancialReport) -> bool:
+    fields = tuple(zip(_financial_values(formal), _financial_values(supplier), strict=True))
+    return all(known is None or observed == known for known, observed in fields) and any(
+        known is None and observed is not None for known, observed in fields
+    )
 
 
 def FinancialScoringObservationIsVisible(observation: ResearchObservation, observed_at: datetime) -> bool:
