@@ -351,7 +351,7 @@ def test_company_cli_exceptions_before_a_result_print_text(monkeypatch, capsys, 
 
 def test_company_cli_invalid_config_prints_text_before_sync(tmp_path, capsys):
     config = tmp_path / "missing.json"
-    assert Main(["--config", str(config), "sync", "company", "fill"]) == 2
+    assert Main(["--config", str(config), "sync", "company"]) == 2
     assert capsys.readouterr().out == "公司同步：启动失败，运行配置或环境检查未通过。\n"
 
 

@@ -33,7 +33,7 @@ from trader.recommendation.infra.market_data.published_references import Publish
 from trader.recommendation.infra.normalization.features import FeatureBuilder
 from trader.recommendation.infra.policy_settings import BuildRecommendationPolicy
 from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
-from trader.recommendation.infra.scoring.profile_factory import BuildProfileScoring, LoadD25UtilityProfile
+from trader.recommendation.infra.scoring.profile_factory import BuildProfileScoring
 from trader.training.infra.d25.artifact import LoadD25ScoringProfile
 from trader.training.infra.tomorrow.artifact import LoadTomorrowProbabilityModel
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
@@ -134,10 +134,9 @@ def LoadFactorInputs(
         raise RuntimeError("qfq_snapshot_changed")
     read_ms = (time.monotonic() - started) * 1000
     started = time.monotonic()
-    loaded = LoadD25UtilityProfile(profile, training_root=settings.data_paths.models)
     tomorrow_target = strategy.prediction_targets.for_profile(profile, Strategy.TOMORROW)
     d25_target = strategy.prediction_targets.for_profile(profile, Strategy.D25)
-    loaded = LoadD25ScoringProfile(settings.data_paths.models, loaded, d25_target)
+    loaded = LoadD25ScoringProfile(settings.data_paths.models, profile, d25_target)
     d25_predictor = cast(ModelPredictorPort, loaded.heads[Strategy.D25].predictor)
     model_heads = (
         ModelFeatureRequirements(Strategy.TOMORROW, TOMORROW_FEATURE_NAMES, False),

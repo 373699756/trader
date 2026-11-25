@@ -66,9 +66,9 @@ from trader.training.infra.history.history_training_input import (
 )
 from trader.training.infra.implementation_identity import LaneTrainingImplementationIdentity, TrainingImplementationIdentity
 from trader.training.infra.execution_options import TrainingExecutionOptions
-from trader.training.infra.d25.artifact import D25ProbabilityBinding, HasD25Probability, StageD25Probability
+from trader.training.infra.d25.artifact import D25ProbabilityBinding, ReadD25ProbabilityIdentity, StageD25Probability
 from trader.training.infra.d25.calibration import D25ProbabilityCalibrationError
-from trader.training.infra.d25.model_document import D25ModelDocument, EncodeD25ModelDocument
+from trader.training.infra.d25.model_document import D25ModelDocument, EncodeD25MetadataDocument, EncodeD25ModelDocument
 from trader.training.infra.d25.training import D25IndustryFitRequest, FitIndustryD25Probability
 from trader.training.infra.fitting_resources import ReserveTrainingFittingResources, TrainingFittingReservation
 from trader.training.infra.model_bundles.bundle_snapshot import (
@@ -438,6 +438,16 @@ class _ProfileTrainingAdapter:
             512 * 1024**2 + final_matrix_bytes * 2 if request.profile.algorithm == "tcn"
             else 256 * 1024**2 + matrix_bytes * 4
         )
+        if request.d25_target is not None:
+            counts = samples.industry_counts(request.contracts[0], d25_probability=True)
+            width = len(request.contracts[0].feature_positions)
+            event_matrix_bytes = max((item.training for item in counts), default=0) * (width + 1) * 8
+            calibration_bytes = sum(item.calibration for item in counts) * 64
+            if isinstance(request.settings.fitting, TcnFittingParameters):
+                batch_arrays = request.settings.fitting.batch_size * (width + 1) * 24
+                estimate = max(estimate, 512 * 1024**2 + event_matrix_bytes + batch_arrays + calibration_bytes)
+            else:
+                estimate = max(estimate, 256 * 1024**2 + event_matrix_bytes * 4 + calibration_bytes)
         if request.execution_options.shared_validation:
             estimate += (512 if request.profile.algorithm == "tcn" else 256) * 1024**2
         if request.execution_options.shared_matrix_memory:
@@ -528,7 +538,6 @@ class _ProfileFittingAdapter:
                     def checkpoint() -> None:
                         if request.cancel_requested is not None and request.cancel_requested():
                             raise InterruptedError("d25_probability_training_cancelled")
-                        _publish(request.progress, TomorrowTrainingProgress("model_fit", "running", 0, 1))
 
                     probability_request = D25IndustryFitRequest(
                         request.profile.profile_id,
@@ -542,16 +551,31 @@ class _ProfileFittingAdapter:
                         ),
                     )
                     try:
-                        artifact = FitIndustryD25Probability(self.samples, probability_request, checkpoint)
-                    except D25ProbabilityCalibrationError:
+                        artifact = FitIndustryD25Probability(
+                            self.samples,
+                            probability_request,
+                            checkpoint,
+                            progress=request.progress.publish if request.progress is not None else None,
+                        )
+                    except D25ProbabilityCalibrationError as exc:
+                        published = False
                         if request.profile.profile_id == "v5" and not _has_d25_probability(
                             request.train_root, request.profile, contract, request.d25_target,
                         ):
                             checkpoint()
                             self.publish_pair()
-                        raise
+                            published = True
+                        return PreparedTrainingHead(replace(
+                            result,
+                            status="blocked",
+                            model_hash=result.model_hash if published else "",
+                            failure_reasons=(str(exc),),
+                            diagnostic=CaptureTrainingError(exc),
+                            utility_model_published=published,
+                            probability_calibration_failed=True,
+                        ), False)
                     checkpoint()
-                    StageD25Probability(staging, artifact)
+                    result = replace(result, probability_model_hash=StageD25Probability(staging, artifact))
             return PreparedTrainingHead(result, staging is not None)
 
     def publish_pair(self) -> None:
@@ -759,7 +783,7 @@ def _fit_and_prepare_head(
             EncodeD25ModelDocument(D25ModelDocument(model)) if contract.strategy is Strategy.D25 else model
         )
         _write_json(staging / "model.json", model_document)
-        _write_json(staging / "metadata.json", metadata)
+        _write_json(staging / "metadata.json", EncodeD25MetadataDocument(metadata) if contract.strategy is Strategy.D25 else metadata)
         result = HeadTrainingResult(
             contract.strategy,
             "engineering_ready",
@@ -961,12 +985,12 @@ def _has_d25_probability(
         return False
     return any(
         bundle.strategy is Strategy.D25
-        and HasD25Probability(
+        and ReadD25ProbabilityIdentity(
             profile_root,
             profile.profile_id,
             contract.feature_manifest.names,
             D25ProbabilityBinding(target, bundle.model_hash, bundle.training_input_hash, bundle.metadata_hash),
-        )
+        ) is not None
         for bundle in bundles
     )
 
@@ -981,11 +1005,14 @@ def _reuse_profile(history: _TrainingInputSnapshot, request: ProfileTrainingRequ
     heads: list[PublishedTrainingHead] = []
     for bundle, contract in zip(bundles, request.contracts, strict=True):
         model = bundle.model
-        if request.d25_target is not None and not HasD25Probability(
-            request.train_root, request.profile.profile_id, contract.feature_manifest.names,
-            D25ProbabilityBinding(request.d25_target, model.content_hash, bundle.training_input_hash, bundle.metadata_hash),
-        ):
-            return None
+        probability_hash = None
+        if request.d25_target is not None:
+            probability_hash = ReadD25ProbabilityIdentity(
+                request.train_root, request.profile.profile_id, contract.feature_manifest.names,
+                D25ProbabilityBinding(request.d25_target, model.content_hash, bundle.training_input_hash, bundle.metadata_hash),
+            )
+            if probability_hash is None:
+                return None
         heads.append(
             PublishedTrainingHead(HeadTrainingResult(
                 contract.strategy,
@@ -1004,6 +1031,8 @@ def _reuse_profile(history: _TrainingInputSnapshot, request: ProfileTrainingRequ
                 bundle.label_cutoff,
                 final_fit=model.final_fit,
                 diagnostic_plan=model.diagnostic_plan,
+                utility_model_published=True,
+                probability_model_hash=probability_hash,
             ), bundle.training_contract_hash)
         )
     return InspectProfileReuse(_read_profile_source(history, request), tuple(heads))

@@ -183,7 +183,6 @@ class CompanyEvidenceRequest:
     event_policy: CompanyEventPolicy
     stock_names: tuple[tuple[str, str], ...] = ()
     listings: tuple[CompanyListing, ...] = ()
-    fill_missing: bool = False
 
     @classmethod
     def from_reference(
@@ -192,8 +191,6 @@ class CompanyEvidenceRequest:
         observed_at: datetime,
         configuration: CompanySyncConfiguration,
         event_policy: CompanyEventPolicy,
-        *,
-        fill_missing: bool = False,
     ) -> CompanyEvidenceRequest:
         population = reference.eligible_universe
         return cls(
@@ -203,7 +200,6 @@ class CompanyEvidenceRequest:
             event_policy=event_policy,
             stock_names=tuple((item.code, item.name) for item in population),
             listings=tuple(CompanyListing(item.code, item.listed_on) for item in population),
-            fill_missing=fill_missing,
         )
 
     def __post_init__(self) -> None:

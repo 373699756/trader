@@ -49,7 +49,6 @@ from trader.recommendation.infra.market_data.published_history_cache import Publ
 from trader.recommendation.infra.market_data.shared_history_projection import SharedHistoryProjection
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 from trader.recommendation.infra.market_data.published_references import PublishedReferences
-from trader.recommendation.infra.scoring.profile_factory import LoadD25UtilityProfile
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
@@ -237,7 +236,7 @@ def _measure_preload(
     models = tuple(
         LoadD25ScoringProfile(
             settings.data_paths.models,
-            LoadD25UtilityProfile(profile, training_root=settings.data_paths.models),
+            profile,
             targets.for_profile(profile, Strategy.D25),
         )
         for profile in selected

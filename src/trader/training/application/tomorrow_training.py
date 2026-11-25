@@ -24,6 +24,7 @@ TomorrowTrainingStage = Literal[
     "target_statistics",
     "industry_statistics",
     "model_fit",
+    "event_model_fit",
     "model_calibration",
     "model_evaluation",
     "model_reuse",

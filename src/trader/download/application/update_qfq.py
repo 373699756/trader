@@ -219,57 +219,6 @@ class UpdateQfqWindows:
         if self.failures is not None and not self.cancel_requested():
             self.failures(DownloadFailureContext(stage, code=code, elapsed_seconds=elapsed), exc)
 
-    def seed(
-        self, windows: Iterable[PublishedHistoryWindow], identity: str, *, calendar: tuple[date, ...],
-        nontrading_observed_on: date | None = None,
-    ) -> QfqUpdateResult:
-        if nontrading_observed_on is not None and type(nontrading_observed_on) is not date:
-            raise ValueError("qfq_seed_observation_date_invalid")
-        with self._publication_check():
-            return self._seed(windows, identity, calendar=calendar, nontrading_observed_on=nontrading_observed_on)
-
-    def _seed(
-        self, windows: Iterable[PublishedHistoryWindow], identity: str, *, calendar: tuple[date, ...],
-        nontrading_observed_on: date | None,
-    ) -> QfqUpdateResult:
-        changed: set[str] = set()
-        rows = 0
-        count = 0
-        for window in windows:
-            if self.cancel_requested():
-                break
-            bounded = PublishedHistoryWindow(
-                window.code,
-                tuple(
-                    cell
-                    for cell in window.cells
-                    if cell.trade_date in calendar[-self.configuration.maximum_sessions :]
-                ),
-            )
-            files, delta = self.v2.replace_paired_windows(
-                self.v3,
-                (bounded,),
-                identity,
-                self.configuration,
-                calendar=calendar[-self.configuration.maximum_sessions :],
-                completed_day=None,
-                nontrading_facts=self._observed_nontrading(bounded, identity, nontrading_observed_on) if nontrading_observed_on is not None else None,
-            )
-            changed.update(files)
-            rows += delta
-            count += 1
-            if count % 64 == 0:
-                self.report(
-                    QfqNotice(
-                        "历史提取",
-                        (
-                            ProgressCount("已处理", count, "只"),
-                            ProgressCount("变更文件", len(changed)),
-                        ),
-                    )
-                )
-        return QfqUpdateResult(None, count, changed_files=tuple(sorted(changed)), changed_rows=rows, price_review=QfqPriceReviewSummary(discovery_completed=False))
-
     def execute(self, observed_at: datetime) -> QfqUpdateResult:
         with self._publication_check():
             progress, failure_reason = self._execute(observed_at)

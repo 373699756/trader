@@ -74,7 +74,6 @@ def BuildParser() -> argparse.ArgumentParser:
     training.add_argument("--diagnostics", type=Path, help="Write full diagnostics to a new file; never overwrite.")
     sync = subparsers.add_parser("sync", help="Prepare references, then synchronize history and company.")
     sync.add_argument("target", nargs="?", default="all", choices=("all", "company", "history"))
-    sync.add_argument("operation", nargs="?", choices=("fill",), help="仅company：恢复本地缺证和已知原件；不按字段空值扩大逐股PDF下载。")
     subparsers.add_parser(
         "history-automation-status",
         help="Read the persisted history due and reminder state without recalculation.",
@@ -101,8 +100,6 @@ def BuildParser() -> argparse.ArgumentParser:
 def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI command dispatch
     parser = BuildParser()
     args = parser.parse_args(argv)
-    if args.command == "sync" and args.operation == "fill" and args.target != "company":
-        parser.error("fill 仅用于 company")
     if args.command == "sync":
         if args.profile is not None:
             parser.error("sync does not accept --profile")
@@ -195,8 +192,7 @@ def _run_sync(args: argparse.Namespace, progress: SyncProgress) -> int:
         progress.keep_alive(shutdown=cancelled),
     ):
         try:
-            result = ExecuteSync(config_path, args.target, cancel_requested=cancelled.is_set,
-                                 fill_missing=args.operation == "fill", report=progress)
+            result = ExecuteSync(config_path, args.target, cancel_requested=cancelled.is_set, report=progress)
         except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
             progress(ProgressMessage((ProgressField(f"原因 {type(exc).__name__}"),),
                                      task=ProgressTask("sync", "result", "结果汇总"), state="失败", finished=True))

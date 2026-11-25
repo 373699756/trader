@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import asdict, dataclass
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field
 from datetime import date
 from itertools import islice
 from pathlib import Path
@@ -23,6 +24,7 @@ from trader.recommendation.domain.market.v5.features import SEQUENCE_CONTRACT
 from trader.recommendation.domain.outcomes.prediction_target import ParsePredictionTargetIdentity, PredictionTarget
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.training.domain.model_publication import ModelPublicationIdentity
 from trader.training.infra.model_bundles.profile_publication import ProfilePublicationLock, PublishStrategyModelFiles
 from trader.training.infra.tcn.settings import TCN_NETWORK_CONTRACT
 from trader.training.infra.tcn.tensors import DecodeTcnNetwork
@@ -40,7 +42,7 @@ _MAX_MODEL_BYTES = 16 * 1024 * 1024
 _MAX_METADATA_BYTES = 1024 * 1024
 _METADATA_FIELDS = (
     "profile", "algorithm", "target", "features", "history_snapshot_hash", "training_contract_hash",
-    "fitting_dates", "calibration_dates",
+    "fitting_dates", "calibration_dates", "fit_settings_hash",
 )
 _MODEL_FIELDS = ("logistic", "lightgbm", "tcn", "calibration")
 
@@ -62,11 +64,13 @@ class TomorrowProbabilityArtifact:
     logistic: LogisticTomorrowModel | None
     lightgbm: str | None
     tcn: TomorrowTcnModel | None = None
+    fit_settings_hash: str = field(kw_only=True)
 
     def __post_init__(self) -> None:
         if (
             self.target.strategy is not Strategy.TOMORROW
             or not _valid_hash(self.history_snapshot_hash) or not _valid_hash(self.training_contract_hash)
+            or not _valid_hash(self.fit_settings_hash)
             or not self.fitting_dates or not self.calibration_dates
             or self.fitting_dates != tuple(sorted(set(self.fitting_dates)))
             or self.calibration_dates != tuple(sorted(set(self.calibration_dates)))
@@ -91,6 +95,11 @@ class LoadedTomorrowProbabilityModel:
     artifact: TomorrowProbabilityArtifact
     booster: lgb.Booster | None
     network: TcnNetwork | None = None
+
+    @property
+    def publication(self) -> ModelPublicationIdentity:
+        artifact = self.artifact
+        return _publication_identity(artifact.profile, self.identity, artifact.fitting_dates, artifact.history_snapshot_hash)
 
     def predict_probability(self, features: tuple[float, ...]) -> float:
         return self.predict_probabilities((features,))[0]
@@ -132,6 +141,7 @@ def _document(artifact: TomorrowProbabilityArtifact) -> dict[str, object]:
         "features": TomorrowFeatureNames(artifact.profile),
         "history_snapshot_hash": artifact.history_snapshot_hash,
         "training_contract_hash": artifact.training_contract_hash,
+        "fit_settings_hash": artifact.fit_settings_hash,
         "fitting_dates": tuple(day.isoformat() for day in artifact.fitting_dates),
         "calibration_dates": tuple(day.isoformat() for day in artifact.calibration_dates),
         "logistic": None if logistic is None else {
@@ -176,40 +186,31 @@ def LoadTomorrowProbabilityModel(
 ) -> LoadedTomorrowProbabilityModel | None:
     if target.strategy is not Strategy.TOMORROW:
         raise ValueError("tomorrow_probability_target_invalid")
-    pair = _read_pair(model_root, profile)
+    pair = _read_documents(model_root, profile, include_model=True)
     if pair is None:
         return None
-    model: object = json.loads(pair[0])
-    metadata: object = json.loads(pair[1])
+    model_text, metadata_text = pair
+    assert model_text is not None
+    model: object = json.loads(model_text)
+    metadata, identity, published_target = _parse_metadata(metadata_text, profile)
     if not isinstance(model, dict) or set(model) != set(_MODEL_FIELDS):
         raise ValueError("tomorrow_probability_artifact_invalid")
-    if not isinstance(metadata, dict) or set(metadata) != {"identity", *_METADATA_FIELDS}:
-        raise ValueError("tomorrow_probability_artifact_invalid")
-    identity: object = metadata["identity"]
-    if not isinstance(identity, str):
-        raise ValueError("tomorrow_probability_artifact_invalid")
     source = {**model, **{key: metadata[key] for key in _METADATA_FIELDS}}
-    target_identity: object = source["target"]
-    published_target = ParsePredictionTargetIdentity(target_identity) if isinstance(target_identity, str) else None
-    if (
-        ContentHash(source) != identity
-        or source["profile"] != profile or source["algorithm"] != TomorrowAlgorithm(profile)
-        or source["features"] != list(TomorrowFeatureNames(profile))
-        or published_target is None or published_target.strategy is not Strategy.TOMORROW
-        or published_target.identity != target_identity
-    ):
+    if ContentHash(source) != identity:
         raise ValueError("tomorrow_probability_artifact_contract_mismatch")
     if target != published_target:
         return None
-    training_identity = LoadTomorrowFitSettings(project_root, profile).identity
-    if training_identity != source["training_contract_hash"]:
+    fit_identity = LoadTomorrowFitSettings(project_root, profile).fitting_identity
+    if fit_identity != source["fit_settings_hash"]:
         raise ValueError("tomorrow_probability_training_contract_mismatch")
+    training_identity = source["training_contract_hash"]
     snapshot = source["history_snapshot_hash"]
     tree = source["lightgbm"]
     linear = source["logistic"]
     calibration = _numbers(source["calibration"])
     if (
-        not isinstance(snapshot, str) or (tree is not None and not isinstance(tree, str)) or len(calibration) != 2
+        not isinstance(snapshot, str) or not isinstance(training_identity, str)
+        or (tree is not None and not isinstance(tree, str)) or len(calibration) != 2
         or (linear is not None and (not isinstance(linear, dict) or set(linear) != {"intercept", "weights", "means", "scales"}))
     ):
         raise ValueError("tomorrow_probability_artifact_invalid")
@@ -221,6 +222,7 @@ def LoadTomorrowProbabilityModel(
         ),
         lightgbm=tree,
         tcn=None if source["tcn"] is None else _decode_tcn(source["tcn"]),
+        fit_settings_hash=fit_identity,
     )
     return LoadedTomorrowProbabilityModel(
         identity, artifact, None if tree is None else _load_tree(tree, profile),
@@ -228,19 +230,72 @@ def LoadTomorrowProbabilityModel(
     )
 
 
-def _read_pair(model_root: Path, profile: ScoringProfileId) -> tuple[bytes, bytes] | None:
+def ReadTomorrowPublicationIdentity(
+    model_root: Path, profile: ScoringProfileId, target: PredictionTarget, *, cancel_requested: Callable[[], bool],
+) -> ModelPublicationIdentity | None:
+    pair = _read_documents(model_root, profile, include_model=False, cancel_requested=cancel_requested)
+    if pair is None:
+        return None
+    metadata, identity, published_target = _parse_metadata(pair[1], profile)
+    if target != published_target:
+        return None
+    snapshot = metadata["history_snapshot_hash"]
+    dates = _dates(metadata["fitting_dates"])
+    if not isinstance(snapshot, str) or not _valid_hash(snapshot) or not dates:
+        raise ValueError("tomorrow_probability_artifact_invalid")
+    return _publication_identity(profile, identity, dates, snapshot)
+
+
+def _publication_identity(
+    profile: ScoringProfileId, identity: str, fitted: tuple[date, ...], history_snapshot_hash: str,
+) -> ModelPublicationIdentity:
+    return ModelPublicationIdentity(
+        profile, Strategy.TOMORROW, identity, identity, fitted[-1], history_snapshot_hash, identity,
+        probability_hash=identity,
+    )
+
+
+def _parse_metadata(
+    encoded: bytes, profile: ScoringProfileId,
+) -> tuple[dict[str, object], str, PredictionTarget]:
+    metadata: object = json.loads(encoded)
+    if not isinstance(metadata, dict) or set(metadata) != {"identity", *_METADATA_FIELDS}:
+        raise ValueError("tomorrow_probability_artifact_invalid")
+    identity: object = metadata["identity"]
+    target_identity: object = metadata["target"]
+    target = ParsePredictionTargetIdentity(target_identity) if isinstance(target_identity, str) else None
+    if (
+        not isinstance(identity, str) or not _valid_hash(identity)
+        or metadata["profile"] != profile or metadata["algorithm"] != TomorrowAlgorithm(profile)
+        or metadata["features"] != list(TomorrowFeatureNames(profile))
+        or target is None or target.strategy is not Strategy.TOMORROW or target.identity != target_identity
+    ):
+        raise ValueError("tomorrow_probability_artifact_contract_mismatch")
+    return dict(metadata), identity, target
+
+
+def _read_documents(
+    model_root: Path,
+    profile: ScoringProfileId,
+    *,
+    include_model: bool,
+    cancel_requested: Callable[[], bool] | None = None,
+) -> tuple[bytes | None, bytes] | None:
     profile_root = model_root / profile
     if not profile_root.exists() and not profile_root.is_symlink():
         return None
     model_path = TomorrowProbabilityModelPath(model_root, profile)
     head_root = model_path.parent
-    with ProfilePublicationLock(profile_root):
+    timeout = 2.0 if include_model else 1.0
+    with ProfilePublicationLock(profile_root, timeout, cancel_requested=cancel_requested):
         if profile_root.is_symlink() or head_root.is_symlink():
             raise ValueError("tomorrow_probability_artifact_invalid")
         try:
             if {path.name for path in islice(head_root.iterdir(), 3)} - {"model.json", "metadata.json"}:
                 raise ValueError("tomorrow_probability_artifact_invalid")
-            model = ReadRegularFile(model_path, maximum_bytes=_MAX_MODEL_BYTES)
+            if model_path.is_symlink() or not model_path.is_file():
+                raise FileNotFoundError(model_path)
+            model = ReadRegularFile(model_path, maximum_bytes=_MAX_MODEL_BYTES) if include_model else None
             metadata = ReadRegularFile(head_root / "metadata.json", maximum_bytes=_MAX_METADATA_BYTES)
         except FileNotFoundError:
             return None
@@ -290,6 +345,7 @@ def _dates(values: object) -> tuple[date, ...]:
 __all__ = [
     "LoadedTomorrowProbabilityModel",
     "LoadTomorrowProbabilityModel",
+    "ReadTomorrowPublicationIdentity",
     "PublishTomorrowProbabilityModel",
     "TomorrowProbabilityArtifact",
     "TomorrowProbabilityModelPath",

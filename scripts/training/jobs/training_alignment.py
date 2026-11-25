@@ -753,7 +753,6 @@ def _load_artifact_evidence(
     *, d25_only: bool,
 ) -> tuple[list[dict[str, str]], dict[tuple[ScoringProfileId, str], object]]:
     from trader.recommendation.domain.publication.models import Strategy
-    from trader.recommendation.infra.scoring.profile_factory import LoadD25UtilityProfile
     from trader.recommendation.infra.settings.loading import LoadPredictionTargets
     from trader.training.infra.d25.artifact import LoadD25ScoringProfile, ReadD25ProbabilityArtifact
     from trader.training.infra.d25.tree import D25TreeModel
@@ -778,14 +777,14 @@ def _load_artifact_evidence(
                 asdict(artifact.logistic) if artifact.logistic is not None else
                 asdict(artifact.tcn) if artifact.tcn is not None else None,
             )
-        utility = LoadD25UtilityProfile(profile, training_root=model_root)
         target = targets.for_profile(profile, Strategy.D25)
-        model_hash = LoadD25ScoringProfile(model_root, utility, target).heads[Strategy.D25].predictor.model_hash
-        d25 = ReadD25ProbabilityArtifact(model_root, utility, target)
-        publication = next(item for item in utility.publications if item.strategy is Strategy.D25)
+        loaded = LoadD25ScoringProfile(model_root, profile, target)
+        model_hash = loaded.heads[Strategy.D25].predictor.model_hash
+        d25 = ReadD25ProbabilityArtifact(loaded)
+        binding = d25.binding
         utility_model_hash, input_hash, metadata_hash, report_hash = _read_d25_utility_evidence(model_root, profile)
         if (utility_model_hash, input_hash, metadata_hash) != (
-            publication.model_hash, publication.training_history_hash, publication.metadata_hash,
+            binding.utility_hash, binding.input_hash, binding.utility_metadata_hash,
         ):
             raise ValueError("training_alignment_d25_utility_publication_changed")
         identities.append({

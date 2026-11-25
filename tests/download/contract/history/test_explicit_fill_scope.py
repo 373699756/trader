@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[4]
 
 
 @pytest.mark.parametrize("arguments", (
-    ("history", "fill"), ("market", "fill"),
+    ("history", "fill"), ("market", "fill"), ("company", "fill"),
     ("history", "--repair-codes", "300118"),
     ("company", "fill", "--repair-codes", "300118"),
 ))
@@ -28,16 +28,7 @@ def test_retired_price_repair_is_rejected_before_composition(monkeypatch, argume
     assert caught.value.code == 2
 
 
-@pytest.mark.parametrize("target", ("all", "history", "market"))
-def test_composition_rejects_retired_fill_before_loading_configuration(monkeypatch, target):
-    from trader.bootstrap import ExecuteSync
-
-    monkeypatch.setattr("trader.bootstrap.LoadRuntimeSettings", lambda *_: pytest.fail("configuration was touched"))
-    with pytest.raises(ValueError, match="fill_requires_company_target"):
-        ExecuteSync(Path("unused"), target, fill_missing=True)
-
-
-@pytest.mark.parametrize("target", ("history", "market"))
+@pytest.mark.parametrize("target", ("history", "market", "company"))
 def test_shell_launcher_rejects_retired_fill_before_environment_setup(tmp_path, target):
     missing_venv = tmp_path / "missing-venv"
     completed = subprocess.run(
@@ -47,5 +38,5 @@ def test_shell_launcher_rejects_retired_fill_before_environment_setup(tmp_path, 
     )
     assert completed.returncode == 2
     assert completed.stdout == ""
-    assert completed.stderr == "用法：./run.sh sync [history|company]；仅 company 可加 fill。\n"
+    assert completed.stderr == "用法：./run.sh sync [history|company]。\n"
     assert not missing_venv.exists()

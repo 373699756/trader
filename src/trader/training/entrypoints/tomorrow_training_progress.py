@@ -40,6 +40,7 @@ _STAGE_LABELS: dict[TomorrowTrainingStage, str] = {
     "target_statistics": "标签统计",
     "industry_statistics": "行业统计",
     "model_fit": "拟合",
+    "event_model_fit": "达标概率拟合",
     "model_calibration": "校准",
     "model_evaluation": "验证",
     "model_reuse": "模型复用",

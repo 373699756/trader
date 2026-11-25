@@ -15,6 +15,7 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.regular_file import ReadRegularFile
 from trader.infra.cache_contracts import BoundedCache, CacheIdentity, RequestKey
 from trader.training.domain.model_publication import ModelPublicationIdentity
+from trader.training.infra.d25.model_document import D25_MAXIMUM_METADATA_BYTES, DecodeD25MetadataDocument
 from trader.training.infra.model_bundles.bundle_codec import (
     DecodeHeadPublicationIdentity, LoadHeadBundle, TrainedHeadModelBundle, ModelBundleContractError,
 )
@@ -134,10 +135,14 @@ def ReadPublishedHeadIdentity(
                 if _metadata_fingerprint(metadata_path) != fingerprint:
                     raise ModelBundleContractError("publication metadata changed while being observed")
                 return cached.value.identity
-    document = json.loads(ReadRegularFile(metadata_path, maximum_bytes=8 * 1024 * 1024))
+    document: object = json.loads(ReadRegularFile(metadata_path, maximum_bytes=D25_MAXIMUM_METADATA_BYTES))
     if cancel_requested():
         raise InterruptedError("model_publication_observation_cancelled")
-    identity = DecodeHeadPublicationIdentity(document, strategy, profile)
+    if strategy is Strategy.D25:
+        metadata = DecodeD25MetadataDocument(document)
+        identity = metadata.scoring_identity(DecodeHeadPublicationIdentity(metadata.utility, strategy, profile))
+    else:
+        identity = DecodeHeadPublicationIdentity(document, strategy, profile)
     if _metadata_fingerprint(metadata_path) != fingerprint:
         raise ModelBundleContractError("publication metadata changed while being observed")
     if cancel_requested():
@@ -152,7 +157,7 @@ def ReadPublishedHeadIdentity(
 
 def _metadata_fingerprint(path: Path) -> tuple[int, ...]:
     info = path.lstat()
-    if not stat.S_ISREG(info.st_mode) or info.st_size > 8 * 1024 * 1024:
+    if not stat.S_ISREG(info.st_mode) or info.st_size > D25_MAXIMUM_METADATA_BYTES:
         raise ValueError("regular_file metadata must be bounded and regular")
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 

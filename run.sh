@@ -19,8 +19,7 @@ usage() {
     "下载与训练:" \
     "  ./run.sh sync                    依次更新参考、历史和公司资料" \
     "  ./run.sh sync history            更新历史，自动续传" \
-    "  ./run.sh sync company            更新公司资料" \
-    "  ./run.sh sync company fill       补齐公司资料缺口" \
+    "  ./run.sh sync company            更新公司资料，自动续传" \
     "  ./run.sh train                   使用本地历史训练全部档位" \
     "  ./run.sh train v1,v5             使用本地历史训练指定档位" \
     "  ./run.sh train tomorrow          训练 Tomorrow 全部档位" \
@@ -29,7 +28,7 @@ usage() {
     "  ./run.sh train d25 v5            只训练 D25 的 V5" \
     "" \
     "档位以逗号分隔，可自由组合；省略时选择全部。" \
-    "未完成可重跑原命令续传；fill用于补缺，仍需处理具体失败原因。"
+    "未完成可重跑原命令续传，仍需处理具体失败原因。"
 }
 
 case "${1:-}" in
@@ -55,10 +54,8 @@ esac
 
 FORWARD_ARGS=("$@")
 if [[ "$MODE" == "sync" ]]; then
-  if (($# > 2)) \
-    || { (($# > 0)) && [[ "$1" != "history" && "$1" != "company" ]]; } \
-    || { (($# == 2)) && [[ "$1" != "company" || "$2" != "fill" ]]; }; then
-    printf '%s\n' '用法：./run.sh sync [history|company]；仅 company 可加 fill。' >&2
+  if (($# > 1)) || { (($# > 0)) && [[ "$1" != "history" && "$1" != "company" ]]; }; then
+    printf '%s\n' '用法：./run.sh sync [history|company]。' >&2
     exit 2
   fi
 else

@@ -17,6 +17,11 @@ class ModelPublicationIdentity:
     label_cutoff: date
     training_history_hash: str
     training_run_hash: str
+    probability_hash: str | None = None
+
+    @property
+    def probability_ready(self) -> bool:
+        return self.probability_hash is not None
 
 
 @dataclass(frozen=True)

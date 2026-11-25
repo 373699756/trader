@@ -167,13 +167,13 @@ def AuditQfqPriceFields(
     identities: list[tuple[object, ...]] = []
     with budget.connection(path, sqlite_policy) as connection:
         for profile in ("v2", "v3"):
-            calendar = tuple(int(row[0]) for row in connection.execute(
+            calendar = tuple(int(row[0]) for row in connection.run(
                 "SELECT trade_date FROM window_calendar WHERE profile=? ORDER BY trade_date", (profile,),
             ))
-            members = tuple(str(row[0]) for row in connection.execute(
+            members = tuple(str(row[0]) for row in connection.run(
                 "SELECT code FROM window_population WHERE profile=? ORDER BY code", (profile,),
             ))
-            bindings = tuple(tuple(row) for row in connection.execute(
+            bindings = tuple(tuple(row) for row in connection.run(
                 "SELECT b.code,b.source,hex(b.content_hash),b.start_date,b.end_date "
                 "FROM window_binding b JOIN window_population p ON p.profile=b.profile AND p.code=b.code "
                 "WHERE b.profile=? ORDER BY b.code", (profile,),
@@ -194,11 +194,11 @@ def AuditQfqPriceFields(
                 binding_hashes=tuple(str(binding[2]).lower() for binding in bindings),
             ))
             identities.extend(bindings)
-            publication = connection.execute("SELECT publication_id FROM window_publication WHERE profile=?", (profile,)).fetchone()
+            publication = connection.run("SELECT publication_id FROM window_publication WHERE profile=?", (profile,)).fetchone()
             if publication is None:
                 raise ValueError("price_audit_qfq_publication_missing")
             identities.append((profile, str(publication[0]), calendar, members))
-        mismatches = int(connection.execute(
+        mismatches = int(connection.run(
             "SELECT COUNT(*) FROM window_binding a JOIN window_population p ON p.profile=a.profile AND p.code=a.code "
             "LEFT JOIN window_binding b ON b.code=a.code AND b.profile='v3' "
             "LEFT JOIN window_completion c ON c.code=a.code WHERE a.profile='v2' AND "

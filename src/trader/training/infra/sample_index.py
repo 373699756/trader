@@ -38,6 +38,7 @@ from trader.training.infra.sample_schema import D25_HIT_COLUMN, SAMPLE_TARGET_CO
 from trader.recommendation.domain.publication.models import Strategy
 
 _BASELINE_EXECUTION_OPTIONS = TrainingExecutionOptions()
+_INDUSTRY_COUNT_TARGETS = (*SAMPLE_TARGET_COLUMNS, D25_HIT_COLUMN)
 
 
 @dataclass(frozen=True)
@@ -271,6 +272,9 @@ class SQLiteTrainingSampleIndex:
                         math.fsum(cast(float, value) ** 2 for value in labels),
                     )
                 )
+            hits = tuple(item.d25_hit for item in population if item.d25_hit is not None)
+            if hits:
+                statistics.append((EncodeDate(day), industry, D25_HIT_COLUMN, len(hits), float(sum(hits)), float(sum(hits))))
             self._connection.run_many(
                 "INSERT INTO sample_statistics VALUES (?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(trade_date,industry,target) DO UPDATE SET "
@@ -315,11 +319,44 @@ class SQLiteTrainingSampleIndex:
         if self._prepared_split_hash != split_hash:
             raise RuntimeError("training sample split identity is inconsistent")
 
-    def industry_counts(self, contract: TrainedHeadContract) -> tuple[TrainingIndustryCounts, ...]:
-        target = _require_target_column(contract.target_column)
+    def industry_counts(
+        self, contract: TrainedHeadContract, *, d25_probability: bool = False,
+    ) -> tuple[TrainingIndustryCounts, ...]:
+        if d25_probability and contract.strategy is not Strategy.D25:
+            raise ValueError("d25_probability_requires_d25_features")
+        target = D25_HIT_COLUMN if d25_probability else _require_target_column(contract.target_column)
         if not self._counts_by_target:
             self._prepare_industry_counts()
         return self._counts_by_target[target]
+
+    @contextmanager
+    def d25_probability_training_data(
+        self, counts: TrainingIndustryCounts, contract: TrainedHeadContract, check: Callable[[], None],
+    ) -> Iterator[tuple[TrainingSampleMatrix, frozenset[date]]]:
+        """Fill one bounded matrix from exact sealed event counts, without retaining batches."""
+        width = len(contract.feature_positions)
+        with ExitStack() as resources:
+            directory = (
+                Path(resources.enter_context(TemporaryDirectory(prefix="sample-fit-", dir=self.workspace)))
+                if counts.training * (width + 1) * 8 > self.sample_settings.matrix_memory_bytes else None
+            )
+            matrix = _empty_matrix(counts.training, width, "training", directory, resources)
+            batches = self.iter_batches(counts.industry, contract, "training", d25_probability=True)
+            resources.callback(batches.close)
+            position = 0
+            observed: set[date] = set()
+            for batch in batches:
+                check()
+                end = position + len(batch.labels)
+                if end > counts.training:
+                    raise ValueError("d25_probability_training_counts_changed")
+                matrix.features[position:end] = batch.features
+                matrix.labels[position:end] = batch.labels
+                observed.update(batch.trade_dates)
+                position = end
+            if position != counts.training:
+                raise ValueError("d25_probability_training_counts_changed")
+            yield matrix, frozenset(observed)
 
     def _final_fit_selection(
         self, contract: TrainedHeadContract, plan: FinalFitDatePlan,
@@ -616,7 +653,7 @@ class SQLiteTrainingSampleIndex:
         aggregates = ",".join(
             f"SUM(CASE WHEN target='{target}' THEN sample_count ELSE 0 END),"
             f"COUNT(DISTINCT CASE WHEN target='{target}' AND sample_count>0 THEN samples.trade_date END)"
-            for target in SAMPLE_TARGET_COLUMNS
+            for target in _INDUSTRY_COUNT_TARGETS
         )
         rows = self._connection.run(
             f"SELECT samples.industry, splits.split_name, {aggregates} FROM sample_statistics samples "  # noqa: S608
@@ -624,10 +661,10 @@ class SQLiteTrainingSampleIndex:
             "GROUP BY samples.industry, splits.split_name ORDER BY samples.industry, splits.split_name"
         )
         grouped: dict[str, dict[str, dict[TrainingSplitName, tuple[int, int]]]] = {
-            target: {} for target in SAMPLE_TARGET_COLUMNS
+            target: {} for target in _INDUSTRY_COUNT_TARGETS
         }
         for industry, split_name, *counts in rows:
-            for index, target in enumerate(SAMPLE_TARGET_COLUMNS):
+            for index, target in enumerate(_INDUSTRY_COUNT_TARGETS):
                 count, dates = counts[index * 2 : index * 2 + 2]
                 if count:
                     grouped[target].setdefault(str(industry), {})[cast(TrainingSplitName, split_name)] = (

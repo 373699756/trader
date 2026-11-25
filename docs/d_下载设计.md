@@ -90,7 +90,7 @@ company失败沿既有诊断owner生成完整证据块，统一终端呈现：�
 
 ### 2.2 通过后准备哪些资料
 
-证券、ST和日历参考在 `data/metadata/company_st.sqlite3`，行业参考在 `data/metadata/industry.sqlite3`。完整历史在 `data/history/catalog.sqlite3` 和同目录年度价格库。独立短窗的 `daily_window.sqlite3` 与 `daily_window.lock` 位于数据根目录。公司正式事实在 `data/company/company_published.sqlite3`。各模块的范围、频率和采集参数由 `config/download.json` 控制。数据库路径以 `config/runtime.json` 的 `data_dir=data` 举例。
+证券、ST和日历参考在 `data/metadata/company_st.sqlite3`，行业参考在 `data/metadata/industry.sqlite3`。完整历史在 `data/history/catalog.sqlite3` 和同目录年度价格库。独立短窗诊断在临时目录创建 `daily_window.sqlite3`。公司正式事实在 `data/company/company_published.sqlite3`。各模块的范围、频率和采集参数由 `config/download.json` 控制。数据库路径以 `config/runtime.json` 的 `data_dir=data` 举例。
 
 搬动已有历史和基础资料目录时，先关闭使用这些库的进程并保留原目录库及封签。在目录库副本上将 `schema_contract.reference_file` 绑定到 `../metadata/company_st.sqlite3`，重新封签，核对原发布序号和摘要、历史分区与参考绑定后再切换。年度价格文件及配套封签整体移动。
 
@@ -157,8 +157,7 @@ ST进度分别显示已核验和真正已保存的数量，64股检查点的持�
 | --- | --- | --- |
 | `history_download_index.py:begin/rebind_context` | 阶段335保留退出总体的任务、日期、尝试、失败及缺口；当前派发和计数显式选择context中的合格代码 | 重新加入未发布总体时按当前窗口规划，退出期间缺日不能被旧成功标记跳过；已提交价格仍复用。新批次只重置本轮任务，不清除其它股票的恢复证据 |
 | `history_price_repair.py:replay` | 阶段335所有调用者显式传入本次允许代码；退出资格的候选不解码、不写价格，保留原序号及内容 | 候选重新合格但序号已过期时仍明确拒绝，不将旧候选改代为新发布。跨序号候选处置仍需独立裁决；本阶段不清理旧候选或迁移资料 |
-| `application/update_qfq.py`、`infra/qfq_sqlite.py:select_published_codes` | 普通同步与补缺共用当前资格，在同一事务切换V2/V3发布成员；保留退出者的价格、窗口绑定、完成凭证及问题证据 | 重新合格时仍检查当前日期与来源，只有有效同窗资料可复用；保留资料不计入当前发布或派发分母，不再以删除资料表达资格退出 |
-| `infra/qfq_update_runner.py`的`seed_only` | 内部本地提取调用必须显式传入同日且不晚于观察时点的`PreparedReference`；只向历史读取当前合格代码，分32股定向读取 | 缺失/过期参考或合格总体为空明确失败；当前合格者不在历史中、窗口过期或仍有缺口不能算完成。活动普通在线调用不读取历史manifest；本批不新增CLI或修改A的组合根 |
+| `application/update_qfq.py`、`infra/qfq_sqlite.py:select_published_codes` | 独立短窗诊断在同一事务切换V2/V3发布成员，保留退出者的价格、窗口绑定、完成凭证及问题证据 | 重新合格时仍检查当前日期与来源，只有有效同窗资料可复用；保留资料不计入当前发布或派发分母 |
 
 公司普通同步和`fill`的隔离回归验证：已有曾ST正文留在账本且未被下载或提取，unknown旧正文直接沿断点继续，新下载对象可正常处理；unknown证据不改写为clear。该结论只覆盖此测试集合，不替history/market的数据保留或真实全量验收背书。
 
@@ -308,15 +307,13 @@ BaoStock补缺结束后，终端依次显示发布准备、发布分区检查、
 
 当前 `application/update_qfq.py` 已有有界来源任务、唯一 writer 和问题持久化。一个事务提交配对价格、窗口身份、日历、问题清除、尝试回执、断点及 publication；V2/V3切片必须来自同一合格候选。
 
-短窗普通同步在缺口规划和网络任务前使用准备好的合格总体，不能给已排除股票请求raw/qfq窗口。内部本地提取的资格输入和资料保留按下文切换；当前实现与隔离验证的状态见g，不据此关闭P32–P34的真实全量验收。
+`scripts/download/history/tencent_download.py` 在临时目录运行短窗诊断。缺口规划和网络任务使用显式输入的样本总体。当前实现与隔离验证的状态见g，P32–P34的真实全量验收单独记录。
 
 `window_binding`保存已取得资料的窗口身份，`window_population`唯一保存当前发布成员；两者用途分开。当前资格仍只来自准备好的参考，不从该表反推ST结论。退出资格只在配对事务中移出两档发布成员并更新发布身份，价格、绑定、完成及问题记录继续保留；manifest及公开窗口读取只暴露发布成员。本地规划读取保留资料时仍显式选择当前合格代码，重新合格后按当前日期、来源和完整性决定复用或补取。
 
-内部`seed_only`先验证显式当前参考，再与历史manifest成员求交；不解码被排除股票。历史目标早于已保留的合格股票短窗时，在切换成员前拒绝，防止倒退覆盖。两档日历、来源和窗口边界匹配，目标范围无问题记录，且当前参考上市区间内的应有日期都有价格或明确非交易日证据时才复用，否则定向提取；直接缺行不能当作停牌或完成，历史缺股或缺价分别计入当前待处理数。每批至多32股，读取内部传递取消检查，取消时保留前批已提交回执并可续传。它只使用已发布历史，不发供应商请求，不继承历史中的旧ST资格。
-
 同源raw/qfq完整性、上市边界、停牌和价格合法性在解析/写入边界处理。阶段328将`verify_integrity`统一为第6.1节的数据库文件指纹核验；`inspect_windows`只读取窗口日期和来源，用于缺口规划，不加载价格列或逐窗重算摘要。无变化配对写入比较输入窗口与已提交身份，不再为比对重复读取原价格；实际写入仍保留差异计数、同源配对和事务约束。
 
-market普通同步只消费自己的问题库存，不从history借用断点或成功状态。断电或尾批失败时事务回滚，保留上一有效发布及问题记录。
+短窗采集使用库内的问题库存和完成记录。断电或尾批失败时事务回滚，保留上一有效发布及问题记录。
 
 ## 5. company：交付从公告取得的结构化字段
 
@@ -828,6 +825,8 @@ local_only候选的持久路径若已失效，仅从本轮本地选择中排除�
 
 原scope、来源请求计划与总额度跨进程固定，HTTP前持久预占，失败和未知不返还；0次实际预占的取消与已经预占但结果未确认分开恢复。当前资格移出者停止新请求／提取并保留原事实；新加入者待安全新观察。纯本地规则变化、必要输入水位变化只重开本地字段，不重置来源预算；旧／缺全局规则证明须完整当前键集重证，不借局部证明签全局marker。只读`read_fields`对非空字段拒绝缺失／旧规则marker，原字段记录不改写；独立有效的既有风险事实仍可交付。
 
+本地字段在同一个调度步骤中复用水位检查已读取的正式事实。正式读取事务再次核对发布身份和完整代码集合后才能复用。发布身份变化，或全局规则重证扩大范围时，按当前事务重新读取全部需要的事实。每族的累计物理请求、当前步骤请求和未观察请求从原预算账本一次汇总。
+
 普通无子查询的巨潮目录页可沿请求账本保留一份有界原响应凭据，绑定原轮、族内步骤、物理预占、请求及响应摘要。恢复时重用原目录解码和验页，逐项核原游标或已经提交的同页成员与覆盖，再确认原尝试。原失败步骤留存，确认后才恢复同轮推进。跨上海日期后，若各族均已到终态、只剩最后一个未确认的巨潮目录请求且无可用原响应，新日期范围可独立开轮。原轮、失败步骤及已占用额度保留，新轮禁止重发原物理请求或原目录游标。子查询及需要拆分的响应仍沿原恢复约束。来源派发比全轮期限提前两秒停止，剩余时间供原响应接纳、持久确认和已有本地工作。
 
 请求额度、步骤及总期限各按第9章配置，单族推进最多取本次步骤上限与256的较小值，不把目录页数当财务或全轮配额。`directory_batch_pages`仍服务已有目录诊断，新普通公告owner是精确单步cursor，未据此实现目录批次效果。来源额度耗尽时，本地族在剩余总时间内继续；HTTP、SQL、原文读取及工具探测使用同一单调期限，实际重试冷却用注入的当前上海墙钟，不用固定scope.T代替失败时间。清理是独立显式操作，不藏在publisher或run中；维护失败不抹去已发布结果。
@@ -880,7 +879,7 @@ company最终库存位于收尾之后；收尾取消或中断不再查询库存�
 
 | 资料 | 发布所有者 | 加载消费者及必要业务读取 |
 | --- | --- | --- |
-| history年库和catalog | `HistoryPricePartition`/`HistoryDirectPrices`、`HistoryControlIndex`及同步收尾；训练维护记录独立写入`data/train/maintenance.sqlite3`，不写catalog或更新其凭据，见e第3.7节 | 快照加载检查catalog，`HistorySnapshotReader`按物理年库复用文件核验；实际价格查询、覆盖/行数及原序号隔离保留 |
+| history年库和catalog | `HistoryPricePartition`/`HistoryDirectPrices`、`HistoryControlIndex`及同步收尾。同步完成后复用仍能核验的catalog封签，收尾遇到代际变化时为本次持锁写入重新封签。训练维护记录独立写入`data/train/maintenance.sqlite3`，见e第3.7节 | 快照加载检查catalog，`HistorySnapshotReader`按物理年库复用文件核验；实际价格查询、覆盖/行数及原序号隔离保留 |
 | market共享短窗 | `SQLiteQfqWindowCache`，同一轮两档写入归入一次文件发布；发布成员切换不删除保留资料 | 所有读入口核验同一物理文件；窗口规划只查日期/来源，manifest只选当前发布成员及其已提交窗口身份，不重复复算价格内容 |
 | company正式事实 | `SQLiteCompanyFactsIndex`；正式预读连接在写入前关闭，避免其最后退出改变已封存WAL | `SQLiteCompanyEvidenceReader`及排除证据读取复用文件核验；事实编译和业务投影仍按需查询，采集库不被当成正式发布 |
 
@@ -923,7 +922,7 @@ history已有完整命令中的年度回写及连接关闭等待证据，不能�
 | `metadata/industry.sqlite3` | `SQLiteIndustryQueryIndex`写当前查询、官方证据和原件；`CurrentIndustryPublication`准备当前分类，`CurrentIndustryCache.snapshot`只读验证最新有效发布，训练投影后固定全历史分组。`OfficialIndustryHistory`及`PrepareHistoricalIndustries`保留显式历史证据审计，正常history不调用；见第2.5节 |
 | `history/catalog.sqlite3` | `HistoryControlIndex` 安装下载所需完整 schema，默认参考绑定为 `../metadata/company_st.sqlite3`。控制记录、下载任务、价格修复及推定停牌各 adapter 在调用方事务中写；`ReadPublishedHistoryUseCase`／快照 reader、训练和荐股预载读固定序号。下载断点与正式 published_snapshot 不是同一个完成标志 |
 | `history/prices_<year>.sqlite3` | `HistoryPricePartition`／`HistoryDirectPrices` 写价格修订和观察关系；同一历史端口供训练／荐股及显式审计读取。年库提交后才封存，catalog 固定可见序号；年／月逻辑分区不能当成多个物理库 |
-| `daily_window.sqlite3` | `SQLiteQfqWindowCache` 单 writer 写共享 raw/qfq 价格及两个档位视图，写锁为数据根目录的 `daily_window.lock`，修复 adapter 复用其事务；训练／荐股历史端口的短窗实现及下载诊断读取。配对窗口、日历、成员和发布绑定同事务提交，再生成文件凭据 |
+| `daily_window.sqlite3` | 短窗诊断用 `SQLiteQfqWindowCache` 单 writer 写共享 raw/qfq 价格及两个档位视图，修复 adapter 复用其事务。配对窗口、日历、成员和发布绑定同事务提交，再生成文件凭据 |
 | `company/company_published.sqlite3` | `SQLiteCompanyFactsIndex`及字段发布器同事务写正式事实、字段结论和证据凭据。荐股、排除名单和公司预载经正式reader读取。文件封存与恢复见第5.13–5.15、6.1节。 |
 | `company/company_sources.sqlite3` | 目录和文档材料、财务规范观测、比例／年度营收观测及待发布状态共用来源库。来源状态经精确正式回执确认。 |
 
@@ -1216,7 +1215,7 @@ CHECK、codec验证、外键启用及发布凭据检查是不同层次；本章�
 
 | JSON路径 | 当前值 | 类型、单位与范围 | 实际消费者 |
 | --- | --- | --- | --- |
-| online_qfq.workers | 8 | int，worker，1–12 | bootstrap短窗线程池／HTTP会话及UpdateQfqWindows并发 |
+| online_qfq.workers | 8 | int，worker，1–12 | UpdateQfqWindows默认并发数。独立短窗诊断使用显式 `--workers` |
 | history.tencent_timeout_seconds | 15.0 | number，秒，0.1–120 | TencentQfqOptions，完整历史的腾讯价格分支 |
 | history.tencent_retries | 2 | int，重试次数，0–2 | 腾讯raw／qfq窗口请求策略 |
 | online_qfq.profiles[].profile | v2、v3各一个 | string判别字段；数组恰好2项、身份唯一且正好v2／v3 | ProfileMapping选择窗口配置，不是模型启用开关 |

@@ -200,7 +200,7 @@ def test_run_script_help_lists_retained_download_and_training_commands(tmp_path:
     assert [line.strip().split("  ", 1)[0] for line in commands.splitlines()] == [
         "./run.sh sync",
         "./run.sh sync history",
-        "./run.sh sync company", "./run.sh sync company fill",
+        "./run.sh sync company",
         "./run.sh train", "./run.sh train v1,v5",
         "./run.sh train tomorrow", "./run.sh train d25",
         "./run.sh train tomorrow v3", "./run.sh train d25 v5",
@@ -255,7 +255,7 @@ def test_run_script_unknown_command_fails_before_environment_setup_with_concise_
         ("sync", "all"),
         ("sync", "history", "--json"),
         ("sync", "market", "fill", "extra"),
-        ("sync", "company", "fill", "fill"),
+        ("sync", "company", "fill"),
         ("sync", "history", "--fill"),
         ("sync", "market", "--fill"),
         ("sync", "company", "--fill"),
@@ -467,7 +467,7 @@ def test_training_command_selects_profiles_and_strategy(arguments, profiles, str
 
 @pytest.mark.parametrize("arguments", (
     (), ("history",),
-    ("company",), ("company", "fill"),
+    ("company",),
 ))
 def test_run_script_forwards_retained_sync_commands(tmp_path: Path, arguments: tuple[str, ...]) -> None:
     venv_bin = tmp_path / "venv" / "bin"
@@ -488,7 +488,7 @@ def test_run_script_forwards_retained_sync_commands(tmp_path: Path, arguments: t
     assert completed.stdout == f"cli:--config {config} sync{suffix}\n"
     if not arguments:
         parsed = BuildParser().parse_args(["sync"])
-        assert parsed.target == "all" and parsed.operation is None
+        assert parsed.target == "all"
     assert not config.exists()
 
 

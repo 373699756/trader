@@ -50,6 +50,9 @@ class HeadTrainingResult:
     diagnostic_plan: ProductionDiagnosticDatePlan | None = None
     date_coverage: tuple[TrainingDateCoverage, ...] = ()
     diagnostic: TrainingErrorDiagnostic | None = None
+    utility_model_published: bool = False
+    probability_model_hash: str | None = None
+    probability_calibration_failed: bool = False
 
 
 @dataclass(frozen=True)
@@ -217,14 +220,16 @@ def TrainProfile(
                     published = True
                 except ProfileTrainingOperationError as exc:
                     completed = [replace(item, status="blocked", model_hash="", failure_reasons=(str(exc),),
-                                         diagnostic=CaptureTrainingError(exc)) for item in completed]
+                                         diagnostic=CaptureTrainingError(exc), probability_model_hash=None) for item in completed]
                 if published:
+                    completed = [replace(item, utility_model_published=True) for item in completed]
                     issue = NotifyTrainingCommit(progress)
                     if issue is not None:
                         post_commit_issues.append(issue)
             else:
                 completed = [
-                    replace(item, status="blocked", model_hash="", failure_reasons=("profile_pair_incomplete",))
+                    replace(item, status="blocked", model_hash="", failure_reasons=("profile_pair_incomplete",),
+                            probability_model_hash=None)
                     if item.status == "engineering_ready" else item
                     for item in completed
                 ]
@@ -240,7 +245,8 @@ def TrainProfile(
             peak_bytes = max(peak_bytes, operations.sample_peak_bytes())
             reason = str(exc)
             completed = [
-                replace(item, status="blocked", model_hash="", failure_reasons=(reason,), diagnostic=CaptureTrainingError(exc))
+                replace(item, status="blocked", model_hash="", failure_reasons=(reason,), diagnostic=CaptureTrainingError(exc),
+                        probability_model_hash=None)
                 if item.status == "engineering_ready" else item
                 for item in completed
             ]

@@ -16,7 +16,7 @@ from scripts.core.projection_values import ProjectMapping
 _MAX_REPORT_BYTES = 1024 * 1024
 _MEASUREMENT_FIELDS = (
     "cancelled", "writes_current_company_data", "isolated_sample", "status_basis",
-    "field_correctness_verified", "fill_missing", "runtime_configuration_sha256", "cli_exit_code",
+    "field_correctness_verified", "runtime_configuration_sha256", "cli_exit_code",
     "failure_category", "wall_seconds", "process_cpu_seconds", "operation_timing", "operation_counts",
     "route_classification", "thread_cpu_includes_child_processes", "coverage", "snapshot_interval_seconds",
     "snapshot_trigger", "snapshot_failed", "physical_io_includes_running_reports", "database_statistics_final",
@@ -81,7 +81,6 @@ def Run(action_identity: str, arguments: list[str]) -> ToolOutcome:
     )
     parser.add_argument("--runtime-config", type=Path, required=True)
     parser.add_argument("--measurement-output", type=Path, required=True, help="new external absolute measurement JSON file")
-    parser.add_argument("operation", nargs="?", choices=("fill",), help="explicitly select company gap filling")
     args = parser.parse_args(arguments)
     try:
         destination = ExternalPath(args.measurement_output, "--measurement-output")
@@ -95,7 +94,7 @@ def Run(action_identity: str, arguments: list[str]) -> ToolOutcome:
     code = 1
     try:
         with redirect_stdout(sys.stderr):
-            code = MeasureCompanySync(configuration, destination, fill_missing=args.operation == "fill")
+            code = MeasureCompanySync(configuration, destination)
     except KeyboardInterrupt:
         code = 130
     except SystemExit as exc:

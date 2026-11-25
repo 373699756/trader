@@ -95,10 +95,9 @@ def CompanyEvidenceRequestFixture(
     *,
     stock_names: tuple[tuple[str, str], ...] = (),
     listings: tuple[CompanyListing, ...] = (),
-    fill_missing: bool = False,
 ) -> CompanyEvidenceRequest:
     return CompanyEvidenceRequest(
         codes, observed_at, configuration,
         event_policy if event_policy is not None else CompanyEventPolicyFixture(),
-        stock_names=stock_names, listings=listings, fill_missing=fill_missing,
+        stock_names=stock_names, listings=listings,
     )

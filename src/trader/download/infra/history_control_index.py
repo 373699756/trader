@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from trader.infra.sqlite_policy import SqliteIoPolicy
-from trader.infra.sqlite_publication import PublishSqliteFile
+from trader.infra.sqlite_publication import PublishSqliteFile, SqlitePublicationError, VerifySqliteFile
 from trader.infra.sqlite_verification_cache import SqliteVerificationCache
 
 import os
@@ -336,6 +336,14 @@ class HistoryControlIndex:
     def publish_file(self) -> None:
         """Finish the catalog publication with the common database file fingerprint."""
         PublishSqliteFile(self._path, sqlite_policy=self._sqlite_policy, verification_cache=self._verification_cache)
+
+    def ensure_published_file(self) -> None:
+        """Keep the current catalog seal when its file and WAL still verify."""
+        try:
+            VerifySqliteFile(self._path, sqlite_policy=self._sqlite_policy, file_only=True,
+                             verification_cache=self._verification_cache)
+        except SqlitePublicationError:
+            self.publish_file()
 
     def load_state(self, *, reference_base: Path | None = None) -> HistoryControlState:
         try:

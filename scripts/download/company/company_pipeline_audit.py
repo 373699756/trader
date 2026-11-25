@@ -309,7 +309,7 @@ def _observe_company_operations(stack: ExitStack, measurement: _CompanySyncMeasu
     )))
 
 
-def MeasureCompanySync(runtime_config: Path, report_path: Path, *, fill_missing: bool = False) -> int:
+def MeasureCompanySync(runtime_config: Path, report_path: Path) -> int:
     """Ordinary sync shares the source admission gate, including its measurement entry."""
     raise ValueError("company_structured_source_admission_pending")
 

@@ -8,20 +8,23 @@ import pytest
 from tests.download.component.company.test_company_sync_round import _SCOPE
 from tests.helpers.download.configuration import CompanyEventPolicyFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
+from trader.download.application.company_financial_producer import BuildCompanyFinancialRoundQuery
 from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDownloadStore, CompanyInputValidationFailure, Disclosure, DisclosurePage, DisclosurePartition, DisclosureQuery, StructuredCompanyPage, StructuredCompanyQuery
 from trader.download.domain.company_financial_admission import CompanyFinancialRevisionProof
 from trader.download.domain.company_source_records import CompanyFinancialSourcePage
 from trader.download.domain.company_sync import CompanySyncBudget, CompanySyncFamily, CompanySyncPhasePlan, CompanySyncPhaseState, CompanySyncRebuildActiveRound, CompanySyncStepResult
 from trader.download.infra.company_disclosure_source import CNINFO_DIRECTORY_URL
 from trader.download.infra.company_document_files import CompanyDocumentFiles
-from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
+from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity, SQLiteCompanyFactsIndex
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
+from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
 from trader.download.infra.company_financial_observations import ReadCompanyFinancialObservations
 from trader.download.infra.company_material_index import SQLiteCompanyMaterialIndex
 from trader.download.infra.company_normalized_index import SQLiteCompanyNormalizedIndex
 from trader.download.infra.company_sync_inputs import CompanyRecoveredInput, SQLiteCompanySyncInputStore
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
-from trader.download.infra.company_sync_runtime import CompanySyncRuntime
+from trader.download.infra import company_sync_runtime
+from trader.download.infra.company_sync_runtime import CompanySyncRuntime, _FieldProducer
 from trader.download.infra.company_sync_producers import CompanyAnnouncementProducer
 from trader.infra.http_contracts import HttpRequest, HttpResponse
 from trader.infra.http_transport import RequestsHttpTransport
@@ -108,6 +111,42 @@ def test_local_field_watermark_reacts_to_proof_inputs_and_coverage_only(tmp_path
         assert recovered != covered
         runtime.inputs.acknowledge_recovered(_SCOPE.identity, (proof,))
         assert runtime.field_watermark(_SCOPE, _SCOPE.codes, lambda: None) == recovered
+    assert physical == []
+
+
+@pytest.mark.parametrize("change", ["unchanged", "publication", "global_rules"])
+def test_field_step_only_reuses_fact_rows_for_the_same_publication_and_population(tmp_path, monkeypatch, change):
+    runtime, reader, _, physical = _runtime(tmp_path)
+    eligible = _SCOPE.codes
+    full_population = (*eligible, "600002")
+    sqlite_policy = SqlitePolicyFixture()
+    runtime.initialize(full_population, _SCOPE.cutoff)
+    producer = _FieldProducer(runtime, lambda: 0, eligible, BuildCompanyFinancialRoundQuery(_SCOPE.cutoff))
+    read_facts = company_sync_runtime.ReadCompanyFactRows
+    reads = []
+
+    def read(connection, codes):
+        reads.append(tuple(codes))
+        return read_facts(connection, codes)
+
+    monkeypatch.setattr(company_sync_runtime, "ReadCompanyFactRows", read)
+    producer.state(_SCOPE)
+    if change == "publication":
+        with SqliteSession(runtime.facts.path, sqlite_policy=sqlite_policy) as formal:
+            parent = ReadCompanyPublicationIdentity(formal)
+        fact = reader.read(eligible)[0]
+        publication = runtime.facts.publish((replace(fact, pending_document_count=1),), {}, parent, _SCOPE.cutoff,
+            field_rules_hash=CompanyFieldProofRulesHash())
+        assert publication.identity != parent
+    elif change == "global_rules":
+        with SqliteSession(runtime.facts.path, sqlite_policy=sqlite_policy) as formal:
+            formal.run("UPDATE company_field_proof_rule SET rules_hash=?", (b"a" * 32,))
+        runtime.facts.publish_file()
+
+    result = producer.advance(_SCOPE, cancel_requested=lambda: False, deadline=10)
+    expected_reads = {"unchanged": [eligible], "publication": [eligible, eligible], "global_rules": [eligible, full_population]}
+    assert reads == expected_reads[change]
+    assert result.accepted_inputs == (2 if change == "global_rules" else 1)
     assert physical == []
 
 

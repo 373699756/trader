@@ -8,12 +8,12 @@ import re
 import sqlite3
 import time
 from collections.abc import Sequence
-from contextlib import closing
 from datetime import date
 from pathlib import Path
 
 from scripts.core.paths import PROJECT_ROOT, ExternalPath
 from scripts.download.history.options import HistoryOptions
+from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
 from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
 from trader.recommendation.infra.performance.candidate_selection import PRELOAD_CONTEXT_CANDIDATES
 
@@ -399,10 +399,9 @@ def _validate_audit_outputs(options: HistoryOptions, report: str) -> None:
         if catalog.is_file():
             deadline = time.monotonic() + 1.0
             try:
-                with closing(sqlite3.connect(catalog.as_uri() + "?mode=ro", uri=True, timeout=1.0)) as connection:
-                    connection.execute("PRAGMA query_only=ON")
-                    connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
-                    rows = connection.execute("SELECT reference_file FROM schema_contract LIMIT 2").fetchall()
+                with SqliteSession(catalog, SqliteConnectionOptions(read_only=True, timeout_seconds=1.0)) as connection:
+                    connection.observe_progress(lambda: int(time.monotonic() >= deadline), 1000)
+                    rows = connection.run("SELECT reference_file FROM schema_contract LIMIT 2").fetchall()
                 if len(rows) != 1 or not isinstance(rows[0][0], str) or not rows[0][0]:
                     BuildParser(options.action_identity).error("audit source/output reference binding is unavailable")
                 reference = (root / rows[0][0]).resolve()

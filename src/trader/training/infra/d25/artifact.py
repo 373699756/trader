@@ -6,6 +6,7 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import date
+from importlib.util import find_spec
 from pathlib import Path
 import numpy as np
 
@@ -17,7 +18,11 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ParseScoringProfile, ScoringProfileId
 from trader.recommendation.domain.scoring.residualization import ExposureContract
 from trader.training.infra.d25.artifact_values import D25ArtifactObject, D25ArtifactVector
-from trader.training.infra.d25.model_document import EncodeD25ModelDocument, ReadD25ModelDocument
+from trader.training.infra.d25.contracts import StandardD25Profile
+from trader.training.infra.d25.model_document import (
+    D25MetadataIntegrityError, D25ModelPair, D25ProbabilityPublication, EncodeD25MetadataDocument,
+    EncodeD25ModelDocument, ReadD25ModelPair,
+)
 from trader.training.infra.d25.tree import D25TreeModel
 from trader.training.infra.d25.v1.model import ALGORITHM as V1_ALGORITHM
 from trader.training.infra.d25.v1.model import DecodeD25Ranker, LoadD25RankerScorer
@@ -28,9 +33,11 @@ from trader.training.infra.d25.v3.probability import D25LogisticModel, DecodeD25
 from trader.training.infra.d25.v5.probability import ALGORITHM as V5_ALGORITHM
 from trader.training.infra.d25.v5.probability import D25TcnModel, DecodeD25Tcn, EncodeD25Tcn, LoadD25TcnScorer
 from trader.training.infra.implementation_identity import LaneTrainingImplementationIdentity
+from trader.training.infra.model_bundles.bundle_codec import DecodeHeadBundle, ModelBundleIntegrityError
 from trader.training.infra.model_bundles.predictor import TrainedHeadPredictor
+from trader.training.infra.model_bundles.profile import BuildTrainedScoringProfile
 from trader.training.infra.model_bundles.profile_publication import ProfilePublicationLock
-from trader.training.infra.d25.v1.models import LearnedRankPredictor
+from trader.training.infra.d25.v1.models import DecodeV1D25Utility, LearnedRankPredictor
 from trader.training.infra.tcn.manifest import SEQUENCE_FEATURE_IDS
 
 _MAX_BYTES = 128 * 1024**2
@@ -40,6 +47,14 @@ _KEYS = {"profile", "algorithm", "target", "features", "utility_hash", "input_ha
 
 
 D25Model = D25TreeModel | D25LogisticModel | D25TcnModel
+
+
+class D25ProbabilityModelMissingError(FileNotFoundError):
+    """A current utility model exists without a trained event model."""
+
+
+class D25ProbabilityModelInvalidError(ValueError):
+    """The current D25 event model does not match its declared publication."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,37 +172,70 @@ def StageD25Probability(model_directory: Path, artifact: D25ProbabilityArtifact)
         raise ValueError("d25_probability_artifact_too_large")
     probability = D25ArtifactObject(json.loads(rendered), {"identity", "artifact"})
     _decode(probability, artifact.profile, artifact.features, binding)
-    path = model_directory / "model.json"
-    staged = ReadD25ModelDocument(path)
-    _require_bound_utility(staged.utility, artifact.profile, binding)
-    if staged.probability is not None:
-        _, existing = _decode(staged.probability, artifact.profile, artifact.features, binding)
+    staged = ReadD25ModelPair(model_directory)
+    _require_bound_utility(staged.model.utility, artifact.profile, binding)
+    if staged.model.probability is not None:
+        _, existing = _read_probability(staged, artifact.profile, artifact.features, binding)
         if existing != identity:
             raise ValueError("d25_probability_publication_identity_conflict")
     else:
-        model = EncodeD25ModelDocument(replace(staged, probability=probability))
-        ReplaceFile(path, json.dumps(model, allow_nan=False, separators=(",", ":")))
+        model = EncodeD25ModelDocument(replace(staged.model, probability=probability))
+        metadata = EncodeD25MetadataDocument(staged.metadata.utility, D25ProbabilityPublication(binding.target, identity))
+        ReplaceFile(model_directory / "model.json", json.dumps(model, allow_nan=False, separators=(",", ":")))
+        ReplaceFile(model_directory / "metadata.json", json.dumps(metadata, allow_nan=False, separators=(",", ":")))
     return identity
 
 
 def HasD25Probability(
     profile_root: Path, profile: ScoringProfileId, feature_ids: tuple[str, ...], binding: D25ProbabilityBinding,
 ) -> bool:
+    return ReadD25ProbabilityIdentity(profile_root, profile, feature_ids, binding) is not None
+
+
+def ReadD25ProbabilityIdentity(
+    profile_root: Path, profile: ScoringProfileId, feature_ids: tuple[str, ...], binding: D25ProbabilityBinding,
+) -> str | None:
     try:
-        _read(profile_root, profile, feature_ids, binding)
+        _, identity = _read(profile_root, profile, feature_ids, binding)
     except (OSError, ValueError, TypeError):
-        return False
-    return True
+        return None
+    return identity
 
 
 def LoadD25ScoringProfile(
-    model_root: Path, loaded_profile: LoadedScoringProfile, target: PredictionTarget,
+    model_root: Path, profile: ScoringProfileId, target: PredictionTarget,
 ) -> LoadedScoringProfile:
+    profile_root = model_root / profile
+    documents = _read_pair(profile_root)
+    try:
+        if profile == "v1":
+            loaded_profile = DecodeV1D25Utility(documents)
+        else:
+            if profile == "v5":
+                if find_spec("torch") is None:
+                    raise ImportError("D25 V5 requires torch")
+                from trader.training.infra.tcn.network import ConfigureTcnRuntime
+
+                ConfigureTcnRuntime(training=False)
+            bundle = DecodeHeadBundle(documents.model.utility, documents.metadata.utility, Strategy.D25, StandardD25Profile(profile))
+            loaded_profile = BuildTrainedScoringProfile(profile, (bundle,))
+    except D25MetadataIntegrityError as exc:
+        raise ModelBundleIntegrityError(str(exc)) from exc
     head = loaded_profile.heads[Strategy.D25]
     utility = head.predictor
     if not isinstance(utility, (LearnedRankPredictor, TrainedHeadPredictor)):
         raise ValueError("d25_probability_requires_current_utility_model")
-    artifact, identity = _read_utility_bound_artifact(model_root, loaded_profile, target, utility)
+    publication, = loaded_profile.publications
+    features = (*utility.feature_ids, *(feature.value for feature in SEQUENCE_FEATURE_IDS)) if profile == "v5" else utility.feature_ids
+    binding = D25ProbabilityBinding(target, utility.model_hash, publication.training_history_hash, publication.metadata_hash)
+    try:
+        artifact, identity = _read_probability(documents, profile, features, binding)
+    except ValueError as exc:
+        raise D25ProbabilityModelInvalidError(str(exc)) from exc
+    if isinstance(utility, TrainedHeadPredictor) and any(
+        industry not in utility.industry_ids for industry, _model in artifact.industry_models
+    ):
+        raise D25ProbabilityModelInvalidError("d25_probability_utility_industry_mismatch")
     models: dict[str, Callable[[Sequence[ModelInput]], np.ndarray]] = {}
     for industry, model in artifact.industry_models:
         if isinstance(model, D25TreeModel):
@@ -198,43 +246,19 @@ def LoadD25ScoringProfile(
         else:
             models[industry] = LoadD25TcnScorer(model, len(utility.feature_ids))
     predictor = _D25Predictor(utility, artifact, identity, models)
-    return replace(loaded_profile, heads={**loaded_profile.heads, Strategy.D25: replace(head, predictor=predictor)})
-
-
-def ReadD25ProbabilityArtifact(
-    model_root: Path, loaded_profile: LoadedScoringProfile, target: PredictionTarget,
-) -> D25ProbabilityArtifact:
-    """Read numerical model evidence after verifying the active D25 utility binding."""
-    utility = loaded_profile.heads[Strategy.D25].predictor
-    if not isinstance(utility, (LearnedRankPredictor, TrainedHeadPredictor)):
-        raise ValueError("d25_probability_requires_current_utility_model")
-    artifact, _identity = _read_utility_bound_artifact(model_root, loaded_profile, target, utility)
-    return artifact
-
-
-def _read_utility_bound_artifact(
-    model_root: Path, loaded_profile: LoadedScoringProfile, target: PredictionTarget,
-    utility: LearnedRankPredictor | TrainedHeadPredictor,
-) -> tuple[D25ProbabilityArtifact, str]:
-    profile = loaded_profile.profile_id
-    if utility.profile_id != profile:
-        raise ValueError("d25_probability_utility_profile_mismatch")
-    features = (
-        (*utility.feature_ids, *(feature.value for feature in SEQUENCE_FEATURE_IDS))
-        if profile == "v5" else utility.feature_ids
+    return replace(
+        loaded_profile,
+        heads={Strategy.D25: replace(head, predictor=predictor)},
+        publications=(documents.metadata.scoring_identity(publication, target),),
     )
-    publication = next((item for item in loaded_profile.publications if item.strategy is Strategy.D25), None)
-    if publication is None:
-        raise ValueError("d25_probability_requires_current_utility_publication")
-    artifact, identity = _read(
-        model_root / profile, profile, features,
-        D25ProbabilityBinding(target, utility.model_hash, publication.training_history_hash, publication.metadata_hash),
-    )
-    if isinstance(utility, TrainedHeadPredictor) and any(
-        industry not in utility.industry_ids for industry, _model in artifact.industry_models
-    ):
-        raise ValueError("d25_probability_utility_industry_mismatch")
-    return artifact, identity
+
+
+def ReadD25ProbabilityArtifact(loaded_profile: LoadedScoringProfile) -> D25ProbabilityArtifact:
+    """Get the event evidence already verified when opening the scoring generation."""
+    predictor = loaded_profile.heads[Strategy.D25].predictor
+    if not isinstance(predictor, _D25Predictor):
+        raise ValueError("d25_scoring_profile_has_no_probability_model")
+    return predictor.artifact
 
 
 def _model_document(model: D25Model) -> dict[str, object]:
@@ -246,17 +270,34 @@ def _read(
 ) -> tuple[D25ProbabilityArtifact, str]:
     if ParseScoringProfile(profile_root.name) != profile:
         raise ValueError("d25_probability_profile_path_mismatch")
-    if not profile_root.exists():
+    return _read_probability(_read_pair(profile_root), profile, features, binding)
+
+
+def _read_pair(profile_root: Path) -> D25ModelPair:
+    if not profile_root.parent.exists():
         raise FileNotFoundError(profile_root)
     with ProfilePublicationLock(profile_root):
-        directory = profile_root / Strategy.D25.value
-        if profile_root.is_symlink() or not profile_root.is_dir() or directory.is_symlink():
+        if profile_root.is_symlink():
             raise ValueError("d25_probability_directory_invalid")
-        model = ReadD25ModelDocument(directory / "model.json")
-        _require_bound_utility(model.utility, profile, binding)
-        if model.probability is None:
-            raise FileNotFoundError("d25_probability_artifact_missing")
-        return _decode(model.probability, profile, features, binding)
+        try:
+            return ReadD25ModelPair(profile_root / Strategy.D25.value)
+        except D25MetadataIntegrityError as exc:
+            raise ModelBundleIntegrityError(str(exc)) from exc
+
+
+def _read_probability(
+    documents: D25ModelPair, profile: ScoringProfileId, features: tuple[str, ...], binding: D25ProbabilityBinding,
+) -> tuple[D25ProbabilityArtifact, str]:
+    _require_bound_utility(documents.model.utility, profile, binding)
+    metadata, probability = documents.metadata.probability_publication, documents.model.probability
+    if metadata is None and probability is None:
+        raise D25ProbabilityModelMissingError("d25_probability_artifact_missing")
+    if metadata is None or probability is None or metadata.target != binding.target:
+        raise ValueError("d25_probability_artifact_contract_mismatch")
+    artifact, identity = _decode(probability, profile, features, binding)
+    if identity != metadata.model_hash:
+        raise ValueError("d25_probability_publication_identity_conflict")
+    return artifact, identity
 
 
 def _require_bound_utility(
@@ -279,7 +320,7 @@ def _decode(
         or doc["target"] != binding.target.identity or doc["features"] != list(features)
         or doc["utility_hash"] != binding.utility_hash or doc["input_hash"] != binding.input_hash
         or doc["utility_metadata_hash"] != binding.utility_metadata_hash
-        or doc["implementation_hash"] != LaneTrainingImplementationIdentity(Strategy.D25, profile)
+        or not isinstance(doc["implementation_hash"], str) or not _valid_hash(doc["implementation_hash"])
     ):
         raise ValueError("d25_probability_artifact_contract_mismatch")
     fitting, calibration = _dates(doc["fitting_dates"]), _dates(doc["calibration_dates"])

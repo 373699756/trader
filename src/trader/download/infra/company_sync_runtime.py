@@ -5,7 +5,7 @@ import sqlite3
 from collections import defaultdict
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -54,6 +54,13 @@ from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.infra.sqlite_publication import SqlitePublicationError
+
+
+@dataclass(frozen=True, slots=True)
+class _FieldPopulation:
+    codes: tuple[str, ...]
+    facts: tuple[CompanyFacts, ...]
+    publication: CompanyPublicationIdentity | None
 
 
 class CompanySyncRuntime:
@@ -330,16 +337,20 @@ class CompanySyncRuntime:
         """Explicit maintenance; publication never calls this operation."""
         self.material.clean_material(cutoff)
 
+    def _read_field_population(self, codes: tuple[str, ...], check: Callable[[], None]) -> _FieldPopulation:
+        with self._session(self.facts.path, check=check, read_only=True) as formal, SqliteTransaction(formal):
+            return _FieldPopulation(codes, ReadCompanyFactRows(formal, codes), ReadCompanyPublicationIdentity(formal))
+
     def field_watermark(self, scope: CompanySyncRoundScope, eligible_codes: tuple[str, ...], check: Callable[[], None], *,
-        financial_query: StructuredCompanyQuery | None = None,
+        financial_query: StructuredCompanyQuery | None = None, population: _FieldPopulation | None = None,
     ) -> str:
         check()
         eligible = frozenset(eligible_codes)
         markets = tuple(sorted({EvidenceMarket(code) for code in eligible_codes}))
         material: list[tuple[object, ...]] = []
-        with self._session(self.facts.path, check=check, read_only=True) as formal, SqliteTransaction(formal):
-            facts = ReadCompanyFactRows(formal, eligible_codes)
-            publication = ReadCompanyPublicationIdentity(formal)
+        if population is None:
+            population = self._read_field_population(eligible_codes, check)
+        facts, publication = population.facts, population.publication
         unlock_open = eligible.difference(fact.code for fact in facts if fact.unlock_state is CompanyDataState.COMPLETE)
         retained_unlock_codes: set[str] = set()
         financial_proofs = self._financial_revision_proofs
@@ -421,7 +432,7 @@ class CompanySyncRuntime:
             raise
 
     def prepare_local(self, scope: CompanySyncRoundScope, *, check: Callable[[], None], cancel_requested: Callable[[], bool],
-        eligible_codes: tuple[str, ...], financial_query: StructuredCompanyQuery,
+        eligible_codes: tuple[str, ...], financial_query: StructuredCompanyQuery, population: _FieldPopulation | None = None,
     ) -> CompanySyncStepResult:
         check()
         if not eligible_codes:
@@ -444,7 +455,11 @@ class CompanySyncRuntime:
             marker = formal.run("SELECT rules_hash FROM company_field_proof_rule WHERE singleton=1").fetchone()
             revalidate = marker is None or marker[0] != rules_hash
             all_codes = tuple(sorted(set(eligible_codes) | {row[0] for row in formal.run("SELECT code FROM company_facts ORDER BY code")})) if revalidate else eligible_codes
-            old = {fact.code: fact for fact in ReadCompanyFactRows(formal, all_codes)}
+            if (population is not None and population.codes == all_codes and population.publication is not None
+                and population.publication == ReadCompanyPublicationIdentity(formal)):
+                old = {fact.code: fact for fact in population.facts}
+            else:
+                old = {fact.code: fact for fact in ReadCompanyFactRows(formal, all_codes)}
             fields_by_code: dict[str, list[CompanyFieldConclusion]] = defaultdict(list)
             for field in ReadCompanyFieldResults(formal, all_codes):
                 fields_by_code[field.code].append(field)
@@ -503,6 +518,7 @@ class _FieldProducer:
         self._runtime, self._monotonic = runtime, monotonic
         self._eligible_codes = eligible_codes
         self._financial_query = query
+        self._population: _FieldPopulation | None = None
         self._plan = CompanySyncPhasePlan(CompanySyncFamily.FIELDS, CanonicalDigest(("current_field_proof", CompanyFieldProofRulesHash().hex())), refresh_on_input_change=True)
 
     @property
@@ -511,15 +527,19 @@ class _FieldProducer:
 
     def state(self, scope: CompanySyncRoundScope) -> CompanySyncPhaseState:
         check = self._runtime._io_budget.check if self._runtime._io_budget is not None else lambda: None
-        watermark = self._runtime.field_watermark(scope, self._eligible_codes, check, financial_query=self._financial_query)
+        self._population = None
+        population = self._runtime._read_field_population(self._eligible_codes, check)
+        watermark = self._runtime.field_watermark(scope, self._eligible_codes, check, financial_query=self._financial_query, population=population)
+        self._population = population
         return CompanySyncPhaseState(CanonicalDigest((scope, self._plan, watermark)), False)
 
     def advance(self, scope: CompanySyncRoundScope, *, cancel_requested: Callable[[], bool], deadline: float) -> CompanySyncStepResult:
         def check() -> None:
             if cancel_requested() or self._monotonic() >= deadline:
                 raise CompanySyncInterrupted("company_sync_local_preparation_interrupted")
+        population, self._population = self._population, None
         return self._runtime.prepare_local(scope, check=check, cancel_requested=cancel_requested, eligible_codes=self._eligible_codes,
-            financial_query=self._financial_query)
+            financial_query=self._financial_query, population=population)
 
 
 def _unavailable(code: str, cutoff: datetime) -> CompanyFacts:

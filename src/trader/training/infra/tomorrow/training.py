@@ -234,7 +234,10 @@ def TrainTomorrowProbability(
             current = LoadTomorrowProbabilityModel(model_root, profile, target, project_root=project_root)
         except (OSError, RuntimeError, ValueError):
             current = None
-        if current is not None and current.artifact.history_snapshot_hash == history.snapshot_hash:
+        if (
+            current is not None and current.artifact.history_snapshot_hash == history.snapshot_hash
+            and current.artifact.training_contract_hash == LoadTomorrowFitSettings(project_root, profile).identity
+        ):
             result = TomorrowProbabilityTrainingResult(history.snapshot_hash, current.identity, current.artifact.algorithm)
             results[profile] = TomorrowProbabilityProfileResult(target, profile, result)
             reporter.stage("training_preparation", "completed")
@@ -604,6 +607,7 @@ def _train(
     artifact = TomorrowProbabilityArtifact(
         request.profile, request.target, snapshot_hash, request.settings.identity, fitted_dates, calibrated_dates,
         intercept, slope, fitted.logistic, fitted.tree, fitted.tcn,
+        fit_settings_hash=request.settings.fitting_identity,
     )
     check()
     progress.stage("artifact_publish", "started")

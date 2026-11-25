@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from math import ceil
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -34,6 +35,7 @@ class FittedBinaryTcn:
 
 def FitBinaryTcn(
     training: TrainingSampleMatrix, parameters: TcnFittingParameters, threads: int, check: Callable[[], None],
+    *, report: Callable[[int, int, int], None] | None = None,
 ) -> FittedBinaryTcn:
     import torch
     from torch.nn.functional import binary_cross_entropy_with_logits
@@ -49,8 +51,11 @@ def FitBinaryTcn(
     network = TcnNetwork(auxiliary_width, parameters.dropout, parameters.architecture)
     optimizer = torch.optim.AdamW(network.parameters(), lr=parameters.learning_rate, weight_decay=parameters.weight_decay)
     network.train()
-    for _ in range(parameters.epochs):
-        for start in range(0, len(training.labels), parameters.batch_size):
+    batches = ceil(len(training.labels) / parameters.batch_size)
+    for epoch in range(1, parameters.epochs + 1):
+        if report is not None:
+            report(epoch, 0, batches)
+        for number, start in enumerate(range(0, len(training.labels), parameters.batch_size), start=1):
             check()
             end = start + parameters.batch_size
             inputs = torch.from_numpy((training.features[start:end] - means) / scales).to(network.compute_dtype)
@@ -61,5 +66,7 @@ def FitBinaryTcn(
                 raise ValueError("binary_probability_tcn_loss_nonfinite")
             loss.backward()
             optimizer.step()
+            if report is not None:
+                report(epoch, number, batches)
     network.eval()
     return FittedBinaryTcn(network, means, scales)

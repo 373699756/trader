@@ -87,8 +87,8 @@ def Main(argv: list[str] | None = None) -> int:
     with lock:
         from trader.bootstrap import BuildProfiledSystem, PrepareRuntimeDisk
 
-        PrepareRuntimeDisk(settings, choose=True, report=False)
-        system = BuildProfiledSystem(config_path, profiles=profiles)
+        runtime = PrepareRuntimeDisk(settings, choose=True, report=False)
+        system = BuildProfiledSystem(config_path, profiles=profiles, runtime=runtime)
         return _run_system(
             system,
             timeout_seconds=system.settings.pipeline.shutdown_timeout_seconds,

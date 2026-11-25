@@ -24,6 +24,7 @@ from trader.download.infra.history_snapshot_reader import (
     HistorySnapshotReadError,
     RouteHistoryMonths,
 )
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
@@ -49,6 +50,7 @@ from trader.training.infra.model_bundles.profile_publication import (
     ReadPublishedProfileIdentities,
 )
 from trader.training.infra.research.close_return.selection import ResearchCloseReturnProfile
+from trader.training.infra.tomorrow.artifact import ReadTomorrowPublicationIdentity
 
 
 @dataclass(frozen=True)
@@ -431,7 +433,10 @@ class PublishedTrainingState:
         wall_clock: Callable[[], datetime], sqlite_policy: SqliteIoPolicy,
         metadata_cache: BoundedCache[object] | None = None,
         d25_only: bool = False,
+        tomorrow_target: PredictionTarget | None = None,
     ) -> None:
+        if tomorrow_target is not None and (not d25_only or tomorrow_target.strategy is not Strategy.TOMORROW):
+            raise ValueError("training_publication_requires_current_scoring_targets")
         self._sqlite_policy = sqlite_policy
         self._metadata_cache = metadata_cache
         self._history_root = history_root
@@ -440,6 +445,7 @@ class PublishedTrainingState:
         self._loaded = loaded
         self._owned_profile = owned_profile
         self._strategies = (Strategy.D25,) if d25_only else (Strategy.TOMORROW, Strategy.D25)
+        self._tomorrow_target = tomorrow_target
         self._load_expectation = load_expectation
         self._clock = wall_clock
         self._lock = threading.Lock()
@@ -461,7 +467,7 @@ class PublishedTrainingState:
             )
             for profile_id in profile_ids
             for strategy in self._strategies
-        )
+        ) + ((self._tomorrow_status(None, "publication_not_observed"),) if tomorrow_target is not None else ())
 
     def initialize(self, cancel_requested: Callable[[], bool] | None = None) -> None:
         cancelled = cancel_requested if cancel_requested is not None else lambda: False
@@ -494,6 +500,11 @@ class PublishedTrainingState:
             if cancelled():
                 return
             heads, failure = _inspect_profile(self._training_root, profile)
+            declared: tuple[ModelPublicationIdentity, ...] | None = None
+            if self._tomorrow_target is not None and failure is None:
+                declared, publication_failure = self._read_publications(profile, cancelled)
+                if publication_failure is not None:
+                    failure = publication_failure
             if cancelled():
                 return
             try:
@@ -554,7 +565,10 @@ class PublishedTrainingState:
                     ),
                     None,
                 )
-                disk = _publication_identity(profile, bundle) if bundle else None
+                disk = (
+                    next((item for item in declared if item.strategy is strategy and item.probability_ready), None)
+                    if declared is not None else _publication_identity(profile, bundle) if bundle else None
+                )
                 results.append(
                     HeadTrainingStatus(
                         profile.profile_id,
@@ -574,7 +588,9 @@ class PublishedTrainingState:
                 HeadTrainingStatus(
                     "v1",
                     strategy,
-                    next((item for item in identities if item.strategy is strategy), None),
+                    next((item for item in identities if item.strategy is strategy and (
+                        self._tomorrow_target is None or item.probability_ready
+                    )), None),
                     None,
                     "training_cadence_unsupported",
                     next((item for item in self._loaded if item.profile_id == "v1" and item.strategy is strategy), None),
@@ -583,6 +599,9 @@ class PublishedTrainingState:
                 )
                 for strategy in self._strategies
             )
+        if self._tomorrow_target is not None and not cancelled():
+            identity, failure = self._read_tomorrow(cancelled)
+            results.append(self._tomorrow_status(identity, failure))
         if not cancelled():
             with self._lock:
                 self._status = tuple(results)
@@ -612,22 +631,58 @@ class PublishedTrainingState:
             for profile in self._profiles():
                 if cancelled():
                     return
-                try:
-                    identities = ReadPublishedProfileIdentities(
-                        self._training_root / profile.output_directory,
-                        profile,
-                        cancel_requested=cancelled,
-                        metadata_cache=self._metadata_cache, observed_at=self._clock(),
-                    )
-                    failure = None
-                except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                    identities, failure = (), f"model_observation:{type(exc).__name__}"
+                identities, failure = self._read_publications(profile, cancelled)
                 self._record_publication_observation(profile.profile_id, identities, failure, cancelled)
             if self._owned_profile == "v1" and not cancelled():
                 identities, failure = self._v1_publications(cancelled)
                 self._record_publication_observation("v1", identities, failure, cancelled)
+            if self._tomorrow_target is not None and not cancelled():
+                identity, failure = self._read_tomorrow(cancelled)
+                if not cancelled():
+                    with self._lock:
+                        self._status = tuple(
+                            replace(item, disk=identity if failure is None else item.disk,
+                                    publication_observation_failure=failure)
+                            if item.strategy is Strategy.TOMORROW and item.owned else item for item in self._status
+                        )
         finally:
             self._initialization_lock.release()
+
+    def _read_publications(
+        self, profile: TrainedProfileContract, cancelled: Callable[[], bool],
+    ) -> tuple[tuple[ModelPublicationIdentity, ...], str | None]:
+        try:
+            return ReadPublishedProfileIdentities(
+                self._training_root / profile.output_directory,
+                profile,
+                cancel_requested=cancelled,
+                metadata_cache=self._metadata_cache,
+                observed_at=self._clock(),
+            ), None
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            return (), f"model_observation:{type(exc).__name__}"
+
+    def _read_tomorrow(self, cancelled: Callable[[], bool]) -> tuple[ModelPublicationIdentity | None, str | None]:
+        target = self._tomorrow_target
+        assert target is not None
+        try:
+            return ReadTomorrowPublicationIdentity(
+                self._training_root, self._owned_profile, target, cancel_requested=cancelled,
+            ), None
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            return None, f"model_observation:{type(exc).__name__}"
+
+    def _tomorrow_status(
+        self, identity: ModelPublicationIdentity | None, failure: str | None,
+    ) -> HeadTrainingStatus:
+        loaded = next((item for item in self._loaded if (
+            item.profile_id == self._owned_profile and item.strategy is Strategy.TOMORROW
+        )), None)
+        return HeadTrainingStatus(
+            self._owned_profile, Strategy.TOMORROW, identity, None,
+            None if identity is not None else "tomorrow_probability_model_unavailable",
+            loaded, True, failure,
+        )
 
     def _record_publication_observation(
         self,
@@ -642,11 +697,13 @@ class PublishedTrainingState:
             self._status = tuple(
                 replace(
                     item,
-                    disk=next((identity for identity in identities if identity.strategy is item.strategy), None)
+                    disk=next((identity for identity in identities if identity.strategy is item.strategy and (
+                        self._tomorrow_target is None or identity.probability_ready
+                    )), None)
                     if failure is None else item.disk,
                     publication_observation_failure=failure,
                 )
-                if item.profile_id == profile_id else item
+                if item.profile_id == profile_id and item.strategy in self._strategies else item
                 for item in self._status
             )
 

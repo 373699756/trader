@@ -47,10 +47,12 @@ def test_baseline_audit_requires_distinct_production_artifacts(tmp_path: Path) -
         retired.parent.mkdir(parents=True)
         retired.write_text("retired model", encoding="utf-8")
     width = len(TOMORROW_FEATURE_NAMES)
+    settings = LoadTomorrowFitSettings(runtime.project_root, "v3")
     model = TomorrowProbabilityArtifact(
-        "v3", PredictionTarget(Strategy.TOMORROW, 500), "a" * 64, LoadTomorrowFitSettings(runtime.project_root, "v3").identity,
+        "v3", PredictionTarget(Strategy.TOMORROW, 500), "a" * 64, settings.identity,
         (date(2024, 1, 2),), (date(2024, 2, 2),), 0, 1,
         LogisticTomorrowModel(0, (0.0,) * width, (0.0,) * width, (1.0,) * width), None,
+        fit_settings_hash=settings.fitting_identity,
     )
     identity = PublishTomorrowProbabilityModel(runtime.data_paths.models, model)
 

@@ -5,7 +5,6 @@ from contextlib import closing
 from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 from typing import cast
 
 import numpy as np
@@ -29,7 +28,7 @@ from trader.training.infra.d25.artifact import (
     LoadD25ScoringProfile,
     StageD25Probability,
 )
-from trader.training.infra.d25.model_document import D25ModelDocument, EncodeD25ModelDocument
+from trader.training.infra.d25.model_document import D25ModelDocument, EncodeD25MetadataDocument, EncodeD25ModelDocument
 from trader.training.infra.d25.training import (
     D25IndustryFitRequest,
     FitIndustryD25Probability,
@@ -43,7 +42,7 @@ from trader.training.infra.d25.v1.models import LoadV1ScoringProfile
 from trader.training.infra.d25.v1.training import RunV1Training
 from trader.training.infra.history.aligned_training_rows import AlignTrainingRows
 from trader.training.infra.model_bundles.profile_publication import PublishStrategyModelDirectory
-from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingSampleBatch
+from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingSample
 
 _TARGET = PredictionTarget(Strategy.D25, 100)
 _OTHER = PredictionTarget(Strategy.D25, 150)
@@ -132,7 +131,7 @@ def test_v1_production_fit_builds_d25_probabilities_from_raw_history_rows(tmp_pa
         "v1/d25/model.json", "v1/d25/metadata.json",
     }
     utility = LoadV1ScoringProfile(model_root, strategies=(Strategy.D25,))
-    loaded = LoadD25ScoringProfile(model_root, utility, target)
+    loaded = LoadD25ScoringProfile(model_root, "v1", target)
     assert loaded.heads[Strategy.D25].predictor.model_hash != utility.heads[Strategy.D25].predictor.model_hash
 
 
@@ -179,7 +178,7 @@ def test_v1_binary_lambdarank_uses_mature_close_labels_and_reloads(tmp_path: Pat
         StageD25Probability(staged, replace(model, binding=replace(binding, utility_hash="f" * 64)))
     PublishStrategyModelDirectory(profile, Strategy.D25, staged)
     assert HasD25Probability(profile, "v1", model.features, model.binding)
-    loaded = LoadD25ScoringProfile(model_root, utility, _TARGET)
+    loaded = LoadD25ScoringProfile(model_root, "v1", _TARGET)
     current = loaded.heads[Strategy.D25].predictor
     previous = utility.heads[Strategy.D25].predictor
     inputs = (ModelInput("600000", (0.0,) * 10), ModelInput("600011", (11.0,) * 10))
@@ -199,10 +198,10 @@ def test_v1_binary_lambdarank_uses_mature_close_labels_and_reloads(tmp_path: Pat
     assert tuple(item.predicted_excess_return for item in predictions) == tuple(item.predicted_excess_return for item in old)
     assert current.model_hash != previous.model_hash
     with pytest.raises(ValueError, match="artifact_contract_mismatch"):
-        LoadD25ScoringProfile(model_root, utility, _OTHER)
+        LoadD25ScoringProfile(model_root, "v1", _OTHER)
     (profile / "d25" / "model.json").write_text("malformed", encoding="utf-8")
     with pytest.raises(ValueError):
-        LoadD25ScoringProfile(model_root, utility, _TARGET)
+        LoadD25ScoringProfile(model_root, "v1", _TARGET)
 
 
 @pytest.mark.parametrize("profile_id", ("v2", "v3", "v5"))
@@ -215,45 +214,57 @@ def test_d25_industry_models_fit_the_new_event_with_separate_utility_identity(
         _CALENDAR, source_cutoff=_CALENDAR[-1], fit_sessions=10, early_stopping_sessions=0, history_sessions=61,
     )
     industry = "capco:J66货币金融服务"
-    labels = np.asarray([0.0] * 8 + [1.0] * 8)
-    data = np.tile((labels * 2.0 - 1.0)[:, None], (1, width))
-
-    def batches(industry_id, received, partition, *, d25_probability):
-        assert industry_id == industry and received == contract and d25_probability
-        dates = split.fitting_dates if partition == "training" else split.calibration_dates
-        for day in dates:
-            yield TrainingSampleBatch(data.copy(), labels.copy(), (day,) * len(labels),
-                                      tuple(f"{600000 + index:06d}" for index in range(len(labels))),
-                                      (industry,) * len(labels))
+    labels = (0,) * 8 + (1,) * 8
 
     parameters = {
         "v2": LightGBMFittingParameters(10, 0.1, 3, 7, 2, 8, 3, 63, 16, 7),
         "v3": RidgeFittingParameters(10, 0.001),
         "v5": TcnFittingParametersFixture(minimum_industry_training_rows=10, epochs=10),
     }[profile_id]
-    samples = cast(SQLiteTrainingSampleIndex, SimpleNamespace(iter_batches=batches))
     request = D25IndustryFitRequest(profile_id, contract, split, parameters, (industry,), 1, _BINDING)
     if profile_id == "v5":
         pytest.importorskip("torch")
-        from trader.training.infra.tcn.network import PreserveTcnRuntime
+    from trader.training.infra.tcn.network import PreserveTcnRuntime
 
+    updates = []
+
+    def cancelled() -> None:
+        raise InterruptedError("training_cancelled")
+
+    with SQLiteTrainingSampleIndex(
+        tmp_path / "samples.sqlite3",
+        contract.feature_manifest.names,
+        sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(matrix_memory_bytes=1),
+    ) as samples:
+        samples.add_final(
+            TrainingSample(
+                f"{600000 + position:06d}", day, "main", industry, 1e7,
+                (float(label * 2 - 1),) * width, (None,) * 6, label,
+            )
+            for day in (*split.fitting_dates, *split.calibration_dates)
+            for position, label in enumerate(labels)
+        )
+        samples.prepare_for_model_fitting(split)
         with PreserveTcnRuntime():
-            artifact = FitIndustryD25Probability(samples, request, lambda: None)
-    else:
-        artifact = FitIndustryD25Probability(samples, request, lambda: None)
+            artifact = FitIndustryD25Probability(samples, request, lambda: None, progress=updates.append)
+        assert not tuple(tmp_path.glob("sample-fit-*"))
+        with pytest.raises(InterruptedError, match="training_cancelled"):
+            FitIndustryD25Probability(samples, request, cancelled)
+        assert not tuple(tmp_path.glob("sample-fit-*"))
+    assert (updates[-1].stage, updates[-1].state) == ("model_calibration", "completed")
+    assert any(event.stage == "event_model_fit" and event.completed_units == 1 for event in updates)
+    if profile_id == "v5":
+        assert {event.fit_detail.epoch for event in updates if event.fit_detail and event.fit_detail.phase == "training"} == set(range(1, 11))
     profile_root = tmp_path / "models" / profile_id
     directory = profile_root / "d25"
     directory.mkdir(parents=True)
     document = EncodeD25ModelDocument(D25ModelDocument({"content_hash": artifact.binding.utility_hash}))
     (directory / "model.json").write_text(json.dumps(document), encoding="utf-8")
+    (directory / "metadata.json").write_text(json.dumps(EncodeD25MetadataDocument({})), encoding="utf-8")
     assert artifact.calibration[1] > 0
     assert len(StageD25Probability(directory, artifact)) == 64
     assert HasD25Probability(profile_root, profile_id, artifact.features, artifact.binding)
     assert not HasD25Probability(profile_root, profile_id, artifact.features, replace(artifact.binding, utility_hash="f" * 64))
 
-    def cancelled() -> None:
-        raise InterruptedError("training_cancelled")
-
-    with pytest.raises(InterruptedError, match="training_cancelled"):
-        FitIndustryD25Probability(samples, request, cancelled)
     assert HasD25Probability(profile_root, profile_id, artifact.features, artifact.binding)

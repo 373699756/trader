@@ -54,13 +54,14 @@ def test_help_does_not_import_the_measured_sync_or_product_configuration() -> No
     assert "WRITES CURRENT COMPANY DATA" in completed.stdout
 
 
-def test_retired_fill_option_is_rejected_before_measurement(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("removed", ("fill", "--fill"))
+def test_retired_fill_option_is_rejected_before_measurement(tmp_path, monkeypatch, removed) -> None:
     from scripts.download.company import company_pipeline_audit
 
     arguments, output = _arguments(tmp_path)
     monkeypatch.setattr(company_pipeline_audit, "MeasureCompanySync", lambda *args, **kwargs: pytest.fail("measurement started"))
     with pytest.raises(SystemExit) as caught:
-        live_sync.Run("company-live-sync", arguments + ["--fill"])
+        live_sync.Run("company-live-sync", arguments + [removed])
     assert caught.value.code == 2
     assert not output.exists()
 
@@ -71,20 +72,20 @@ def test_success_uses_the_existing_measurement_and_redirects_product_stdout(tmp_
     arguments, output = _arguments(tmp_path)
     calls = []
 
-    def measured(configuration, destination, *, fill_missing):
-        calls.append((configuration, destination, fill_missing))
+    def measured(configuration, destination):
+        calls.append((configuration, destination))
         print("product progress")
         destination.write_text(json.dumps(_measurement()), encoding="utf-8")
         return 0
 
     monkeypatch.setattr(company_pipeline_audit, "MeasureCompanySync", measured)
-    outcome = live_sync.Run("company-live-sync", arguments + ["fill"])
+    outcome = live_sync.Run("company-live-sync", arguments)
     assert outcome.exit_code == 0 and outcome.payload["status"] == "passed"
     assert outcome.payload["measurement_status"] == "passed"
     assert outcome.payload["field_correctness_verified"] is False
     assert outcome.payload["operations"][0]["inflight_calls"] == 0
     assert outcome.payload["operations"][0]["inflight_duration_complete"] is True
-    assert calls == [(tmp_path / "runtime.json", output, True)]
+    assert calls == [(tmp_path / "runtime.json", output)]
     assert "must-not-escape" not in json.dumps(outcome.payload)
     captured = capsys.readouterr()
     assert captured.out == "" and captured.err == "product progress\n"
@@ -96,7 +97,7 @@ def test_nonzero_cli_exit_is_preserved_without_promoting_a_degraded_measurement(
 
     arguments, _output = _arguments(tmp_path)
 
-    def measured(_configuration, destination, *, fill_missing):
+    def measured(_configuration, destination):
         destination.write_text(json.dumps(_measurement(code, status="degraded", cancelled=code == 130)), encoding="utf-8")
         return code
 
@@ -113,7 +114,7 @@ def test_keyboard_interrupt_keeps_the_measurement_unknown_cli_exit(tmp_path, mon
 
     arguments, _output = _arguments(tmp_path)
 
-    def measured(_configuration, destination, *, fill_missing):
+    def measured(_configuration, destination):
         destination.write_text(json.dumps(_measurement(None, status="degraded", cancelled=True)), encoding="utf-8")
         raise KeyboardInterrupt
 
@@ -129,7 +130,7 @@ def test_unusable_measurement_cannot_turn_a_zero_return_into_acceptance(tmp_path
 
     arguments, _output = _arguments(tmp_path)
 
-    def measured(_configuration, destination, *, fill_missing):
+    def measured(_configuration, destination):
         if fault == "missing":
             return 0
         if fault == "too_large":

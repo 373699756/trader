@@ -569,7 +569,7 @@ def test_restart_displays_persistent_failures_separately_from_new_failures():
     assert "未解决失败7篇" in stream.getvalue()
 
 
-def test_terminal_and_fill_summary_show_pending_units_without_claiming_full_coverage(monkeypatch, capsys):
+def test_terminal_and_company_summary_show_pending_units_without_claiming_full_coverage(monkeypatch, capsys):
     stream = StringIO()
     report = CompanyEvidenceProgress(stream, monotonic=lambda: 0)
     report(
@@ -593,12 +593,12 @@ def test_terminal_and_fill_summary_show_pending_units_without_claiming_full_cove
             else CompanySyncFamilyFixture(family) for family in CompanySyncFamily),
     )
     def execute(*args, **kwargs):
-        assert kwargs["fill_missing"]
+        assert args[1] == "company"
         return SyncResult((SyncTaskResult("company", "pending", company=result),))
 
     monkeypatch.setattr(bootstrap, "ExecuteSync", execute)
     config = Path(__file__).resolve().parents[4] / "config/runtime.json"
-    assert Main(["--config", str(config), "sync", "company", "fill"]) == 1
+    assert Main(["--config", str(config), "sync", "company"]) == 1
     assert capsys.readouterr().out.splitlines() == [
         "公司同步：待继续，范围 4,402 股",
         "来源库：财务采集处理结束、质押采集处理结束、解禁采集处理结束、公告有异常、年度营收采集处理结束。",

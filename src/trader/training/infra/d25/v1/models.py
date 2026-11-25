@@ -47,7 +47,8 @@ from trader.training.domain.v1.learned_rank import (
 from trader.training.domain.final_fit import FinalFitDatePlan
 from trader.training.domain.training_dates import MAX_TRAINING_SESSIONS
 from trader.training.infra.d25.model_document import (
-    D25ModelDocument, EncodeD25ModelDocument, ReadD25ModelDocument,
+    D25MetadataIntegrityError, D25ModelDocument, D25ModelPair, EncodeD25MetadataDocument,
+    EncodeD25ModelDocument, ReadD25MetadataDocument, ReadD25ModelPair,
 )
 from trader.training.infra.model_bundles.bundle_codec import ModelBundleContractError, ModelBundleIntegrityError
 from trader.training.infra.model_bundles.profile_publication import (
@@ -281,7 +282,10 @@ def PublishLearnedRankPair(
                 EncodeD25ModelDocument(D25ModelDocument(model)) if head.strategy is Strategy.D25 else model
             )
             AtomicWriteJson(directory / "model.json", model_document)
-            AtomicWriteJson(directory / "metadata.json", metadata)
+            AtomicWriteJson(
+                directory / "metadata.json",
+                EncodeD25MetadataDocument(metadata) if head.strategy is Strategy.D25 else metadata,
+            )
             if head.strategy is Strategy.D25 and stage_d25 is not None:
                 stage_d25(directory)
             _fsync_directory(directory)
@@ -381,25 +385,25 @@ def ReadV1PublicationIdentities(
             model_path = directory / "model.json"
             if model_path.is_symlink() or not model_path.is_file():
                 raise ValueError("V1 head model path is invalid")
-            metadata = _object(json.loads(ReadRegularFile(
-                directory / "metadata.json", maximum_bytes=8 * 1024 * 1024,
+            metadata_path = directory / "metadata.json"
+            published = ReadD25MetadataDocument(metadata_path) if strategy is Strategy.D25 else None
+            metadata = published.utility if published is not None else _object(json.loads(ReadRegularFile(
+                metadata_path, maximum_bytes=8 * 1024 * 1024,
             )))
             if cancel_requested():
                 raise InterruptedError("model_publication_observation_cancelled")
             _verify_document(metadata, _METADATA_DOCUMENT_FIELDS, "V1 metadata")
             _validate_metadata_identity(metadata, strategy)
-            documents.append(metadata)
-        first = documents[0]
-        if any(metadata[key] != first[key] for metadata in documents[1:] for key in _SHARED_METADATA_FIELDS):
+            identity = _metadata_publication_identity(metadata, strategy)
+            documents.append((metadata, published.scoring_identity(identity) if published is not None else identity))
+        first = documents[0][0]
+        if any(metadata[key] != first[key] for metadata, _ in documents[1:] for key in _SHARED_METADATA_FIELDS):
             raise ModelBundleContractError("V1 pair metadata differs")
-        identities = tuple(_metadata_publication_identity(metadata, strategy) for metadata, strategy in zip(
-            documents, strategies, strict=True,
-        ))
-        inputs = tuple(_object(metadata["training_input"]) for metadata in documents)
+        inputs = tuple(_object(metadata["training_input"]) for metadata, _ in documents)
         fields = _SHARED_INPUT_FIELDS | {"calendar_dates"}
         if any(item[key] != inputs[0][key] for item in inputs[1:] for key in fields):
             raise ModelBundleContractError("V1 pair training input differs")
-        return identities
+        return tuple(identity for _, identity in documents)
 
 
 def _validate_metadata_identity(metadata: Mapping[str, object], strategy: Strategy) -> None:
@@ -489,29 +493,37 @@ def _read_heads(paths: tuple[tuple[Strategy, Path], ...]) -> LearnedRankFinalPai
             raise FileNotFoundError("V1 head files are missing")
         if file_names != expected_files:
             raise ValueError("V1 head directory has unexpected entries")
-        model_path = directory / "model.json"
-        model = (
-            ReadD25ModelDocument(model_path).utility
-            if strategy is Strategy.D25 else
-            _object(json.loads(ReadRegularFile(model_path, maximum_bytes=_MAXIMUM_MODEL_DOCUMENT_BYTES)))
-        )
-        metadata = _object(json.loads(ReadRegularFile(
-            directory / "metadata.json", maximum_bytes=_MAXIMUM_MODEL_DOCUMENT_BYTES,
-        )))
-        _verify_document(model, _MODEL_DOCUMENT_FIELDS, "V1 model")
-        _verify_document(metadata, _METADATA_DOCUMENT_FIELDS, "V1 metadata")
-        if metadata["model_hash"] != model["content_hash"]:
-            raise ModelBundleIntegrityError("V1 model and metadata hash differ")
-        _validate_metadata_identity(metadata, strategy)
-        expected: Mapping[str, object] = {
-            "profile_id": "v1",
-            "strategy_head": strategy.value,
-            "pair_content_hash": model["pair_content_hash"],
-            "head_content_hash": model["head_content_hash"],
-        }
-        if any(model[key] != value or metadata[key] != value for key, value in expected.items()):
-            raise ModelBundleContractError("V1 head identity differs")
+        if strategy is Strategy.D25:
+            try:
+                published = ReadD25ModelPair(directory)
+            except D25MetadataIntegrityError as exc:
+                raise ModelBundleIntegrityError(str(exc)) from exc
+            model, metadata = published.model.utility, published.metadata.utility
+        else:
+            model, metadata = (_object(json.loads(ReadRegularFile(directory / name, maximum_bytes=_MAXIMUM_MODEL_DOCUMENT_BYTES)))
+                               for name in ("model.json", "metadata.json"))
+        _validate_head_documents(model, metadata, strategy)
         documents.append((model, metadata))
+    return _decode_heads(documents)
+
+
+def _validate_head_documents(model: Mapping[str, object], metadata: Mapping[str, object], strategy: Strategy) -> None:
+    _verify_document(model, _MODEL_DOCUMENT_FIELDS, "V1 model")
+    _verify_document(metadata, _METADATA_DOCUMENT_FIELDS, "V1 metadata")
+    if metadata["model_hash"] != model["content_hash"]:
+        raise ModelBundleIntegrityError("V1 model and metadata hash differ")
+    _validate_metadata_identity(metadata, strategy)
+    expected: Mapping[str, object] = {
+        "profile_id": "v1",
+        "strategy_head": strategy.value,
+        "pair_content_hash": model["pair_content_hash"],
+        "head_content_hash": model["head_content_hash"],
+    }
+    if any(model[key] != value or metadata[key] != value for key, value in expected.items()):
+        raise ModelBundleContractError("V1 head identity differs")
+
+
+def _decode_heads(documents: list[tuple[Mapping[str, object], Mapping[str, object]]]) -> LearnedRankFinalPair:
     first = documents[0][1]
     if any(metadata[key] != first[key] for _, metadata in documents[1:] for key in _SHARED_METADATA_FIELDS):
         raise ModelBundleContractError("V1 pair metadata differs")
@@ -598,7 +610,16 @@ def _fsync_directory(path: Path) -> None:
 
 
 def LoadV1ScoringProfile(model_root: Path, *, strategies: tuple[Strategy, ...] = _STRATEGIES) -> LoadedScoringProfile:
-    pair = ReadLearnedRankPair(model_root, strategies=strategies)
+    return _build_v1_scoring_profile(ReadLearnedRankPair(model_root, strategies=strategies))
+
+
+def DecodeV1D25Utility(published: D25ModelPair) -> LoadedScoringProfile:
+    model, metadata = published.model.utility, published.metadata.utility
+    _validate_head_documents(model, metadata, Strategy.D25)
+    return _build_v1_scoring_profile(_decode_heads([(model, metadata)]))
+
+
+def _build_v1_scoring_profile(pair: LearnedRankFinalPair) -> LoadedScoringProfile:
     evidence = ProfileEvidence(
         "historical_unavailable",
         ("prediction_return_validation_not_passed", "point_in_time_parity_unverified"),

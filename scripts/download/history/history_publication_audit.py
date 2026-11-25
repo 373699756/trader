@@ -14,7 +14,7 @@ import sqlite3
 import tempfile
 import time
 from collections.abc import Callable, Iterator
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from itertools import groupby
@@ -88,7 +88,7 @@ class PriceAuditBudget:
         return 0
 
     @contextmanager
-    def connection(self, path: Path, policy: SqliteIoPolicy) -> Iterator[sqlite3.Connection]:
+    def connection(self, path: Path, policy: SqliteIoPolicy) -> Iterator[SqliteConnection]:
         self.check()
         _require_regular(path)
         timeout = min(policy.connection_timeout_seconds, max(0.001, self.deadline - self.clock()))
@@ -96,19 +96,19 @@ class PriceAuditBudget:
         if wal.is_symlink() or wal.exists() and not wal.is_file():
             raise ValueError("price_audit_source_path_unsafe")
         immutable = not wal.exists() or wal.stat().st_size == 0
-        connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro" + ("&immutable=1" if immutable else ""), uri=True, timeout=timeout)
         try:
-            connection.execute("PRAGMA query_only=ON")
-            connection.set_progress_handler(self.progress, 10000)
-            connection.execute("BEGIN")
-            yield connection
-            self.check()
+            with SqliteSession(
+                path.resolve(), SqliteConnectionOptions(read_only=True, immutable=immutable),
+                sqlite_policy=replace(policy, connection_timeout_seconds=timeout),
+            ) as connection:
+                connection.observe_progress(self.progress, 10_000)
+                with SqliteTransaction(connection):
+                    yield connection
+                    self.check()
         except sqlite3.OperationalError as exc:
             if self.interrupted is not None and "interrupt" in str(exc).lower():
                 raise PriceAuditInterrupted(self.interrupted) from exc
             raise
-        finally:
-            connection.close()
 
 
 @dataclass(frozen=True)
@@ -385,14 +385,14 @@ def LoadPriceAuditReference(
     """Read published local listing/calendar facts with the same SQL deadline."""
     with budget.connection(path, policy) as connection:
         budget.phase = "reference_sqlite_integrity"
-        if tuple(row[0] for row in connection.execute("PRAGMA integrity_check")) != ("ok",):
+        if tuple(row[0] for row in connection.run("PRAGMA integrity_check")) != ("ok",):
             raise ValueError("price_audit_reference_integrity_failed")
         if publication is None:
-            current = connection.execute("SELECT publication_id FROM reference_current WHERE singleton=1").fetchone()
+            current = connection.run("SELECT publication_id FROM reference_current WHERE singleton=1").fetchone()
             if current is None:
                 raise ValueError("price_audit_reference_publication_missing")
             publication = str(current[0])
-        rows = connection.execute(
+        rows = connection.run(
             "SELECT s.code,s.listed_date,s.delisted_date FROM reference_member m "
             "JOIN security s ON s.code=m.code AND s.security_id=m.security_id "
             "JOIN security_st_evidence st ON st.code=m.code AND st.st_id=m.st_id "
@@ -403,7 +403,7 @@ def LoadPriceAuditReference(
         if any(not isinstance(row[0], str) or type(row[1]) is not int or row[2] is not None and type(row[2]) is not int for row in rows):
             raise ValueError("price_audit_reference_security_invalid")
         securities = tuple(PriceAuditSecurity(row[0], row[1], row[2]) for row in rows)
-        dates = tuple(row[0] for row in connection.execute(
+        dates = tuple(row[0] for row in connection.run(
             "SELECT t.trade_date FROM reference_publication p JOIN trading_calendar t ON t.calendar_id=p.calendar_id "
             "WHERE p.publication_id=? ORDER BY t.trade_date LIMIT ?", (publication, _MAX_AUDIT_DATES + 1),
         ))
@@ -417,9 +417,9 @@ def _history_plan(root: Path, budget: PriceAuditBudget, policy: SqliteIoPolicy) 
     metadata_sources = CapturePriceAuditSources((catalog,), budget)
     with budget.connection(catalog, policy) as connection:
         budget.phase = "catalog_sqlite_integrity"
-        if tuple(row[0] for row in connection.execute("PRAGMA integrity_check")) != ("ok",):
+        if tuple(row[0] for row in connection.run("PRAGMA integrity_check")) != ("ok",):
             raise ValueError("price_audit_catalog_integrity_failed")
-        row = connection.execute(
+        row = connection.run(
             "SELECT p.sync_sequence,hex(p.snapshot_hash),s.data_cutoff_date,c.publication_id,u.publication_id,sc.reference_file,"
             "c.start_date,c.end_date,c.session_count,hex(c.id),hex(c.source_hash),hex(u.id),hex(u.source_hash) "
             "FROM published_snapshot p JOIN history_snapshot s ON s.id=p.sync_sequence "
@@ -428,11 +428,11 @@ def _history_plan(root: Path, budget: PriceAuditBudget, policy: SqliteIoPolicy) 
         ).fetchone()
         if row is None or row[5] is None:
             raise ValueError("history_publication_or_reference_missing")
-        references = connection.execute(
+        references = connection.run(
             "SELECT calendar_year,calendar_month,relative_path,sync_sequence,row_count,hex(logical_hash) FROM snapshot_partition "
             "WHERE snapshot_id=? ORDER BY calendar_year,calendar_month", (row[0],),
         ).fetchall()
-        snapshot_row = connection.execute(
+        snapshot_row = connection.run(
             "SELECT id,hex(content_hash),data_cutoff_date,label_cutoff_date,hex(calendar_hash),hex(universe_hash),hex(source_hash) "
             "FROM history_snapshot WHERE id=?", (row[0],),
         ).fetchone()
@@ -585,13 +585,13 @@ def _scan_unit(scan: _UnitScan, budget: PriceAuditBudget, policy: SqliteIoPolicy
     days = {day: 1 << index for index, day in enumerate(unit.dates)}
     budget.phase = unit.name + ":sqlite_integrity"
     with budget.connection(unit.path, policy) as connection:
-        integrity = tuple(row[0] for row in connection.execute("PRAGMA integrity_check"))
+        integrity = tuple(row[0] for row in connection.run("PRAGMA integrity_check"))
         scan.integrity = "passed" if integrity == ("ok",) else "failed"
         if scan.integrity != "passed":
             raise ValueError("price_audit_integrity_failed")
         if unit.profile is not None:
             budget.phase = unit.name + ":fields_and_coverage"
-            cursor = connection.execute(
+            cursor = connection.run(
                 "SELECT trade_date,code," + ",".join(PRICE_COLUMNS) +
                 " FROM daily_price WHERE trade_date BETWEEN ? AND ? ORDER BY code,trade_date",
                 (unit.dates[0], unit.dates[-1]),
@@ -619,7 +619,7 @@ def _scan_unit(scan: _UnitScan, budget: PriceAuditBudget, policy: SqliteIoPolicy
             budget.phase = unit.name + ":nontrading_evidence"
             today = (datetime.now(ZoneInfo("Asia/Shanghai")).date() - date(1970, 1, 1)).days
             sources = dict(zip((stock.code for stock in unit.securities), unit.sources, strict=True))
-            for code, day, kind, checked, source in connection.execute(
+            for code, day, kind, checked, source in connection.run(
                 "SELECT code,trade_date,kind,checked_on,source FROM price_nontrading ORDER BY code,trade_date"
             ):
                 budget.check()
@@ -641,9 +641,9 @@ def _scan_unit(scan: _UnitScan, budget: PriceAuditBudget, policy: SqliteIoPolicy
         budget.phase = unit.name + ":latest_observation_index"
         sequence = "CASE " + " ".join("WHEN trade_date BETWEEN ? AND ? THEN ?" for _ in unit.slices) + " ELSE 0 END"
         parameters = (unit.dates[0], unit.dates[-1], *(value for part in unit.slices for value in (part.first, part.last, part.sequence)))
-        with closing(sqlite3.connect(":memory:")) as latest:
-            latest.execute("CREATE TABLE selected(code TEXT,day INTEGER,revision TEXT,PRIMARY KEY(code,day)) WITHOUT ROWID")
-            cursor = connection.execute(
+        with SqliteSession(":memory:") as latest, SqliteTransaction(latest):
+            latest.run("CREATE TABLE selected(code TEXT,day INTEGER,revision TEXT,PRIMARY KEY(code,day)) WITHOUT ROWID")
+            cursor = connection.run(
                 "SELECT trade_date,code,sync_sequence,revision_id FROM daily_price_observation "
                 "WHERE trade_date BETWEEN ? AND ? AND sync_sequence<=" + sequence +
                 " ORDER BY trade_date,code,sync_sequence", parameters,
@@ -664,7 +664,7 @@ def _scan_unit(scan: _UnitScan, budget: PriceAuditBudget, policy: SqliteIoPolicy
                     previous = current
                 if scan.latest_rows > _MAX_LATEST_ROWS:
                     raise ValueError("price_audit_latest_index_limit")
-                latest.executemany("INSERT INTO selected VALUES(?,?,?)", selected)
+                latest.run_many("INSERT INTO selected VALUES(?,?,?)", selected)
                 selected.clear()
             if previous is not None:
                 scan.latest_rows += 1
@@ -672,21 +672,20 @@ def _scan_unit(scan: _UnitScan, budget: PriceAuditBudget, policy: SqliteIoPolicy
                     scan.unexpected_dates += 1
                 if scan.latest_rows > _MAX_LATEST_ROWS:
                     raise ValueError("price_audit_latest_index_limit")
-                latest.execute("INSERT INTO selected VALUES(?,?,?)", (previous[1], previous[0], previous[2]))
+                latest.run("INSERT INTO selected VALUES(?,?,?)", (previous[1], previous[0], previous[2]))
             budget.phase = unit.name + ":fields_and_coverage"
-            cursor = connection.execute(
+            cursor = connection.run(
                 "SELECT trade_date,code,revision_id," + ",".join(PRICE_COLUMNS) +
                 " FROM daily_price_revision WHERE trade_date BETWEEN ? AND ? ORDER BY trade_date,code,revision_id",
                 (unit.dates[0], unit.dates[-1]),
             )
-            probe = latest.cursor()
             while batch := cursor.fetchmany(512):
                 budget.check()
                 for row in batch:
                     if row[1] not in stocks:
                         continue
-                    selected = probe.execute("SELECT revision FROM selected WHERE code=? AND day=?", (row[1], row[0])).fetchone()
-                    if selected is not None and selected[0] == row[2]:
+                    identity = latest.run("SELECT revision FROM selected WHERE code=? AND day=?", (row[1], row[0])).fetchone()
+                    if identity is not None and identity[0] == row[2]:
                         _scan_row(scan, stocks[row[1]], days.get(row[0], 0), tuple(row[3:]))
 
 

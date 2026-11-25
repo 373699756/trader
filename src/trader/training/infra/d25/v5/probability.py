@@ -28,10 +28,11 @@ class D25TcnModel:
 
 def FitD25Tcn(
     training: TrainingSampleMatrix, parameters: TcnFittingParameters, threads: int, check: Callable[[], None],
+    *, report: Callable[[int, int, int], None] | None = None,
 ) -> tuple[D25TcnModel, Callable[[np.ndarray], np.ndarray]]:
     if parameters.epochs != 10:
         raise ValueError("d25_probability_v5_requires_10_epochs")
-    fitted = FitBinaryTcn(training, parameters, threads, check)
+    fitted = FitBinaryTcn(training, parameters, threads, check, report=report)
     return (
         D25TcnModel(tuple(fitted.means), tuple(fitted.scales), parameters.dropout,
                     fitted.network.tensors(), parameters.architecture), fitted.logits,

@@ -29,10 +29,12 @@ class TomorrowFitSettings:
     parameters: V1TrainingSettings | ModelFittingParameters
 
     @property
+    def fitting_identity(self) -> str:
+        return ContentHash((self, TomorrowAlgorithm(self.profile)))
+
+    @property
     def identity(self) -> str:
-        return ContentHash((
-            self, TomorrowAlgorithm(self.profile), LaneTrainingImplementationIdentity(Strategy.TOMORROW, self.profile),
-        ))
+        return ContentHash((self.fitting_identity, LaneTrainingImplementationIdentity(Strategy.TOMORROW, self.profile)))
 
 
 def LoadTomorrowFitSettings(project_root: Path, profile: ScoringProfileId) -> TomorrowFitSettings:

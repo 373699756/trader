@@ -875,14 +875,3 @@ def test_history_summary_uses_final_gap_state_after_repair(monkeypatch) -> None:
     last = stream.getvalue().splitlines()[-1]
     assert "\x1b[32m同步完成" in last and "待重试记录" not in last
     assert status.state == "completed" and status.unresolved_price_cells == 0
-
-
-def test_qfq_failed_local_extraction_never_reports_success() -> None:
-    from trader.download.infra.qfq_progress import QfqLocalProgress
-
-    messages = []
-    with pytest.raises(OSError, match="disk_full"):
-        with QfqLocalProgress(messages.append):
-            raise OSError("disk_full")
-    last = RenderProgress(messages[-1], color=True)
-    assert "中断" in last and "完成" not in last and "\x1b[32m" not in last

@@ -11,7 +11,7 @@ import time
 import threading
 from collections.abc import Callable
 from contextlib import ExitStack, suppress
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from functools import partial
 from pathlib import Path
@@ -24,7 +24,8 @@ from trader.download.application.company_exclusions import PublishCompanyExclusi
 from trader.download.application.company_financial_producer import BuildCompanyFinancialRoundQuery
 from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.application.history_ports import HistorySyncDependencies
-from trader.download.application.prepare_reference import PrepareReference, ReferencePreparationDependencies, ReferencePreparationSources
+from trader.download.application.prepare_reference import IndustryVersionPort, PrepareReference, ReferencePreparationDependencies, ReferencePreparationSources
+from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.application.progress_message import ProgressMessage
 from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
@@ -78,7 +79,10 @@ from trader.infra.isolated_call import RunIsolatedCall
 from trader.infra.isolated_http import IsolatedHttpExecutor
 from trader.infra.process_lock import ProcessLock
 from trader.infra.serialization.canonical import ContentHash
-from trader.recommendation.infra.settings.loading import LoadLongWatchlist, LoadPredictionTargets, LoadStrategySettings
+from trader.recommendation.infra.settings.loading import (
+    LoadLongWatchlist, LoadPredictionTargets, LoadProfileStrategySettings, LoadStrategySettings,
+)
+from trader.recommendation.infra.settings.models import LongWatchlist, StrategySettings
 from trader.infra.settings import LoadRuntimeSettings, RuntimeSettings
 from trader.infra.disk_probe import DiskProbe
 from trader.infra.disk_runtime import ConfigureDisk
@@ -118,7 +122,7 @@ from trader.recommendation.application.runtime.scheduler_runtime import Schedule
 from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler
 from trader.recommendation.application.quote_population import ReadQuotePopulation
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.domain.outcomes.prediction_target import PredictionTargets
+from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 from trader.recommendation.domain.scoring.profile_selection import ParseProfileSelection
 from trader.recommendation.infra import policy_settings
@@ -153,7 +157,7 @@ from trader.recommendation.infra.runtime.profiled_application import ProfiledApp
 from trader.recommendation.infra.runtime.startup_readiness import WarnMissingLocalData
 from trader.recommendation.infra.scoring import profile_factory
 from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
-from trader.recommendation.infra.scoring.profile_factory import LoadD25UtilityProfile, ScoringModelsUnavailableError
+from trader.recommendation.infra.scoring.profile_factory import LoadProductionD25Profile, ScoringModelsUnavailableError
 from trader.recommendation.infra.status_projection import RuntimeStatus as _runtime_status
 from trader.training.application.research_audit import PrepareResearchAuditFactory
 from trader.training.application.research_runtime import ResearchRuntime
@@ -167,7 +171,7 @@ from trader.training.infra.resource_settings import LoadTrainingResourceSettings
 from trader.web import CreateApp
 
 if TYPE_CHECKING:
-    from trader.recommendation.domain.market.tomorrow_probability import TomorrowProbabilityPredictor
+    from trader.training.infra.tomorrow.artifact import LoadedTomorrowProbabilityModel
     from trader.training.entrypoints.report_output import TrainingReportOutput
     from trader.training.application.research_commands import ResearchEvidenceCommand, ResearchEvidenceResult
 
@@ -214,10 +218,8 @@ def BuildSqlitePolicy(settings: RuntimeSettings) -> SqliteIoPolicy:
 
 def ExecuteSync(
     config_path: Path, target: SyncTarget, *, cancel_requested: Callable[[], bool] = lambda: False,
-    fill_missing: bool = False, report: SyncProgress | None = None,
+    report: SyncProgress | None = None,
 ) -> SyncResult:
-    if fill_missing and target != "company":
-        raise ValueError("fill_requires_company_target")
     settings = LoadRuntimeSettings(config_path)
     sqlite_policy = BuildSqlitePolicy(settings)
     file_verification = SqliteVerificationCache(settings.runtime_dir / "sqlite-verification")
@@ -226,15 +228,15 @@ def ExecuteSync(
     report = report or CreateSyncProgress()
     progress = company_evidence_progress.CompanyEvidenceProgress(report=report, observe=report.register_observer)
     history_progress = StderrHistorySyncProgress(report=report)
-    configuration = LoadHistorySyncConfiguration(settings.project_root, settings.data_paths)
-    price_review_budget = TencentRequestBudget(configuration.price_review)
     def sync_history(reference: PreparedReference) -> HistoryMaintenanceStatus:
+        configuration = LoadHistorySyncConfiguration(settings.project_root, paths)
         return history_progress.run(partial(
                 ExecuteHistoryDownload, configuration,
                 shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
                 reference=reference, progress=history_progress,
                 cancel_requested=cancel_requested, disk_medium=settings.disk_medium,
-                price_review_budget=price_review_budget, sqlite_policy=sqlite_policy, verification_cache=file_verification,
+                price_review_budget=TencentRequestBudget(configuration.price_review),
+                sqlite_policy=sqlite_policy, verification_cache=file_verification,
         ))
 
     return SyncData(
@@ -242,6 +244,7 @@ def ExecuteSync(
             paths.reference, clock.now(), progress,
             report=progress.report_preparation,
             cancel_requested=cancel_requested,
+            refresh_industry=target != "company",
             shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds, sqlite_policy=sqlite_policy, disk_medium=settings.disk_medium,
         ))),
         history=AdaptSyncDatabaseFailures(sync_history),
@@ -271,6 +274,7 @@ def _prepare_reference(
     report: Callable[[ProgressMessage], None] | None = None,
     cancel_requested: Callable[[], bool],
     shutdown_timeout_seconds: float, sqlite_policy: SqliteIoPolicy, disk_medium: DiskMedium | None = None,
+    refresh_industry: bool = True,
 ) -> PreparedReference:
     if cancel_requested():
         raise RuntimeError("reference_preparation_cancelled")
@@ -292,22 +296,28 @@ def _prepare_reference(
             FetchAkshareCalendar, 30.0, execute=partial(RunIsolatedCall, cancel_requested=cancel_requested)
         )
         industry_clock = ShanghaiClock(_utc_now).now
-        industry = CurrentIndustryPublication(
-            reference_root / "industry.sqlite3",
-            CninfoIndustryClient(
-                resources.enter_context(OpenExternalHttp(identity_content_encodings=("normal",))),
-                request_headers=lambda: CninfoIndustryHeaders(industry_clock()),
-            ),
-            sqlite_policy=sqlite_policy, cancel_requested=cancel_requested, clock=industry_clock, report=report,
-            source_batch_rows=64 if DiskProbe(disk_medium).inspect(reference_root).kind == "hdd" else 1,
-        )
+        industry_path = reference_root / "industry.sqlite3"
+        industries: Callable[[datetime, tuple[BaoStockSecurity, ...], tuple[date, ...]], tuple[IndustryVersionPort, ...]]
+        if refresh_industry:
+            industries = CurrentIndustryPublication(
+                industry_path,
+                CninfoIndustryClient(
+                    resources.enter_context(OpenExternalHttp(identity_content_encodings=("normal",))),
+                    request_headers=lambda: CninfoIndustryHeaders(industry_clock()),
+                ),
+                sqlite_policy=sqlite_policy, cancel_requested=cancel_requested, clock=industry_clock, report=report,
+                source_batch_rows=64 if DiskProbe(disk_medium).inspect(reference_root).kind == "hdd" else 1,
+            ).fetch
+        else:
+            cached_industry = CurrentIndustryCache(industry_path, sqlite_policy=sqlite_policy)
+            industries = lambda cut, _eligible, _calendar: cached_industry.load(cut)
         dependencies = ReferencePreparationDependencies(
             source.fetch,
             partial(publication.calendar, observed_at.date(), fetch=calendar, progress=progress, source="新浪/Akshare"),
-            industry.fetch,
+            industries,
             lambda reference, evidence: publication.publish(reference, evidence, completed_at=industry_clock()),
             cancel_requested,
-            sources=ReferencePreparationSources("新浪/交易所", "新浪/Akshare", "巨潮"),
+            sources=ReferencePreparationSources("新浪/交易所", "新浪/Akshare", "巨潮" if refresh_industry else "本地行业发布"),
         )
         return PrepareReference(universe, observed_at, dependencies, report=report)
 
@@ -552,6 +562,14 @@ def ExecuteResearchEvidence(
     raise TypeError("unsupported research evidence command")
 
 
+@dataclass(frozen=True)
+class _RecommendationConfiguration:
+    runtime: RuntimeSettings
+    strategy: StrategySettings
+    watchlist: LongWatchlist
+    cost_policy: ExecutionCostPolicy
+
+
 def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires runtime resource owners
     config_path: str | Path,
     *,
@@ -562,9 +580,9 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     recommendation_rounds: RecommendationRounds | None = None,
     publication_lock: threading.RLock | None = None,
     freeze_events: UnifiedFreezeEventStream | None = None,
-    prediction_targets: PredictionTargets | None = None,
+    configuration: _RecommendationConfiguration | None = None,
 ) -> ApplicationSystem[SQLiteFreezeTraceIndex, SQLiteOutcomeEvidenceIndex, UnifiedWebServices, Flask]:
-    settings = LoadRuntimeSettings(config_path)
+    settings = configuration.runtime if configuration is not None else LoadRuntimeSettings(config_path)
     sqlite_policy = BuildSqlitePolicy(settings)
     file_verification = SqliteVerificationCache(settings.runtime_dir / "sqlite-verification")
     budget_path = settings.runtime_dir / "deepseek/state.json"
@@ -572,17 +590,16 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         settings = replace(settings, runtime_dir=settings.runtime_dir / "profiles" / runtime_scope)
     if owns_shared_runtime:
         PrepareRuntimeDisk(settings)
-    strategy = LoadStrategySettings(settings.strategy_config_path, scoring_profile=scoring_profile)
+    strategy = (configuration.strategy if configuration is not None
+                else LoadStrategySettings(settings.strategy_config_path, scoring_profile=scoring_profile))
     profile_id = strategy.scoring_profile
-    if prediction_targets is not None and strategy.prediction_targets != prediction_targets:
-        raise ValueError("prediction target configuration changed during service composition")
     targets = strategy.prediction_targets
     tomorrow_target = targets.for_profile(profile_id, Strategy.TOMORROW)
     d25_target = targets.for_profile(profile_id, Strategy.D25)
     paths = settings.data_paths
     from trader.training.infra.tomorrow.artifact import LoadTomorrowProbabilityModel
 
-    tomorrow_predictor: TomorrowProbabilityPredictor | None = None
+    tomorrow_predictor: LoadedTomorrowProbabilityModel | None = None
     try:
         tomorrow_predictor = LoadTomorrowProbabilityModel(
             paths.models, profile_id, tomorrow_target, project_root=settings.project_root,
@@ -592,8 +609,9 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
             "tomorrow_probability_model_unavailable profile=%s target=%s category=%s",
             profile_id, tomorrow_target.identity, type(exc).__name__,
         )
-    watchlist = LoadLongWatchlist(settings.long_watchlist_path)
-    cost_policy = LoadExecutionCostPolicy(Path(config_path).expanduser().resolve().parent)
+    watchlist = configuration.watchlist if configuration is not None else LoadLongWatchlist(settings.long_watchlist_path)
+    cost_policy = (configuration.cost_policy if configuration is not None
+                   else LoadExecutionCostPolicy(settings.config_path.parent))
     cost_version = ContentHash(cost_policy)[:16]
     effective_config_version = f"{settings.config_version}+{strategy.strategy_version}+cost_{cost_version}"
     now = _utc_now
@@ -639,18 +657,11 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
         sqlite_policy=sqlite_policy, tomorrow_target=tomorrow_target,
     )
     model_failure = "production_model_missing"
-    from trader.training.infra.d25.artifact import LoadD25ScoringProfile
-
     try:
-        utility = LoadD25UtilityProfile(profile_id, training_root=paths.models)
-        loaded_profile = LoadD25ScoringProfile(paths.models, utility, d25_target)
+        loaded_profile = LoadProductionD25Profile(paths.models, profile_id, d25_target)
     except ScoringModelsUnavailableError as exc:
         loaded_profile = None
-        model_failure = f"production_model_{exc.reason}"
-    except (OSError, ValueError, RuntimeError) as exc:
-        loaded_profile = None
-        model_failure = "d25_target_model_missing" if isinstance(exc, FileNotFoundError) else "d25_target_model_invalid"
-        logging.getLogger(__name__).warning("%s profile=%s category=%s", model_failure, profile_id, type(exc).__name__)
+        model_failure = exc.code
     WarnMissingLocalData(paths, profile_id, model_failure=model_failure if loaded_profile is None else None)
     training_settings = LoadRuntimeTrainingSettings(settings.project_root, profile_id)
     eligibility = (
@@ -696,9 +707,12 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
     reviewer = DeepSeekReviewer.from_context(context, persistence.budget, review_client, review_cache)
     policy = policy_settings.BuildRecommendationPolicy(context.strategy, quote_sessions=context.cadence_policy.sessions)
     model_publications = PublishedTrainingState(
-        paths.history, paths.models, loaded_profile.publications if loaded_profile else (), metadata_cache=workers.market_cache,
+        paths.history, paths.models, (
+            *(loaded_profile.publications if loaded_profile else ()),
+            *((tomorrow_predictor.publication,) if tomorrow_predictor is not None else ()),
+        ), metadata_cache=workers.market_cache,
         maintenance_path=paths.training_maintenance, owned_profile=profile_id, wall_clock=ShanghaiClock(now).now,
-        sqlite_policy=sqlite_policy, d25_only=True,
+        sqlite_policy=sqlite_policy, d25_only=True, tomorrow_target=tomorrow_target,
         load_expectation=HistoryTrainingExpectationReader(
             partial(ReadIndustrySnapshot, paths.reference, sqlite_policy=sqlite_policy),
             partial(LoadProfileTrainingSettings, settings.project_root),
@@ -784,7 +798,6 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
             d25_settlement=D25OutcomeSettlementService(market_data, persistence.outcomes).settle,
             research_factory=ResearchRuntime,
             publish_freeze=partial(publication.freeze_events.publish_committed, profile=profile_id),
-            publish_overlay=None,
             latency=latency,
             publication_io=publication_io,
             run_scope=run_scope,
@@ -898,13 +911,19 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
 
 
 def BuildProfiledSystem(
-    config_path: str | Path, *, profiles: tuple[ScoringProfileId, ...] = SCORING_PROFILE_IDS
+    config_path: str | Path, *, profiles: tuple[ScoringProfileId, ...] = SCORING_PROFILE_IDS,
+    runtime: RuntimeSettings | None = None,
 ) -> ProfiledApplicationSystem[Flask]:
     """Build the selected profiles with one shared resource owner and read-only surface."""
     profiles = ParseProfileSelection(",".join(profiles))
-    settings = LoadRuntimeSettings(config_path)
-    targets = LoadPredictionTargets(settings.strategy_config_path)
+    settings = runtime if runtime is not None else LoadRuntimeSettings(config_path)
     default_profile = "v2" if "v2" in profiles else profiles[0]
+    strategies = LoadProfileStrategySettings(settings.strategy_config_path, profiles)
+    default_strategy = next(strategy for strategy in strategies if strategy.scoring_profile == default_profile)
+    configuration = _RecommendationConfiguration(
+        settings, default_strategy, LoadLongWatchlist(settings.long_watchlist_path),
+        LoadExecutionCostPolicy(settings.config_path.parent),
+    )
     publication_lock = threading.RLock()
     freeze_events = UnifiedFreezeEventStream(
         history_size=settings.api.sse_history_size,
@@ -917,12 +936,11 @@ def BuildProfiledSystem(
     )
     primary = BuildSystem(
         config_path,
-        scoring_profile=default_profile,
         runtime_scope=default_profile,
         recommendation_rounds=rounds,
         publication_lock=publication_lock,
         freeze_events=freeze_events,
-        prediction_targets=targets,
+        configuration=configuration,
     )
     shared = composition_inputs.SharedRecommendationInputs(
         primary.workers,
@@ -941,12 +959,13 @@ def BuildProfiledSystem(
         recommendation_rounds=rounds,
         publication_lock=publication_lock,
         freeze_events=freeze_events,
-        prediction_targets=targets,
     )
     systems = [primary]
-    for profile in profiles:
-        if profile != default_profile:
-            systems.append(build_secondary(scoring_profile=profile, runtime_scope=profile))
+    for strategy in strategies:
+        if strategy.scoring_profile != default_profile:
+            systems.append(build_secondary(
+                runtime_scope=strategy.scoring_profile, configuration=replace(configuration, strategy=strategy),
+            ))
     web_profiles = {system.profile_id: system.web_services for system in systems}
     history_settings = LoadHistoryQuoteSettings(settings.project_root / "config/history_quotes.json")
     history_client = TencentClient(session_factory=OpenExternalHttp, timeout_seconds=history_settings.timeout_seconds,
@@ -969,7 +988,7 @@ def BuildProfiledSystem(
             profiles={profile: web_profiles[profile] for profile in profiles},
             default_profile=default_profile,
             long_profile=default_profile,
-            prediction_targets=targets,
+            prediction_targets=default_strategy.prediction_targets,
             config=primary.web_services.config,
             history_quotes=history_quotes,
         )

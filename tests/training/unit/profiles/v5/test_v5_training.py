@@ -126,7 +126,7 @@ def test_v5_d25_calibration_failure_writes_utility_and_keeps_existing_calibrated
         lambda _p, *, industry_snapshot, sqlite_policy: history,
     )
 
-    def reject_calibration(*_args):
+    def reject_calibration(*_args, **_kwargs):
         raise D25ProbabilityCalibrationError("d25_probability_calibration_not_monotone")
 
     monkeypatch.setattr("trader.training.infra.engine.FitIndustryD25Probability", reject_calibration)
@@ -148,6 +148,8 @@ def test_v5_d25_calibration_failure_writes_utility_and_keeps_existing_calibrated
     result = RunProfileTraining(request, sqlite_policy=SqlitePolicyFixture())
     assert result.status == "blocked"
     assert result.heads[0].diagnostic.causes[-1].code == "d25_probability_calibration_not_monotone"
+    assert result.heads[0].utility_model_published and result.heads[0].probability_calibration_failed
+    assert result.heads[0].model_hash and result.heads[0].probability_model_hash is None
     assert {path.relative_to(train_root).as_posix() for path in train_root.rglob("*.json")} == {
         "v5/d25/model.json", "v5/d25/metadata.json",
     }
@@ -179,6 +181,7 @@ def test_v5_d25_calibration_failure_writes_utility_and_keeps_existing_calibrated
     repeated = RunProfileTraining(replace(request, settings=changed), sqlite_policy=SqlitePolicyFixture())
     assert repeated.status == "blocked"
     assert repeated.heads[0].diagnostic.causes[-1].code == "d25_probability_calibration_not_monotone"
+    assert not repeated.heads[0].utility_model_published and repeated.heads[0].probability_calibration_failed
     assert {path.name: path.read_bytes() for path in directory.iterdir()} == previous
 
 

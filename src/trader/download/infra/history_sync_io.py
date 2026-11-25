@@ -65,7 +65,6 @@ class HistorySyncResources:
     batched_price_reads: bool = False
     exact_month_ranges: bool = False
     fingerprint_before_statistics: bool = False
-    reuse_catalog_fingerprint: bool = False
     shutdown: ShutdownBudget = field(default_factory=lambda: ShutdownBudget(30.0))
     verification_cache: SqliteVerificationCache | None = None
 
@@ -143,7 +142,9 @@ class HistorySyncIo:
         for path in sorted(self.configuration.history_root.glob("prices_[0-9][0-9][0-9][0-9].sqlite3")):
             if not Path(f"{path}.sha256").is_file():
                 PublishSqliteFile(path, sqlite_policy=self.sqlite_policy, verification_cache=self.resources.verification_cache)
-        if not self.resources.reuse_catalog_fingerprint or result.state != "completed":
+        if result.state == "completed":
+            self.control.ensure_published_file()
+        else:
             self.control.publish_file()
 
     def failure(self, exc: BaseException) -> HistorySyncFailureReport:

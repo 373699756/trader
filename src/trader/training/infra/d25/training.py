@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 import numpy as np
 
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.recommendation.domain.publication.models import Strategy
+from trader.training.application.tomorrow_training import (
+    TomorrowTrainingProgress, TomorrowTrainingProgressState, TrainingFitCounts, TrainingFitDetail,
+)
 from trader.training.domain.production_diagnostic_dates import ProductionDiagnosticDatePlan
 from trader.training.infra.d25.artifact import (
     D25Model,
@@ -21,7 +25,7 @@ from trader.training.infra.d25.v5.probability import FitD25Tcn
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
 from trader.training.infra.fitting_settings import LightGBMFittingParameters, ModelFittingParameters, RidgeFittingParameters
 from trader.training.infra.tcn.settings import TcnFittingParameters
-from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingSampleBatch, TrainingSampleMatrix
+from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingSampleMatrix
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,33 +40,84 @@ class D25IndustryFitRequest:
 
 
 def FitIndustryD25Probability(
-    samples: SQLiteTrainingSampleIndex, request: D25IndustryFitRequest, check: Callable[[], None],
+    samples: SQLiteTrainingSampleIndex,
+    request: D25IndustryFitRequest,
+    check: Callable[[], None],
+    *,
+    progress: Callable[[TomorrowTrainingProgress], None] | None = None,
 ) -> D25ProbabilityArtifact:
     models: list[tuple[str, D25Model]] = []
-    scores: list[np.ndarray] = []
-    labels: list[np.ndarray] = []
     fitted_dates: set[date] = set()
     calibration_dates: set[date] = set()
-    for industry in sorted(request.industries):
+    selected = frozenset(request.industries)
+    counts = tuple(item for item in samples.industry_counts(request.contract, d25_probability=True) if item.industry in selected)
+    scores = np.empty(sum(item.calibration for item in counts), dtype=np.float64)
+    labels = np.empty_like(scores)
+    position = skipped = 0
+
+    def report(state: TomorrowTrainingProgressState, detail: TrainingFitDetail | None = None) -> None:
+        if progress is not None:
+            fitted = len(models)
+            progress(TomorrowTrainingProgress(
+                "event_model_fit", state, fitted + skipped, len(counts), fitted, Strategy.D25,
+                fit_detail=detail, count_unit="industries", fit_counts=TrainingFitCounts(fitted + skipped, len(counts), fitted, skipped),
+            ))
+
+    report("started")
+    for count in counts:
         check()
-        training, dates = _read_training_matrix(samples.iter_batches(
-            industry, request.contract, "training", d25_probability=True,
-        ), check)
-        if len(training.labels) < request.parameters.minimum_industry_training_rows or not HasD25ProbabilityLabels(training.labels):
+        industry = count.industry
+        epochs = request.parameters.epochs if isinstance(request.parameters, TcnFittingParameters) else 0
+        detail = TrainingFitDetail(industry, count.training, "preparation", total_epochs=epochs)
+        report("running", detail)
+        model_result = None
+        if count.training >= request.parameters.minimum_industry_training_rows:
+            with samples.d25_probability_training_data(count, request.contract, check) as (training, dates):
+                if HasD25ProbabilityLabels(training.labels):
+                    model_result = _fit_industry(
+                        training, request.parameters, request.compute_threads, check,
+                        lambda epoch, completed, total: report("running", TrainingFitDetail(
+                            industry, count.training, "training", epoch, epochs, completed, total,
+                        )),
+                    )
+        if model_result is None:
+            skipped += 1
+            report("running", TrainingFitDetail(
+                industry, count.training, "skipped", failure_reason="d25_probability_industry_labels_insufficient",
+            ))
             continue
-        model, logits = _fit_industry(training, request.parameters, request.compute_threads, check)
+        model, logits = model_result
+        calibrated_rows = 0
         for batch in samples.iter_batches(industry, request.contract, "calibration", d25_probability=True):
             check()
-            scores.append(logits(batch.features))
-            labels.append(batch.labels)
+            end = position + len(batch.labels)
+            if end > len(scores):
+                raise ValueError("d25_probability_calibration_counts_changed")
+            scores[position:end] = logits(batch.features)
+            labels[position:end] = batch.labels
             calibration_dates.update(batch.trade_dates)
+            calibrated_rows += len(batch.labels)
+            position = end
+        if calibrated_rows != count.calibration:
+            raise ValueError("d25_probability_calibration_counts_changed")
         models.append((industry, model))
         fitted_dates.update(dates)
-    if not models or not scores:
+        report("running", TrainingFitDetail(industry, count.training, "completed"))
+    report("completed")
+    if not models or not position:
         raise ValueError("d25_probability_industry_labels_insufficient")
     if tuple(sorted(fitted_dates)) != request.split.fitting_dates or tuple(sorted(calibration_dates)) != request.split.calibration_dates:
         raise ValueError("d25_probability_dates_incomplete")
-    weights = CalibrateD25Probability(np.concatenate(scores), np.concatenate(labels), check)
+    if progress is not None:
+        progress(TomorrowTrainingProgress("model_calibration", "started", 0, 1, strategy=Strategy.D25))
+    try:
+        weights = CalibrateD25Probability(scores[:position], labels[:position], check)
+    except ValueError:
+        if progress is not None:
+            progress(TomorrowTrainingProgress("model_calibration", "failed", 0, 1, strategy=Strategy.D25))
+        raise
+    if progress is not None:
+        progress(TomorrowTrainingProgress("model_calibration", "completed", 1, 1, strategy=Strategy.D25))
     return D25ProbabilityArtifact(
         request.profile, request.binding, request.contract.feature_manifest.names,
         tuple(sorted(fitted_dates)), tuple(sorted(calibration_dates)),
@@ -70,27 +125,12 @@ def FitIndustryD25Probability(
     )
 
 
-def _read_training_matrix(
-    batches: Iterable[TrainingSampleBatch], check: Callable[[], None],
-) -> tuple[TrainingSampleMatrix, frozenset[date]]:
-    matrices: list[np.ndarray] = []
-    labels: list[np.ndarray] = []
-    dates: set[date] = set()
-    for batch in batches:
-        check()
-        matrices.append(batch.features)
-        labels.append(batch.labels)
-        dates.update(batch.trade_dates)
-    features = np.concatenate(matrices) if matrices else np.empty((0, 0))
-    targets = np.concatenate(labels) if labels else np.empty(0)
-    return TrainingSampleMatrix(features, targets), frozenset(dates)
-
-
 def _fit_industry(
     training: TrainingSampleMatrix, parameters: ModelFittingParameters, threads: int, check: Callable[[], None],
+    report: Callable[[int, int, int], None],
 ) -> tuple[D25Model, Callable[[np.ndarray], np.ndarray]]:
     if isinstance(parameters, LightGBMFittingParameters):
         return FitD25Lightgbm(training, parameters, threads, check)
     if isinstance(parameters, TcnFittingParameters):
-        return FitD25Tcn(training, parameters, threads, check)
+        return FitD25Tcn(training, parameters, threads, check, report=report)
     return FitD25Logistic(training, parameters, check)

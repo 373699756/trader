@@ -18,8 +18,7 @@ function Show-Usage {
 下载与训练:
   .\run.ps1 sync                    依次更新参考、历史和公司资料
   .\run.ps1 sync history            更新历史，自动续传
-  .\run.ps1 sync company            更新公司资料
-  .\run.ps1 sync company fill       补齐公司资料缺口
+  .\run.ps1 sync company            更新公司资料，自动续传
   .\run.ps1 train                   使用本地历史训练全部档位
   .\run.ps1 train v1,v5             使用本地历史训练指定档位
   .\run.ps1 train tomorrow          训练 Tomorrow 全部档位
@@ -28,7 +27,7 @@ function Show-Usage {
   .\run.ps1 train d25 v5            只训练 D25 的 V5
 
 档位以逗号分隔，可自由组合；省略时选择全部。
-未完成可重跑原命令续传；fill用于补缺，仍需处理具体失败原因。
+未完成可重跑原命令续传，仍需处理具体失败原因。
 "@ | Write-Host
 }
 
@@ -52,10 +51,9 @@ if ($Mode -eq "train" -and $ForwardArgs.Count -gt 0 -and $ForwardArgs[0] -cin @(
     $ForwardArgs = @($ForwardArgs | Select-Object -Skip 1)
 }
 if ($Mode -eq "sync") {
-    if ($ForwardArgs.Count -gt 2 -or
-        ($ForwardArgs.Count -gt 0 -and $ForwardArgs[0] -cnotin @("history", "company")) -or
-        ($ForwardArgs.Count -eq 2 -and ($ForwardArgs[0] -cne "company" -or $ForwardArgs[1] -cne "fill"))) {
-        [Console]::Error.WriteLine("用法：.\run.ps1 sync [history|company]；仅 company 可加 fill。")
+    if ($ForwardArgs.Count -gt 1 -or
+        ($ForwardArgs.Count -gt 0 -and $ForwardArgs[0] -cnotin @("history", "company"))) {
+        [Console]::Error.WriteLine("用法：.\run.ps1 sync [history|company]。")
         exit 2
     }
 } elseif ($ForwardArgs.Count -gt 0) {

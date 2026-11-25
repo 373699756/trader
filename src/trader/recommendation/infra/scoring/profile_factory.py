@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from importlib.util import find_spec
 from pathlib import Path
 from typing import Literal
 
@@ -32,15 +31,11 @@ from trader.recommendation.domain.scoring.profile_identity import ScoringProfile
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
 from trader.training.domain.model_publication import HeadTrainingStatus
 from trader.training.infra.model_bundles.bundle_codec import ModelBundleContractError, ModelBundleIntegrityError
-from trader.training.infra.d25.contracts import StandardD25Profile
-from trader.training.infra.model_bundles.profile import BuildTrainedScoringProfile
-from trader.training.infra.model_bundles.profile_publication import (
-    InspectPublishedProfileBundles,
-    ProfilePublicationBusyError,
-)
+from trader.training.infra.model_bundles.profile_publication import ProfilePublicationBusyError
 
 ModelLoadFailure = Literal[
-    "missing", "corrupt", "integrity_conflict", "contract_conflict", "publication_busy", "dependency_missing"
+    "missing", "corrupt", "integrity_conflict", "contract_conflict", "publication_busy", "dependency_missing",
+    "d25_target_model_missing", "d25_target_model_invalid",
 ]
 
 _TOMORROW_PLANS = {
@@ -130,7 +125,8 @@ class ScoringModelsUnavailableError(RuntimeError):
 
     def __init__(self, reason: ModelLoadFailure) -> None:
         self.reason = reason
-        super().__init__(f"production_model_{reason}")
+        self.code = reason if reason.startswith("d25_target_model_") else f"production_model_{reason}"
+        super().__init__(self.code)
 
 
 class ScoringModelsMissingError(ScoringModelsUnavailableError):
@@ -140,42 +136,40 @@ class ScoringModelsMissingError(ScoringModelsUnavailableError):
         super().__init__("missing")
 
 
-def LoadD25UtilityProfile(
-    profile_id: ScoringProfileId,
-    *,
-    training_root: Path,
+def LoadProductionD25Profile(
+    model_root: Path, profile_id: ScoringProfileId, target: PredictionTarget,
 ) -> LoadedScoringProfile:
-    """Read the independent D25 utility artifact for the requested profile."""
+    """Load the current D25 scoring pair and classify expected startup failures."""
+    from trader.training.infra.d25.artifact import (
+        D25ProbabilityModelInvalidError,
+        D25ProbabilityModelMissingError,
+        LoadD25ScoringProfile,
+    )
+
     try:
-        if profile_id == "v1":
-            from trader.training.infra.d25.v1.models import LoadV1ScoringProfile
-
-            return LoadV1ScoringProfile(training_root, strategies=(Strategy.D25,))
-        if profile_id == "v5":
-            if find_spec("torch") is None:
-                raise ScoringModelsUnavailableError("dependency_missing")
-            from trader.training.infra.tcn.network import ConfigureTcnRuntime
-
-            ConfigureTcnRuntime(training=False)
-        profile = StandardD25Profile(profile_id)
-        inspected = InspectPublishedProfileBundles(training_root / profile.output_directory, profile)
-        return BuildTrainedScoringProfile(profile_id, tuple(item.model for item in inspected))
+        return LoadD25ScoringProfile(model_root, profile_id, target)
+    except D25ProbabilityModelMissingError as exc:
+        raise ScoringModelsUnavailableError("d25_target_model_missing") from exc
+    except D25ProbabilityModelInvalidError as exc:
+        raise ScoringModelsUnavailableError("d25_target_model_invalid") from exc
     except FileNotFoundError as exc:
         raise ScoringModelsMissingError() from exc
+    except ImportError as exc:
+        raise ScoringModelsUnavailableError("dependency_missing") from exc
     except ProfilePublicationBusyError as exc:
         raise ScoringModelsUnavailableError("publication_busy") from exc
     except ModelBundleIntegrityError as exc:
         raise ScoringModelsUnavailableError("integrity_conflict") from exc
     except ModelBundleContractError as exc:
         raise ScoringModelsUnavailableError("contract_conflict") from exc
-    except (OSError, TypeError, ValueError) as exc:
+    except (OSError, TypeError, ValueError, RuntimeError) as exc:
         raise ScoringModelsUnavailableError("corrupt") from exc
 
 
 __all__ = [
     "BuildDiagnosticProfileScoring",
     "BuildProfileScoring",
-    "LoadD25UtilityProfile",
+    "LoadProductionD25Profile",
     "ModelLoadFailure",
     "ScoringModelsMissingError",
     "ScoringModelsUnavailableError",

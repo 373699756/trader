@@ -22,7 +22,7 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT, ExposureContract
 from trader.training.domain.model_publication import ModelPublicationIdentity
-from trader.training.infra.d25.model_document import ReadD25ModelDocument
+from trader.training.infra.d25.model_document import D25MetadataIntegrityError, ReadD25MetadataDocument, ReadD25ModelDocument
 from trader.training.infra.model_bundles.contracts import TrainedAlgorithm, TrainedProfileContract
 from trader.training.domain.final_fit import BuildFinalFitDatePlan, FINAL_FIT_CONTRACT, FinalFitDatePlan
 from trader.download.domain.baostock_daily import BaoStockCalendar
@@ -237,17 +237,15 @@ def LoadHeadBundle(
     strategy: Strategy,
     profile: TrainedProfileContract,
 ) -> TrainedHeadModelBundle:
-    model_document = (
-        ReadD25ModelDocument(path).utility
-        if strategy is Strategy.D25
-        else json.loads(path.read_text(encoding="utf-8"))
-    )
-    return DecodeHeadBundle(
-        model_document,
-        json.loads(path.with_name("metadata.json").read_text(encoding="utf-8")),
-        strategy,
-        profile,
-    )
+    metadata_path = path.with_name("metadata.json")
+    if strategy is Strategy.D25:
+        try:
+            metadata = ReadD25MetadataDocument(metadata_path)
+        except D25MetadataIntegrityError as exc:
+            raise ModelBundleIntegrityError(str(exc)) from exc
+        return DecodeHeadBundle(ReadD25ModelDocument(path).utility, metadata.utility, strategy, profile)
+    return DecodeHeadBundle(json.loads(path.read_text(encoding="utf-8")),
+                            json.loads(metadata_path.read_text(encoding="utf-8")), strategy, profile)
 
 
 def DecodeHeadBundle(

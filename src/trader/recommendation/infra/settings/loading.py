@@ -108,6 +108,18 @@ def LoadStrategySettings(
     *,
     scoring_profile: ScoringProfileId | None = None,
 ) -> StrategySettings:
+    return _parse_strategy(_read_strategy(config_path), scoring_profile)
+
+
+def LoadProfileStrategySettings(
+    config_path: str | os.PathLike[str], profiles: tuple[ScoringProfileId, ...],
+) -> tuple[StrategySettings, ...]:
+    """Derive each selected profile from the same configuration contents."""
+    raw = _read_strategy(config_path)
+    return tuple(_parse_strategy(raw, profile) for profile in profiles)
+
+
+def _read_strategy(config_path: str | os.PathLike[str]) -> dict[str, object]:
     path = Path(config_path).expanduser().resolve()
     raw = _read_config_sections(path, {"scoring_profile"}, _STRATEGY_SECTION_FILES, label="strategy")
     feature_sections = _read_json_object(path.parent / "features.json")
@@ -118,6 +130,10 @@ def LoadStrategySettings(
     )
     raw.update({key: feature_sections[key] for key in ("factor_index", "factor_contract", "news_signal")})
     _require_exact_keys(raw, _STRATEGY_KEYS, "strategy")
+    return raw
+
+
+def _parse_strategy(raw: dict[str, object], scoring_profile: ScoringProfileId | None) -> StrategySettings:
     configured_profile = _text(raw, "scoring_profile")
     try:
         configured_profile = ParseScoringProfile(configured_profile)
@@ -647,5 +663,6 @@ def _threshold_tuple(
 
 __all__ = [
     "LoadLongWatchlist",
+    "LoadProfileStrategySettings",
     "LoadStrategySettings",
 ]

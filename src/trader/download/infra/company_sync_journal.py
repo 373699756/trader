@@ -248,8 +248,10 @@ class SQLiteCompanySyncRoundJournal:
                 return None
             accepted_row = connection.run("SELECT SUM(accepted),SUM(accepted IS NULL) FROM company_sync_step WHERE round_id=? AND family=? AND complete=1", (round_id, family.value)).require_one()
             accepted = None if accepted_row[1] else accepted_row[0]
-            calls = connection.run("SELECT COUNT(*) FROM company_sync_request WHERE round_id=? AND family=?", (round_id, family.value)).require_one()[0]
-            step_calls = connection.run("SELECT COUNT(*) FROM company_sync_request WHERE round_id=? AND family=? AND step=?", (round_id, family.value, row[0])).require_one()[0]
+            calls, step_calls, unknown = connection.run("""
+                SELECT COUNT(*),COUNT(CASE WHEN step=? THEN 1 END),COUNT(CASE WHEN observed=0 THEN 1 END)
+                FROM company_sync_request WHERE round_id=? AND family=?
+                """, (row[0], round_id, family.value)).require_one()
             history = tuple(connection.run(
                 "SELECT step,changed_codes,gaps,failure FROM company_sync_step "
                 "WHERE round_id=? AND family=? AND complete=1 AND deferred=0 ORDER BY step",
@@ -272,7 +274,6 @@ class SQLiteCompanySyncRoundJournal:
                 gaps = tuple(sorted(gap for gap in all_gaps if not gap.startswith(_DIRECTORY_RECOVERY_GAP_PREFIX)))
                 failure = next((error for _, error in effective_history if error is not None), failure)
             result = CompanySyncStepResult(bool(row[1]), bool(row[2]), row[3], step_calls, changed_codes, gaps, row[6], failure, bool(row[8]))
-            unknown = connection.run("SELECT COUNT(*) FROM company_sync_request WHERE round_id=? AND family=? AND observed=0", (round_id, family.value)).require_one()[0]
             return CompanySyncFamilyResult(family, row[0], accepted, calls, result, unknown)
 
     def outstanding(self, round_id: str, family: CompanySyncFamily) -> CompanySyncPhaseState | None:
