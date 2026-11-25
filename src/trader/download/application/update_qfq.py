@@ -148,9 +148,9 @@ class _DownloadJob:
     dates: tuple[date, ...]
     previous: PublishedHistoryWindow
     source: str
+    observed_on: date
     baostock_basis: bool = False
     recheck_due: bool = False
-    observed_on: date | None = None
     nontrading: tuple[QfqNonTradingFact, ...] = ()
     review_requested: bool = False
     review_only: bool = False
@@ -468,7 +468,7 @@ class UpdateQfqWindows:
             if metadata is None or metadata.source not in (progress.source, f"baostock:{progress.source}"):
                 continue
             dates = context.calendar.expected_dates(security)[-self.configuration.maximum_sessions:]
-            facts = tuple(fact for fact in metadata.nontrading if fact.trade_date in dates and fact.source == metadata.source and fact.kind != "legacy_unverified")
+            facts = tuple(fact for fact in metadata.nontrading if fact.trade_date in dates and fact.source == metadata.source)
             if any(fact.kind == "inferred" for fact in facts):
                 remaining.add(security.code)
             if metadata.completed_day != progress.day or metadata.completed_source != metadata.source:
@@ -510,7 +510,7 @@ class UpdateQfqWindows:
                 previous = self.v2.read_code(issue.code)
                 state = repair_states.get(issue.code)
                 source = f"baostock:{progress.source}"
-                prior_facts = tuple(fact for fact in state.nontrading if fact.source == source and fact.kind != "legacy_unverified" and fact.trade_date in dates) if state is not None and state.source == source else ()
+                prior_facts = tuple(fact for fact in state.nontrading if fact.source == source and fact.trade_date in dates) if state is not None and state.source == source else ()
                 if prior_facts:
                     cells = {cell.trade_date: cell for cell in previous.cells}
                     cells.update((fact.trade_date, fact.cell()) for fact in prior_facts)
@@ -617,7 +617,7 @@ class UpdateQfqWindows:
         )
         baostock_source = all(state is not None and state.verified and state.source == f"baostock:{progress.source}" for state in (v2_state, v3_state))
         selected_source = f"baostock:{progress.source}" if baostock_source else progress.source
-        facts = tuple(fact for fact in metadata.nontrading if fact.trade_date in dates and fact.source == selected_source and fact.kind != "legacy_unverified" and fact.checked_on is not None and fact.checked_on <= observed_on) if metadata else ()
+        facts = tuple(fact for fact in metadata.nontrading if fact.trade_date in dates and fact.source == selected_source and fact.checked_on <= observed_on) if metadata else ()
         fact_dates = {fact.trade_date for fact in facts}
         complete = (
             (same_source or baostock_source)
@@ -665,7 +665,11 @@ class UpdateQfqWindows:
                 cells = {cell.trade_date: cell for cell in window.cells}
                 cells.update((fact.trade_date, fact.cell()) for fact in plan.nontrading)
                 window = PublishedHistoryWindow(window.code, tuple(cells[day] for day in sorted(cells)))
-            jobs.append(_DownloadJob(plan.security, plan.dates, window, plan.source, plan.baostock_basis, plan.recheck_due, plan.observed_on, plan.nontrading, plan.review_requested, plan.review_only))
+            jobs.append(_DownloadJob(
+                plan.security, plan.dates, window, plan.source, plan.observed_on,
+                baostock_basis=plan.baostock_basis, recheck_due=plan.recheck_due, nontrading=plan.nontrading,
+                review_requested=plan.review_requested, review_only=plan.review_only,
+            ))
         return tuple(jobs)
 
     def _download_rolling(
@@ -997,8 +1001,6 @@ class UpdateQfqWindows:
             window = QualifyReplacementWindow(job.dates, reference, window)
         if any(cell.status not in ("complete", "supplier_marked_suspended", "tencent_inferred_suspended") for cell in window.cells):
             raise HistorySupplierPendingError(window)
-        if job.observed_on is None:
-            raise RuntimeError("qfq_observation_date_missing")
         checked_dates = tuple(day for day in observed_dates if day not in retained_confirmed)
         return _DownloadedWindow(window, self._observed_nontrading(window, job.source, job.observed_on, previous=job.nontrading, observed_dates=checked_dates))
 

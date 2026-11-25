@@ -10,11 +10,12 @@
 
   function recommendationPatchFreeze(patch, payload, currentVersion, strategy, view) {
     if (!patchVersionValid(patch) || !Array.isArray(patch.upserts)
-      || !Array.isArray(patch.removed_codes) || !Array.isArray(patch.removals || [])) return "schema_mismatch";
+      || typeof patch.base_projection_version !== "string"
+      || !Array.isArray(patch.removed_codes) || !Array.isArray(patch.removals)) return "schema_mismatch";
     if (!patchCoverageValid(patch.coverage) || patch.coverage.selected_count > patch.upserts.length) {
       return "schema_mismatch";
     }
-    if (!patch.projection_version || !patch.snapshot_id
+    if (!projectionVersion(patch) || !patch.snapshot_id
       || patch.strategy !== strategy || !["live", "official"].includes(patch.view)
       || patch.view !== (patch.frozen ? "official" : "live")) return "identity_mismatch";
     const expectedDate = payload && (payload.current_trade_date || payload.trade_date);
@@ -22,17 +23,17 @@
     if (["current", "official"].includes(view) && payload && payload.frozen === true && patch.frozen !== true) {
       return "ignore_late_draft";
     }
-    const baseVersion = patch.base_projection_version || patch.base_snapshot_id || "";
+    const baseVersion = patch.base_projection_version;
     if (baseVersion && baseVersion !== currentVersion) return "base_mismatch";
     if (!baseVersion && patch.replace !== true && payload && payload.status !== "not_ready") return "base_mismatch";
-    if (!patchItemsValid(patch.upserts, patch.removed_codes, patch.removals || [])) return "topk_mismatch";
+    if (!patchItemsValid(patch.upserts, patch.removed_codes, patch.removals)) return "topk_mismatch";
     return "apply";
   }
 
   function overlayPatchFreeze(patch, payload, currentVersion, strategy) {
     if (!patchVersionValid(patch) || !Array.isArray(patch.quotes)) return "schema_mismatch";
     if (!payload || patch.strategy !== strategy || patch.trade_date !== payload.trade_date) return "identity_mismatch";
-    const incomingProjection = patch.projection_version || "";
+    const incomingProjection = projectionVersion(patch);
     if (!incomingProjection || patch.snapshot_id !== payload.snapshot_id
       || incomingProjection === currentVersion) {
       return "overlay_projection_mismatch";
@@ -44,8 +45,7 @@
   }
 
   function projectionVersion(payload) {
-    if (!payload) return "";
-    return payload.projection_version || payload.snapshot_id || "";
+    return payload && typeof payload.projection_version === "string" ? payload.projection_version : "";
   }
 
   function replacementPayload(current, patch, items) {
@@ -58,7 +58,7 @@
       publication_id: patch.publication_id,
       content_hash: patch.content_hash,
       snapshot_id: patch.snapshot_id,
-      projection_version: patch.projection_version || patch.snapshot_id,
+      projection_version: patch.projection_version,
       strategy: patch.strategy,
       scoring_profile: patch.scoring_profile,
       trade_date: patch.trade_date,

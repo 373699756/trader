@@ -1,9 +1,8 @@
-"""Market-wide financial updates, dated pledge snapshots, unlocks and candidate news."""
+"""Market-wide financial updates, dated pledge snapshots and unlocks."""
 
 from __future__ import annotations
 
 import hashlib
-import html
 import json
 import math
 import re
@@ -15,7 +14,6 @@ from trader.download.domain.company_evidence import (
     CompanyFinancial,
     CompanyInputValidationFailure,
     CompanyRatio,
-    Disclosure,
     StructuredCompanyPage,
     StructuredCompanyQuery,
     EvidenceMarket,
@@ -44,7 +42,6 @@ COMPANY_FINANCIAL_SOURCE_COLUMNS = (
 
 class EastmoneyCompanySource:
     source = "eastmoney"
-    news_source = "eastmoney_news"
 
     def request_endpoint(self, component: str) -> str:
         """Describe the configured request route without parameters or initiating a request."""
@@ -52,7 +49,6 @@ class EastmoneyCompanySource:
             "financial": "https://datacenter.eastmoney.com/securities/api/data/get",
             "pledge": _DATA_URL,
             "unlock": _DATA_URL,
-            "news": "https://search-api-web.eastmoney.com/search/jsonp",
             "annual_income": "Eastmoney.F10.NewFinanceAnalysis.interface_family",
         }.get(component, "")
 
@@ -288,84 +284,6 @@ class EastmoneyCompanySource:
         return DecodeCompanyFinancialSourcePage(
             payload, query, observed_at=observed_at, response_hash=hashlib.sha256(content).hexdigest(),
         )
-
-    @CompanySourceOperation
-    def news(self, code: str, *, observed_at: datetime) -> tuple[Disclosure, ...]:
-        # Ordinary news is bounded candidate context, not an exhaustive regulatory feed.
-        parameter = {
-            "uid": "",
-            "keyword": code,
-            "type": ["cmsArticleWebOld"],
-            "client": "web",
-            "clientType": "web",
-            "clientVersion": "curr",
-            "param": {
-                "cmsArticleWebOld": {
-                    "searchScope": "default",
-                    "sort": "time",
-                    "pageIndex": 1,
-                    "pageSize": 50,
-                    "preTag": "",
-                    "postTag": "",
-                }
-            },
-        }
-        self._check_cancelled()
-        response = self._session.get(
-            "https://search-api-web.eastmoney.com/search/jsonp",
-            params={"cb": "company", "param": json.dumps(parameter, ensure_ascii=False)},
-            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://so.eastmoney.com/"},
-            timeout=self._timeout,
-            deadline=self._monotonic() + self._timeout,
-            cancel_requested=self._cancel_requested,
-        )
-        self._check_cancelled()
-        CheckCompanyResponse(response)
-        text = response.text.strip()
-        if not text.startswith("company("):
-            raise CompanyInputValidationFailure("news_schema_invalid")
-        try:
-            raw = json.loads(text[len("company(") :].rstrip(";)").strip())
-        except json.JSONDecodeError as exc:
-            raise DownloadValidationFailure("news_schema_invalid", "json", "valid_json", f"line_{exc.lineno}_column_{exc.colno}") from exc
-        except ValueError as exc:
-            raise DownloadValidationFailure("news_schema_invalid", "json", "bounded_json_numbers", "invalid") from exc
-        if not isinstance(raw, Mapping):
-            raise CompanyInputValidationFailure("news_schema_invalid")
-        result = raw.get("result")
-        rows = result.get("cmsArticleWebOld") if isinstance(result, Mapping) else None
-        if not isinstance(rows, list) or len(rows)>50:
-            raise CompanyInputValidationFailure("news_rows_invalid")
-        evidence: list[Disclosure] = []
-        for row in rows:
-            self._check_cancelled()
-            if (
-                not isinstance(row, Mapping)
-                or not isinstance(row.get("date"), str)
-                or not isinstance(row.get("title"), str)
-            ):
-                raise CompanyInputValidationFailure("news_row_invalid")
-            try:
-                published = datetime.fromisoformat(row["date"])
-            except ValueError as exc:
-                raise DownloadValidationFailure("news_date_invalid", "date", "ISO_timestamp", "invalid") from exc
-            published = (
-                published.replace(tzinfo=_SHANGHAI)
-                if published.utcoffset() is None
-                else published.astimezone(_SHANGHAI)
-            )
-            if not observed_at - timedelta(days=7) <= published <= observed_at:
-                continue
-            title = html.unescape(re.sub(r"<[^>]+>", "", str(row["title"]))).strip()
-            raw_url = row.get("url") or row.get("uniqueUrl") or ""
-            if not isinstance(raw_url,str) or len(raw_url)>8192 or not title or len(title)>4000:
-                raise CompanyInputValidationFailure("news_row_invalid")
-            url = raw_url
-            identity = hashlib.sha256((url or f"{title}\n{published.isoformat()}").encode()).hexdigest()
-            digest = hashlib.sha256(f"{title}\n{published.isoformat()}\n{url}".encode()).hexdigest()
-            evidence.append(Disclosure("eastmoney_news", identity, (code,), title, published, url, digest, "news"))
-        return tuple(evidence)
-
 
 def DecodeCompanyFinancialPage(
     payload: Mapping[str, object],

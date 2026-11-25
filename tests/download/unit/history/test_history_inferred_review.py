@@ -9,7 +9,6 @@ import pytest
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 from tests.helpers.download.history_fixtures import _PublishedSupplier
 from tests.helpers.download.history.infra.history_sync import NOW, FakeSupplier, _configuration, _download
-from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.price_review import PriceReviewBudgetExhausted, PriceReviewConfiguration
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 from trader.download.infra import history_sqlite_read_connection, history_sync_io
@@ -29,7 +28,7 @@ from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 from trader.bootstrap import ExecuteHistorySync
 from trader.download.infra.history_sync_io import HistorySyncResources
 from trader.download.infra.tencent_request_budget import TencentRequestBudget
-from trader.infra.sqlite_codec import DecodeDate
+from trader.infra.sqlite_codec import DecodeDate, EncodeDate
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
 
 DAYS = tuple(date(2026, 9, 1) + timedelta(days=offset) for offset in range(10))
@@ -77,10 +76,12 @@ def _budget():
     return TencentRequestBudget(monotonic=lambda: 0.0)
 
 
-def _legacy_metadata(root):
-    # The old released format already contains inferred facts but no inventory.
+def _age_review_receipts(root, days=DAYS):
     with SqliteSession(root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()) as connection, SqliteTransaction(connection):
-        connection.run("DELETE FROM download_inferred_suspension")
+        updated = connection.run(
+            "UPDATE download_inferred_suspension SET checked_cutoff=?", (EncodeDate(days[-6]),),
+        )
+        assert updated.rowcount > 0
     HistoryControlIndex(root / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).publish_file()
 
 
@@ -103,7 +104,7 @@ def _assert_public_snapshot(root, snapshot):
 def test_same_cutoff_review_adds_a_new_sequence_and_preserves_old_published_fact(tmp_path):
     assert _run(tmp_path, _InferredSupplier()).state == "completed"
     before = _snapshot(tmp_path)
-    _legacy_metadata(tmp_path)
+    _age_review_receipts(tmp_path)
     supplier = _InferredSupplier(inferred=False)
     result = _run(tmp_path, supplier, budget=_budget())
     after = _snapshot(tmp_path)
@@ -117,14 +118,13 @@ def test_same_cutoff_review_adds_a_new_sequence_and_preserves_old_published_fact
     assert result.unresolved_price_cells == 0
     assert result.price_review.physical_requests == 2
     assert result.price_review.remaining_inferred_codes == 0
-    assert result.price_review.discovery_pending
     assert len(supplier.review_calls) == 1
 
 
 def test_unchanged_review_keeps_snapshot_and_does_not_reset_five_session_age(tmp_path):
     assert _run(tmp_path, _InferredSupplier()).state == "completed"
     before = _snapshot(tmp_path)
-    _legacy_metadata(tmp_path)
+    _age_review_receipts(tmp_path)
     supplier = _InferredSupplier()
     first = _run(tmp_path, supplier, budget=_budget())
     second_supplier = _InferredSupplier()
@@ -142,7 +142,7 @@ def test_unchanged_review_keeps_snapshot_and_does_not_reset_five_session_age(tmp
 def test_budget_exhaustion_defers_without_supplier_failure_gap_or_false_review_receipt(tmp_path):
     assert _run(tmp_path, _InferredSupplier()).state == "completed"
     before = _snapshot(tmp_path)
-    _legacy_metadata(tmp_path)
+    _age_review_receipts(tmp_path)
     result = _run(tmp_path, _InferredSupplier(exhausted=True), budget=_budget())
     index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture())
 
@@ -156,46 +156,41 @@ def test_budget_exhaustion_defers_without_supplier_failure_gap_or_false_review_r
     assert len(supplier.review_calls) == 1
 
 
-def test_legacy_discovery_rotates_eight_exact_stock_windows_and_resumes(tmp_path):
+def test_current_review_with_no_recorded_facts_skips_annual_price_reads(tmp_path, monkeypatch):
+    assert _run(tmp_path, _InferredSupplier(inferred=False)).state == "completed"
+    before = _snapshot(tmp_path)
+
+    def unexpected(*_args):
+        pytest.fail("the current review ledger is empty")
+
+    monkeypatch.setattr(HistoryDirectPrices, "read_for_review", unexpected)
+    supplier = _InferredSupplier(inferred=False)
+    result = _run(tmp_path, supplier, budget=_budget())
+    assert result.state == "already_current"
+    assert result.price_review.examined_codes == result.price_review.physical_requests == 0
+    assert supplier.review_calls == []
+    assert _snapshot(tmp_path) == before
+
+
+def test_plan_reserves_only_due_recorded_facts_within_code_budget(tmp_path):
     path = tmp_path / "catalog.sqlite3"
     HistoryControlIndex(path, sqlite_policy=SqlitePolicyFixture()).initialize()
-    partition = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9, sqlite_policy=SqlitePolicyFixture())
-    partition.initialize()
-    universe = tuple(replace(FakeSupplier(DAYS).load_context(DAYS[-1], len(DAYS)).universe[0], code=f"600{index:03d}") for index in range(1, 10))
+    template, *_ = FakeSupplier(DAYS).load_context(DAYS[-1], len(DAYS)).universe
+    universe = tuple(replace(template, code=f"600{index:03d}") for index in range(1, 11))
     context = FakeSupplier(DAYS).load_context(DAYS[-1], len(DAYS), universe=universe)
-    partition.save_revisions(tuple(sorted((
-        HistoryRevision(1, "main", replace(cell, status="tencent_inferred_suspended", unadjusted=None, qfq=None)
-                        if security.code == "600009" and cell.trade_date == DAYS[0] else cell, None, None, None)
-        for security in universe for cell in _download(security.code, DAYS).batch.cells
-    ), key=lambda revision: (revision.trade_date, revision.code))))
-    prices = HistoryDirectPrices(tmp_path, 1, None, HistorySqliteActivity(lambda: None, lambda: False), sqlite_policy=SqlitePolicyFixture())
-    index = HistoryInferredReviewIndex(path, sqlite_policy=SqlitePolicyFixture())
-    first_budget = _budget()
-    assert index.plan(context, prices, 1, PriceReviewConfiguration(), first_budget, lambda: False) == ()
-    assert first_budget.reviewed_codes == tuple(security.code for security in universe[:8])
-    second_budget = _budget()
-    tasks = index.plan(context, prices, 1, PriceReviewConfiguration(), second_budget, lambda: False)
-    assert second_budget.reviewed_codes[0] == "600009"
-    assert len(second_budget.reviewed_codes) == 8
-    assert [(task.code, task.inferred_dates) for task in tasks] == [("600009", (DAYS[0],))]
+    review = HistoryInferredReviewIndex(path, sqlite_policy=SqlitePolicyFixture())
+    for security in universe[1:]:
+        cell = _download(security.code, (DAYS[0],)).batch.cells[0]
+        inferred = replace(cell, status="tencent_inferred_suspended", unadjusted=None, qfq=None)
+        review.checked(security.code, (inferred,), 1, DAYS[-6], _budget())
 
-
-def test_discovery_deadline_leaves_cursor_for_next_command(tmp_path, monkeypatch):
-    path = tmp_path / "catalog.sqlite3"
-    HistoryControlIndex(path, sqlite_policy=SqlitePolicyFixture()).initialize()
-    context = FakeSupplier(DAYS).load_context(DAYS[-1], len(DAYS))
-    prices = HistoryDirectPrices(tmp_path, 1, None, HistorySqliteActivity(lambda: None, lambda: False), sqlite_policy=SqlitePolicyFixture())
-    index = HistoryInferredReviewIndex(path, sqlite_policy=SqlitePolicyFixture())
-
-    def expired(*_args):
-        raise PriceReviewBudgetExhausted("deadline")
-
-    monkeypatch.setattr(prices, "read_for_review", expired)
     budget = _budget()
-    assert index.plan(context, prices, 1, PriceReviewConfiguration(), budget, lambda: False) == ()
-    with SqliteSession(path, SqliteConnectionOptions(read_only=True), sqlite_policy=SqlitePolicyFixture()) as connection:
-        assert connection.run("SELECT after_code FROM download_inferred_cursor").fetchall() == []
-    assert budget.reviewed_codes == ("600001",)
+    tasks = review.plan(context, 1, PriceReviewConfiguration(), budget, lambda: False)
+
+    assert budget.reviewed_codes == tuple(security.code for security in universe[1:9])
+    assert tuple((task.code, task.inferred_dates) for task in tasks) == tuple(
+        (code, (DAYS[0],)) for code in budget.reviewed_codes
+    )
 
 
 def test_auxiliary_revision_fence_rejects_published_or_unknown_sequence(tmp_path):
@@ -216,7 +211,7 @@ def test_network_review_failure_keeps_due_age_and_next_same_day_can_retry(tmp_pa
 
     assert _run(tmp_path, _InferredSupplier()).state == "completed"
     before = _snapshot(tmp_path)
-    _legacy_metadata(tmp_path)
+    _age_review_receipts(tmp_path)
     failed = _run(tmp_path, FailedReview(), budget=_budget())
     assert failed.state == "already_current"
     assert _snapshot(tmp_path) == before
@@ -247,15 +242,11 @@ def test_review_due_uses_five_exchange_sessions_instead_of_old_price_date(tmp_pa
     HistoryControlIndex(path, sqlite_policy=SqlitePolicyFixture()).initialize()
     review = HistoryInferredReviewIndex(path, sqlite_policy=SqlitePolicyFixture())
     cell = replace(_download("600001", (DAYS[0],)).batch.cells[0], status="tencent_inferred_suspended", unadjusted=None, qfq=None)
-    partition = HistoryPricePartition(tmp_path / "prices_2026.sqlite3", 2026, 9, sqlite_policy=SqlitePolicyFixture())
-    partition.initialize()
-    partition.save_revisions((HistoryRevision(1, "main", cell, None, None, None),))
     review.checked("600001", (cell,), 1, DAYS[4], _budget())
-    prices = HistoryDirectPrices(tmp_path, 1, None, HistorySqliteActivity(lambda: None, lambda: False), sqlite_policy=SqlitePolicyFixture())
     four_sessions = FakeSupplier(DAYS[:9]).load_context(DAYS[8], 9)
     five_sessions = FakeSupplier(DAYS).load_context(DAYS[-1], len(DAYS))
-    assert review.plan(four_sessions, prices, 1, PriceReviewConfiguration(), _budget(), lambda: False) == ()
-    tasks = review.plan(five_sessions, prices, 1, PriceReviewConfiguration(), _budget(), lambda: False)
+    assert review.plan(four_sessions, 1, PriceReviewConfiguration(), _budget(), lambda: False) == ()
+    tasks = review.plan(five_sessions, 1, PriceReviewConfiguration(), _budget(), lambda: False)
     assert [(task.code, task.inferred_dates) for task in tasks] == [("600001", (DAYS[0],))]
 
 
@@ -263,7 +254,7 @@ def test_review_due_uses_five_exchange_sessions_instead_of_old_price_date(tmp_pa
 def test_review_anchor_failure_preserves_age_and_published_prices(tmp_path, monkeypatch, returned_failure):
     assert _run(tmp_path, _InferredSupplier()).state == "completed"
     before = _snapshot(tmp_path)
-    _legacy_metadata(tmp_path)
+    _age_review_receipts(tmp_path)
     original = HistoryDirectPrices.prepare
 
     class ConflictingReview(_InferredSupplier):
@@ -302,7 +293,7 @@ def test_review_finds_a_qualified_anchor_before_an_inferred_only_tail(tmp_path):
             ))
 
     assert _run(tmp_path, SuspendedTail()).state == "completed"
-    _legacy_metadata(tmp_path)
+    _age_review_receipts(tmp_path)
     supplier = SuspendedTail(inferred=False)
     result = _run(tmp_path, supplier, budget=_budget())
     assert result.state == "completed"
@@ -315,7 +306,7 @@ def test_review_finds_a_qualified_anchor_before_an_inferred_only_tail(tmp_path):
 def test_review_lock_contention_defers_without_normal_lock_retries(tmp_path, monkeypatch):
     assert _run(tmp_path, _InferredSupplier()).state == "completed"
     before = _snapshot(tmp_path)
-    _legacy_metadata(tmp_path)
+    _age_review_receipts(tmp_path)
     waits = []
     timeouts = []
     original = history_sqlite_read_connection.OpenSqliteConnection
@@ -345,7 +336,7 @@ def test_normal_gap_download_finishes_before_additional_inferred_review(tmp_path
     initial = _InferredSupplier()
     initial.fail_code = "600002"
     assert _run(tmp_path, initial).unresolved_price_cells == len(DAYS)
-    _legacy_metadata(tmp_path)
+    _age_review_receipts(tmp_path)
 
     class OrderedSupplier(_InferredSupplier):
         def __init__(self):
@@ -366,8 +357,8 @@ def test_normal_gap_download_finishes_before_additional_inferred_review(tmp_path
 def test_review_uses_current_source_owner_when_initial_flow_inventory_is_stale(tmp_path, monkeypatch):
     assert _run(tmp_path, _InferredSupplier()).state == "completed"
     before = _snapshot(tmp_path)
-    _legacy_metadata(tmp_path)
-    monkeypatch.setattr(HistoryPriceRepair, "baostock_codes", lambda _repair: frozenset())
+    _age_review_receipts(tmp_path)
+    monkeypatch.setattr(HistoryPriceRepair, "source_codes", lambda _repair, _source: frozenset())
     monkeypatch.setattr(HistoryPriceRepair, "source", lambda _repair, _code, _sequence: "baostock")
     supplier = _InferredSupplier(inferred=False)
     status = _run(tmp_path, supplier, budget=_budget())
@@ -381,7 +372,7 @@ def test_review_uses_current_source_owner_when_initial_flow_inventory_is_stale(t
 def test_review_budget_after_begin_preserves_pending_sequence_and_resumes(tmp_path, monkeypatch, capsys, after_durable_write):
     assert _run(tmp_path, _InferredSupplier()).state == "completed"
     before = _snapshot(tmp_path)
-    _legacy_metadata(tmp_path)
+    _age_review_receipts(tmp_path)
     _assert_public_snapshot(tmp_path, before)
     original = HistoryDirectPrices.commit_for_review
 
@@ -422,7 +413,7 @@ def test_review_budget_after_begin_preserves_pending_sequence_and_resumes(tmp_pa
 def test_auxiliary_cancellation_reseals_old_public_snapshot(tmp_path, monkeypatch, phase):
     assert _run(tmp_path, _InferredSupplier()).state == "completed"
     before = _snapshot(tmp_path)
-    _legacy_metadata(tmp_path)
+    _age_review_receipts(tmp_path)
     _assert_public_snapshot(tmp_path, before)
     original = HistoryDirectPrices.commit_for_review
 
@@ -454,7 +445,6 @@ def test_context_failure_does_not_upgrade_or_invalidate_legacy_review_metadata(t
     before = _snapshot(tmp_path)
     with SqliteSession(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()) as connection, SqliteTransaction(connection):
         connection.run("DROP TABLE download_inferred_suspension")
-        connection.run("DROP TABLE download_inferred_cursor")
     HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).publish_file()
     _assert_public_snapshot(tmp_path, before)
 
@@ -469,12 +459,17 @@ def test_context_failure_does_not_upgrade_or_invalidate_legacy_review_metadata(t
         assert connection.run("SELECT name FROM sqlite_master WHERE name='download_inferred_suspension'").fetchall() == []
 
 
-def test_incomplete_review_schema_requires_redownload_without_altering_the_file(tmp_path):
+@pytest.mark.parametrize("previous_layout", (False, True))
+def test_incompatible_review_schema_requires_redownload_without_altering_the_file(tmp_path, previous_layout):
     assert _run(tmp_path, _InferredSupplier()).state == "completed"
     before = _snapshot(tmp_path)
     with SqliteSession(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()) as connection, SqliteTransaction(connection):
-        connection.run("DROP TABLE download_inferred_suspension")
-        connection.run("DROP TABLE download_inferred_cursor")
+        if previous_layout:
+            connection.run("""CREATE TABLE download_inferred_cursor (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1), after_code TEXT NOT NULL
+            )""")
+        else:
+            connection.run("DROP TABLE download_inferred_suspension")
     HistoryControlIndex(tmp_path / "catalog.sqlite3", sqlite_policy=SqlitePolicyFixture()).publish_file()
     before_bytes = (tmp_path / "catalog.sqlite3").read_bytes()
     status = _run(tmp_path, _InferredSupplier(inferred=False), budget=_budget())
@@ -489,7 +484,7 @@ def test_auxiliary_cancellation_after_normal_download_keeps_old_public_reader(tm
     initial.fail_code = "600002"
     assert _run(tmp_path, initial).unresolved_price_cells == len(DAYS)
     before = _snapshot(tmp_path)
-    _legacy_metadata(tmp_path)
+    _age_review_receipts(tmp_path)
 
     class CancelledReview(_InferredSupplier):
         def fetch_tencent_window(self, security, dates, *, request_budget=None):
@@ -539,7 +534,7 @@ def test_cross_year_partial_review_reseals_only_written_year_and_preserves_old_s
 
     assert run(AcrossYears(inferred=True)).state == "completed"
     before = _snapshot(tmp_path)
-    _legacy_metadata(tmp_path)
+    _age_review_receipts(tmp_path, days)
     original = HistoryDirectPrices.commit_for_review
     original_seal = history_sync_io.PublishSqliteFile
     sealed = []

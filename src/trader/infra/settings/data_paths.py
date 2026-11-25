@@ -37,15 +37,6 @@ class DataPaths:
         return self.company_raw / "text"
 
     @property
-    def retired_company_databases(self) -> tuple[Path, ...]:
-        return (
-            self.root / "company/company_facts.sqlite3",
-            self.root / "company/company_normalized.sqlite3",
-            self.root / "company/company_inputs.sqlite3",
-            self.company_raw / "company_collection.sqlite3",
-        )
-
-    @property
     def company_sync(self) -> Path:
         return self.root / "company/company_sync.sqlite3"
 

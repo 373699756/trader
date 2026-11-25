@@ -475,11 +475,7 @@ def _validate_observation_consistency(
         ):
             reasons.add(f"observation_point_conflict:{subject}")
             inconsistent = True
-        identities = {item.security_identity for item in items}
-        legacy_rekey = identities != {subject} and all(
-            isinstance(identity, str) and len(identity) == 6 and identity.isdigit() for identity in identities
-        )
-        if identities != {subject} and not legacy_rekey:
+        if any(item.security_identity != subject for item in items):
             reasons.add(f"security_identity_conflict:{subject}")
             inconsistent = True
         if inconsistent:

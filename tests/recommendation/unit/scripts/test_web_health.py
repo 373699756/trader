@@ -1198,6 +1198,19 @@ def test_pipeline_missing_a_canonical_stage_is_reported_as_invalid() -> None:
     assert any(finding.code == "pipeline_count_invalid" for finding in findings)
 
 
+def test_retired_live_pipeline_order_is_reported_as_invalid() -> None:
+    order = (
+        "input_readiness", "dynamic_filter", "board_cross_section", "strategy_history", "model_input",
+        "candidate_score", "board_limit", "candidate_refresh", "input_coverage", "evidence_score",
+        "model_cost_gate", "local_score", "deepseek_review", "fusion", "action_gate", "concentration",
+    )
+    funnel = {"current_stage": order[-1], "stages": [_stage(key, 10, 10) for key in order]}
+
+    findings = analyze_samples((_sample(1, funnel=funnel),), strategies=(_STRATEGY,))
+
+    assert any(finding.code == "pipeline_count_invalid" for finding in findings)
+
+
 def test_scoring_regression_is_ignored_after_strategy_freezes() -> None:
     samples = (
         _sample(1, funnel=_funnel(full_scored=65), event_sequence=10),
@@ -1281,7 +1294,9 @@ def test_json_report_contains_only_aggregated_projection_data() -> None:
     assert strategy["supply_reason_counts"] == {"local_score_unavailable": 17}
 
 
-@pytest.mark.parametrize("fault", (None, "batch", "count", "order", "length", "state", "negative", "population"))
+@pytest.mark.parametrize(
+    "fault", (None, "batch", "count", "order", "length", "state", "negative", "population", "missing_not_selected"),
+)
 def test_committed_eleven_stage_audit_is_checked_even_with_newer_live_input(fault: str | None) -> None:
     stages = [
         {
@@ -1318,6 +1333,8 @@ def test_committed_eleven_stage_audit_is_checked_even_with_newer_live_input(faul
         stages[9]["pending_count"] = -1
     elif fault == "population":
         stages[9]["failed_count"] = 1
+    elif fault == "missing_not_selected":
+        del stages[9]["not_selected_count"]
     committed = {**_funnel(), "stage_snapshots": stages}
     sample = _sample(1, freeze_pipeline=committed, frozen=True, phase="after_close")
     findings = analyze_samples((sample,), strategies=(_STRATEGY,))
@@ -1334,6 +1351,27 @@ def test_committed_eleven_stage_audit_is_checked_even_with_newer_live_input(faul
     assert summary["pipeline"]["stage_audit"]["observed"] is False
     assert "private-batch" not in str(report)
     assert "must-not-project" not in str(report)
+
+
+def test_retired_committed_pipeline_audit_is_reported_as_invalid() -> None:
+    order = (
+        "data_source", "static_market", "static_standardize", "static_filter", "dynamic_market",
+        "dynamic_standardize", "dynamic_filter", "candidate_pool", "quality_check", "local_score",
+        "risk_review", "score_merge", "downside_action", "final_selection",
+    )
+    stages = [
+        {
+            "stage": key, "stage_order": index + 1, "state": "ready",
+            "input_batch_id": str(index), "output_batch_id": str(index + 1),
+            "input_count": 10, "output_count": 10, "rejected_count": 0, "pending_count": 0, "failed_count": 0,
+        }
+        for index, key in enumerate(order)
+    ]
+    sample = _sample(1, freeze_pipeline={**_funnel(), "stage_snapshots": stages}, frozen=True, phase="after_close")
+
+    findings = analyze_samples((sample,), strategies=(_STRATEGY,))
+
+    assert any(finding.code == "committed_pipeline_audit_invalid" for finding in findings)
 
 
 def test_missing_committed_audit_is_not_reconstructed_from_live_input() -> None:

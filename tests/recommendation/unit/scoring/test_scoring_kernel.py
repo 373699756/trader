@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests.helpers.recommendation.scoring_helpers import BOARD_AMOUNT_EXPOSURE_FIXTURE
 from trader.recommendation.domain.scoring.residualization import (
     TRAINED_HEAD_EXPOSURE_CONTRACT,
     ExposureContract,
@@ -21,15 +22,18 @@ def test_percentile_ranks_use_average_ties_and_keep_a_single_sample_neutral() ->
 
 
 def test_residualization_removes_market_and_board_exposure() -> None:
-    result = ResidualizeExposure((1.0, 2.0, 3.0, 4.0), ("main", "main", "star", "star"), (10.0, 10.0, 10.0, 10.0))
+    result = ResidualizeExposure(
+        (1.0, 2.0, 3.0, 4.0), ("main", "main", "star", "star"), (10.0, 10.0, 10.0, 10.0),
+        contract=BOARD_AMOUNT_EXPOSURE_FIXTURE,
+    )
     assert result == pytest.approx((-0.5, 0.5, -0.5, 0.5))
 
 
 def test_residualization_rejects_invalid_exposure_vectors() -> None:
     with pytest.raises(ValueError, match="same non-empty length"):
-        ResidualizeExposure((1.0,), ("main", "star"), (10.0, 10.0))
+        ResidualizeExposure((1.0,), ("main", "star"), (10.0, 10.0), contract=BOARD_AMOUNT_EXPOSURE_FIXTURE)
     with pytest.raises(ValueError, match="amounts positive"):
-        ResidualizeExposure((1.0,), ("main",), (0.0,))
+        ResidualizeExposure((1.0,), ("main",), (0.0,), contract=BOARD_AMOUNT_EXPOSURE_FIXTURE)
 
 
 def test_v3_residualization_removes_industry_before_board_amount_exposure() -> None:

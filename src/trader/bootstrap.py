@@ -371,19 +371,6 @@ def ExecuteTrainingReminderStatus(settings: RuntimeSettings) -> TrainingReminder
     return ReadTrainingReminderStatus(settings.data_paths.history, ShanghaiClock(_utc_now).now(), maintenance_path=settings.data_paths.training_maintenance, sqlite_policy=BuildSqlitePolicy(settings))
 
 
-def ExecuteHistoryAutomationRemoval() -> tuple[Path, ...]:
-    import os
-    import sys
-
-    from trader.download.infra import history_automation_uninstall as automation
-
-    platform: automation.HistoryAutomationPlatform = (
-        "windows" if sys.platform == "win32" else "macos" if sys.platform == "darwin" else "linux"
-    )
-    plan = automation.PlanHistoryAutomationRemoval(platform, Path.home(), os.getuid() if os.name != "nt" else 0)
-    return automation.RemoveHistoryAutomation(plan, run=automation.RunHistoryRemovalCommand)
-
-
 def ExecuteHistorySync(
     configuration: HistorySyncConfiguration,
     supplier: HistoryTwoStageSupplier,
@@ -1346,8 +1333,6 @@ def ExecuteCompanySync(
 
     with ExitStack() as resources:
         resources.enter_context(ProcessLock(paths.company_raw / "evidence.lock", label="sync company"))
-        if any(path.exists() or path.is_symlink() for path in paths.retired_company_databases):
-            raise company_evidence.CompanyDatabaseIncompatibleError(company_evidence.CompanyDownloadStore.RETIRED_LAYOUT)
         formal_path = paths.company
         facts = SQLiteCompanyFactsIndex(formal_path, event_policy=event_policy, sqlite_policy=sqlite_policy,
                                        cancel_requested=stopped, io_budget=io_budget)

@@ -2,7 +2,6 @@ from __future__ import annotations
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 import hashlib
 import re
-import shutil
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -26,10 +25,8 @@ from trader.download.domain.published_history import (
     PublishedHistoryWindow,
 )
 from trader.download.domain.qfq_window import QfqWindowIncompleteError
-from trader.download.infra.download_settings import LoadHistorySyncConfiguration, LoadQfqWindowConfiguration
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.terminal_progress import RenderProgress
-from trader.infra.settings.data_paths import DataPaths
 
 
 def _plain_feedback(event: DownloadProgressEvent) -> str:
@@ -43,19 +40,6 @@ def _plain_feedback(event: DownloadProgressEvent) -> str:
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 DAYS = tuple(date(2025, 1, 1) + timedelta(days=offset) for offset in range(252))
-
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
-
-
-def _install_download_config(project_root: Path) -> None:
-    config_root = project_root / "config"
-    config_root.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(PROJECT_ROOT / "config/download.json", config_root / "download.json")
-
-
-def _qfq_download_configuration(project_root: Path, paths: DataPaths):
-    return LoadHistorySyncConfiguration(project_root, paths), LoadQfqWindowConfiguration(project_root)
-
 
 def _cell(code: str, day: date, *, price: float = 10.0) -> BaoStockDailyCell:
     raw = BaoStockDailySide(

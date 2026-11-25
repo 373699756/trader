@@ -19,7 +19,6 @@ from trader.download.infra.company_disclosure_source import CNINFO_DIRECTORY_URL
 from trader.download.infra.company_sync_inputs import SQLiteCompanySyncInputStore
 from trader.download.infra.company_sync_io import CompanySyncIoBudget
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
-from trader.download.infra.company_sync_producers import CompanyRetiredNewsProducer
 from trader.infra.http_contracts import HttpAttempt, HttpRequest, HttpResponse
 from trader.download.domain.company_sync import CompanySourceCancelled
 from trader.infra.http_transport import RequestsHttpTransport
@@ -382,37 +381,6 @@ def test_later_round_preserves_recoverable_old_directory_round(tmp_path):
     assert not journal.defer_unconfirmed_directory(old, _SCOPE.cutoff + timedelta(days=1))
     assert journal.active().round_id == old
     transport.close()
-
-
-@pytest.mark.parametrize("reserved", (False, True))
-@pytest.mark.parametrize("preflight", (False, True))
-def test_retired_news_reconciles_old_reservation_without_dispatching_a_request(tmp_path, reserved, preflight):
-    journal, producers, budget, physical, _calls, transport = _resources(tmp_path)
-    scope = replace(_SCOPE, families=tuple(CompanySyncFamily))
-    news = CompanyRetiredNewsProducer(CompanySyncPhasePlan(CompanySyncFamily.NEWS, CanonicalDigest(("news", False, scope.codes))))
-    producers = (*producers[:-1], news, producers[-1])
-    round_id = journal.begin(scope, tuple(producer.plan for producer in producers), max_source_calls=budget.max_source_calls)
-    journal.start(round_id, CompanySyncFamily.NEWS, CompanySyncPhaseState(CanonicalDigest(scope.codes[0]), True))
-    if reserved:
-        journal.authorize_request(HttpRequest("GET", "https://example.test/news", 1))
-
-    with transport:
-        if preflight:
-            assert ResumeCompanySyncPendingStep(journal, producers, scope, round_id, budget,
-                monotonic=lambda: 0, cancel_requested=lambda: False)
-        result = RunCompanySyncRound(journal, producers, scope, budget,
-            monotonic=lambda: 0, cancel_requested=lambda: False)
-
-    assert result.round_id == round_id and journal.outstanding_family(round_id) is None
-    assert physical == ["https://example.test/1", "https://example.test/2"]
-    persisted_news = journal.family(round_id, CompanySyncFamily.NEWS)
-    assert persisted_news.source_calls == persisted_news.unknown_attempts == int(reserved)
-    if reserved:
-        assert persisted_news.steps == 1
-        assert persisted_news.result.failure == "source_attempt_unconfirmed"
-    else:
-        assert persisted_news.steps == 2 and persisted_news.result.failure is None
-        assert "news_automatic_collection_retired" in persisted_news.result.gaps
 
 
 def test_cancel_before_authorization_is_safe_to_resume_without_losing_allowance(tmp_path):

@@ -14,8 +14,7 @@ from trader.training.domain.production_diagnostic_dates import (
 )
 from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra.research.close_return.v3_contracts import D25_HEAD_CONTRACT, TOMORROW_HEAD_CONTRACT
-from trader.training.infra.research.close_return.v3_sample_index import SQLiteV3TrainingSampleIndex
-from trader.training.infra.sample_index import TrainingSample
+from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingSample
 
 
 def _calendar(count: int = 1_600) -> tuple[date, ...]:
@@ -155,8 +154,11 @@ def test_sample_index_uses_production_partitions_without_changing_schema_or_fina
     partitions = TrainingSampleDatePartitions(plan)
     days = tuple(sorted({*partitions.training, *partitions.early_stopping, *partitions.calibration,
                          *partitions.validation, *final.fit_dates}))
-    with SQLiteV3TrainingSampleIndex(
-        tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture(),
+    with SQLiteTrainingSampleIndex(
+        tmp_path / "samples.sqlite3",
+        TOMORROW_HEAD_CONTRACT.feature_manifest.names,
+        sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(),
     ) as samples:
         samples.add_final(
             TrainingSample("600001", day, "main", "银行", 1e7, (0.1,) * 6, (0.1, 0.2, 0.3, 0.4, 0.5, 0.35))

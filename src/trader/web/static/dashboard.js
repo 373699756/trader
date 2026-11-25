@@ -719,7 +719,6 @@
     return {
       ...raw,
       snapshot_id: raw.freeze_version,
-      projection_version: raw.projection_version || raw.freeze_version,
       requested_date: historical ? raw.trade_date : null,
       current_trade_date: historical ? null : raw.trade_date,
       historical,
@@ -1265,7 +1264,7 @@
       return false;
     }
     const current = state.payload || {};
-    const removed = new Set([...(patch.removed_codes || []), ...(patch.removals || [])]);
+    const removed = new Set([...patch.removed_codes, ...patch.removals]);
     const merged = patch.replace === true
       ? patch.upserts
       : patches.mergePatchItems(current.items, patch.upserts, removed);
@@ -1389,7 +1388,8 @@
       overlayPatchFreeze: () => "dependency_missing",
       eventMatchesCurrent: () => false,
       patchVersionValid: () => false,
-      projectionVersion: (payload) => payload && (payload.projection_version || payload.snapshot_id) || "",
+      projectionVersion: (payload) => payload && typeof payload.projection_version === "string"
+        ? payload.projection_version : "",
       recommendationPatchFreeze: () => "dependency_missing",
       replacementPayload: (payload) => payload || {},
       snapshotNotice: (payload) => ({ message: payload && payload.status === "not_ready" ? "等待策略数据更新" : "快照状态不可用", level: "idle" }),

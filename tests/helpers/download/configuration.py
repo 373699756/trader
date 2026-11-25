@@ -93,7 +93,6 @@ def CompanyEvidenceRequestFixture(
     configuration: CompanySyncConfiguration,
     event_policy: CompanyEventPolicy | None = None,
     *,
-    news_codes: tuple[str, ...] = (),
     stock_names: tuple[tuple[str, str], ...] = (),
     listings: tuple[CompanyListing, ...] = (),
     fill_missing: bool = False,
@@ -101,5 +100,5 @@ def CompanyEvidenceRequestFixture(
     return CompanyEvidenceRequest(
         codes, observed_at, configuration,
         event_policy if event_policy is not None else CompanyEventPolicyFixture(),
-        news_codes=news_codes, stock_names=stock_names, listings=listings, fill_missing=fill_missing,
+        stock_names=stock_names, listings=listings, fill_missing=fill_missing,
     )

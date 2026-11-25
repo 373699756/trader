@@ -1602,15 +1602,20 @@ const getItem = {
   },
 };
 const getPayload = sandbox.window.TraderDashboardTest.normalizeFreezePayload(
-  { strategy: "tomorrow", status: "ready", trade_date: "2026-07-23", items: [getItem], top_scores: [getItem] },
+  { strategy: "tomorrow", status: "ready", trade_date: "2026-07-23", freeze_version: "snapshot-only",
+    items: [getItem], top_scores: [getItem] },
   "tomorrow", "", "current",
 );
+assert.strictEqual(getPayload.snapshot_id, "snapshot-only");
+assert.strictEqual(state.projectionVersion(getPayload), "");
 const savedHistory = sandbox.window.TraderDashboardTest.normalizeFreezePayload(
   { strategy: "tomorrow", status: "ready", trade_date: "2026-07-23", items: [getItem],
+    freeze_version: "historical-snapshot", projection_version: "historical-projection",
     coverage: { candidate_count: null, evaluated_count: null, rejected_count: null,
       selected_count: 1, executable_count: 1, observation_count: 0 }, selection_diagnostics: null },
   "tomorrow", "2026-07-23", "history",
 );
+assert.strictEqual(state.projectionVersion(savedHistory), "historical-projection");
 assert.strictEqual(savedHistory.selection_diagnostics, null);
 assert.strictEqual(savedHistory.coverage.candidate_count, null);
 assert.strictEqual(savedHistory.coverage.evaluated_count, null);
@@ -1877,6 +1882,7 @@ const patch = {
   },
   upserts: [{ code: "600001", rank: 2 }, { code: "600003", rank: 1 }],
   removed_codes: ["600002"],
+  removals: [],
 };
 
 assert.strictEqual(state.patchVersionValid(patch), true);
@@ -1901,6 +1907,20 @@ for (const unavailable_count of [undefined, -1, 1, 3]) {
 assert.strictEqual(
   state.recommendationPatchFreeze(patch, payload, "tomorrow-base", "tomorrow", "live"),
   "apply",
+);
+assert.strictEqual(state.projectionVersion({ snapshot_id: "tomorrow-base" }), "");
+assert.strictEqual(
+  state.recommendationPatchFreeze(
+    { ...patch, base_projection_version: undefined, base_snapshot_id: "tomorrow-base" },
+    payload, "tomorrow-base", "tomorrow", "live",
+  ),
+  "schema_mismatch",
+);
+assert.strictEqual(
+  state.recommendationPatchFreeze(
+    { ...patch, removals: undefined }, payload, "tomorrow-base", "tomorrow", "live",
+  ),
+  "schema_mismatch",
 );
 const coveragePatch = {
   ...patch,
@@ -2469,7 +2489,7 @@ async function verifyAtomicBatchCache() {
         const version = `${profile}-${strategy}-${sequence}`;
         return [strategy, {
           ...coveragePatch, strategy, scoring_profile: profile,
-          base_projection_version: "", base_snapshot_id: "",
+          base_projection_version: "",
           publication_id: version, snapshot_id: version, projection_version: version,
         }];
       })),

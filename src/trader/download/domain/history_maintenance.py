@@ -41,7 +41,6 @@ class HistoryPriceReviewSummary:
     physical_requests: int
     exhaustion_reason: PriceReviewExhaustionReason | None = None
     remaining_inferred_codes: int = 0
-    discovery_pending: bool = True
 
 
 @dataclass(frozen=True)

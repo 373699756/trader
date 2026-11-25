@@ -301,7 +301,6 @@ def test_company_finishes_with_measured_execution_and_pinned_field_counts():
         ),
         unknown_attempts=1,
     )
-    news = CompanySyncFamilyFixture(CompanySyncFamily.NEWS, gaps=("news_metadata_does_not_verify_issuer_risk",))
     field = CompanySyncFamilyResult(
         CompanySyncFamily.FIELDS, 371, 1_633_513, 0,
         CompanySyncStepResult(
@@ -315,7 +314,7 @@ def test_company_finishes_with_measured_execution_and_pinned_field_counts():
     with company_progress.activity(CompanySyncFamily.FIELDS):
         clock[0] = 34
         company_progress.advance(field)
-    round_result = CompanySyncRoundFixture(_ROUND_AT, families=(pledge, announcements, news, field))
+    round_result = CompanySyncRoundFixture(_ROUND_AT, families=(pledge, announcements, field))
     company_progress.finish(round_result, fields=CompanyFieldOutcomeCounts(
         publication_hash=round_result.publication_hash,
         verified=25,
@@ -326,14 +325,13 @@ def test_company_finishes_with_measured_execution_and_pinned_field_counts():
         pending_documents=85,
     ))
     terminal = {message.task.key: message for message in messages if message.finished}
-    pledge_done, announcements_done, news_done, fields_done = (
+    pledge_done, announcements_done, fields_done = (
         terminal[family.value] for family in (CompanySyncFamily.PLEDGE, CompanySyncFamily.ANNOUNCEMENTS,
-            CompanySyncFamily.NEWS, CompanySyncFamily.FIELDS)
+            CompanySyncFamily.FIELDS)
     )
     assert pledge_done.state == "待补证" and "--:--:--" in pledge_done.fields[1].text
     assert any("本次未执行，沿用账本" in item.text for item in pledge_done.fields)
     assert announcements_done.state == "阻塞" and any("source_attempt_unconfirmed" in item.text for item in announcements_done.fields)
-    assert news_done.state == "采集结束" and any("新闻用于辅助研究" in item.text for item in news_done.fields)
     assert fields_done.state == "待补证" and "00:00:07" in fields_done.fields[1].text
     text = " | ".join(item.text for item in fields_done.fields)
     assert "累计核验1633513股次/371步，累计变动2股" in text
@@ -599,14 +597,12 @@ def test_last_stock_closes_verification_without_claiming_a_publication():
     ReportCompanyStock(report, (), CompanyPublicationProgress("started", ("600001",)))
     ReportCompanyStock(report, (), CompanyPublicationProgress("committed", ("600001",), ("600001",)))
     report(EvidenceSyncProgress("publish", 1, 0, 2, 3, 0, status="complete"))
-    report(EvidenceSyncProgress("news", 0, 0, 2, 3, 0, status="complete"))
-    facts, pending, stock_result, published, finished, news = _messages(stream.getvalue())
+    facts, pending, stock_result, published, finished = _messages(stream.getvalue())
     assert "来源本地" in facts and "600001-示例" in facts
     assert "正式提交中，尚未发布" in pending
     assert "已提交，部分覆盖" in stock_result and "正式提交回执 已确认" in stock_result
     assert "本批提交1股" in published and "本批已提交" in published
     assert "正式覆盖" in finished and "本轮提交1股" in finished
-    assert "无候选，未抓取新闻" in news and "本轮未覆盖" in news
 
 
 def test_source_failure_and_unreadable_documents_have_separate_recovery_messages():

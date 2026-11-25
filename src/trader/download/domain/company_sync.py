@@ -18,11 +18,10 @@ class CompanySyncFamily(str,Enum):
     UNLOCK="unlock"
     ANNOUNCEMENTS="announcements"
     ANNUAL_INCOME="annual_income"
-    NEWS="news"
     FIELDS="fields"
 
 
-COMPANY_SYNC_FAMILIES = tuple(family for family in CompanySyncFamily if family is not CompanySyncFamily.NEWS)
+COMPANY_SYNC_FAMILIES = tuple(CompanySyncFamily)
 
 
 @dataclass(frozen=True, slots=True)

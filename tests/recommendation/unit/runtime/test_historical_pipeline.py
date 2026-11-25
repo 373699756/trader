@@ -224,8 +224,8 @@ def test_historical_file_only_projects_get_and_never_restores_current_or_sse(tmp
     assert history["input_versions"] == dict(historical.freeze.input_versions)
     assert all(item["duration_ms"] is None for item in history["pipeline"]["stages"])
     assert queries.current(strategy).status == "not_ready"
-    with pytest.raises(FreezeRecordUnavailableError):
-        records.import_record_bytes(encoded)
+    with pytest.raises(ValueError, match="history is read-only"):
+        records.commit(historical)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="historical|current"):
         index.restore_formal(historical)
     with pytest.raises(ValueError, match="historical|current"):
@@ -385,9 +385,13 @@ def test_production_formal_publication_still_persists_only_six_rows(tmp_path, st
         assert len(json.loads(payload)["freeze"]["items"]) == 6
 
 
-def test_historical_payload_limit_is_still_eight_mib(tmp_path):
+def test_formal_payload_limit_is_still_eight_mib(tmp_path, monkeypatch):
     records = SQLiteFreezeRecords(tmp_path / "freeze.sqlite3", sqlite_policy=SqlitePolicyFixture())
     records.initialize()
+    formal = CommittedFreezeRecord(FormalScoredFreeze(freeze()), NOW.replace(hour=15, minute=0), "scheduled")
+    canonical = CommittedRecordBytes(formal)
+    oversized = canonical.ljust(8 * 1024 * 1024 + 1)
+    monkeypatch.setattr(f"{SQLiteFreezeRecords.__module__}.CommittedRecordBytes", lambda _record: oversized)
     with pytest.raises(FreezeRecordUnavailableError, match="bounded limit"):
-        records.import_record_bytes(b" " * (8 * 1024 * 1024 + 1))
+        records.commit(formal)
     assert records.list_dates(Strategy.TOMORROW) == ()

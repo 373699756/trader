@@ -228,16 +228,6 @@ def test_late_industry_failure_is_not_overwritten_by_a_deferred_success() -> Non
                    and message.state == "完成" for message in messages)
 
 
-def test_legacy_resume_progress_is_visible_with_counts_and_month(capsys):
-    reporter = StderrHistorySyncProgress(monotonic=lambda: 0.0)
-    reporter.publish(HistorySyncProgress("history_gap_resume", "waiting", 64, 65, current_item="2026-09"))
-    reporter.publish(HistorySyncProgress("history_gap_resume", "completed", 65, 65, current_item="2026-09"))
-    output = _compact_log(capsys.readouterr().err)
-    assert "旧断点恢复 00:00:00 | 等待 | 64/65" in output
-    assert "旧断点恢复 00:00:00 | 完成 | 65/65" in output
-    assert "处理项 2026-09" in output
-
-
 def test_complete_code_reuse_is_not_reported_as_another_network_request(capsys):
     reporter = StderrHistorySyncProgress(monotonic=lambda: 0.0)
     reporter.publish(HistorySyncProgress("tencent_history", "completed", 1, 2, "600001"))

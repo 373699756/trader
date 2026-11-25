@@ -2,7 +2,6 @@
 
 from typing import Literal
 
-from trader.download.application.company_round_progress import IsCompanyNewsReference
 from trader.download.application.progress_message import ProgressState
 from trader.download.application.sync_data import SyncResult, SyncTaskResult
 from trader.download.entrypoints.history_maintenance_projection import ProjectHistoryMaintenanceStatus
@@ -43,13 +42,6 @@ def ProjectSyncTerminalState(result: SyncResult) -> ProgressState:
         return "暂停"
     if not steps or any(step.can_continue or step.failure or step.pending_count is None for step in steps):
         return "待继续"
-    if (
-        all(task.status == "completed" or task.company is not None for task in result.tasks)
-        and all(company.processing_complete for company in companies)
-        and all(family.result.business_complete or IsCompanyNewsReference(family)
-                for company in companies for family in company.families)
-    ):
-        return "采集结束"
     return "待补证"
 
 

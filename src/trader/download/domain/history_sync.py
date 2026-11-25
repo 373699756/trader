@@ -36,7 +36,6 @@ HistorySyncProgressStage = Literal[
     "history_st_reference",
     "history_published_gaps",
     "history_gap_inventory",
-    "history_gap_resume",
     "persisting_partitions",
     "preparing_partitions",
     "downloading_codes",

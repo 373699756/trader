@@ -88,9 +88,6 @@ def AuditQfqDatabase(path: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, 
             ).require_one()[0]
         )
         latest_without_prices: list[dict[str, object]] = []
-        nontrading_available = connection.run(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='price_nontrading'"
-        ).fetchone() is not None
         for code, start, end, last_price in connection.run(
             "SELECT a.code,a.start_date,a.end_date,"
             "(SELECT MAX(d.trade_date) FROM daily_price d WHERE d.code=a.code "
@@ -104,7 +101,7 @@ def AuditQfqDatabase(path: Path, *, sqlite_policy: SqliteIoPolicy) -> dict[str, 
                     "SELECT trade_date FROM price_nontrading WHERE code=? AND trade_date BETWEEN ? AND ? "
                     "ORDER BY trade_date", (code, start, end),
                 )
-            ) if nontrading_available else ()
+            )
             latest_without_prices.append({
                 "code": code,
                 "cutoff": DecodeDate(end).isoformat(),

@@ -143,10 +143,7 @@ class SQLiteFreezeRecords:
             raise ValueError("history is read-only and cannot be committed")
         if IsPreviewFreeze(record.freeze):
             raise ValueError("preview freezes cannot be written to formal records")
-        self.import_record_bytes(CommittedRecordBytes(record))
-
-    def import_record_bytes(self, payload: bytes) -> None:
-        """Preserve verified original bytes during explicitly authorized offline migration."""
+        payload = CommittedRecordBytes(record)
         digest = _bounded_digest(payload)
         try:
             record = CommittedRecordFromBytes(payload)

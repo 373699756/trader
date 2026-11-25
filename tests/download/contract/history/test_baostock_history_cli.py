@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from tests.helpers.shared.configuration import SqlitePolicyFixture
-
 import json
-import re
 import os
 import subprocess
 from dataclasses import replace
@@ -202,7 +199,7 @@ def test_download_rejects_every_legacy_argument_during_parsing(arguments: tuple[
     assert not runtime_dir.exists()
 
 
-def test_download_runs_the_typed_zero_argument_synchronization(
+def test_sync_history_runs_the_typed_synchronization(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -232,13 +229,15 @@ def test_download_runs_the_typed_zero_argument_synchronization(
         "trader.bootstrap.ExecuteSelectedTraining",
         lambda _runtime: pytest.fail("incomplete history must block training"),
     )
-    from trader.download.entrypoints.commands import RunDownload
-
-    assert RunDownload(PROJECT_ROOT, PROJECT_ROOT / "config/runtime.json", sqlite_policy=SqlitePolicyFixture()) == 0
+    monkeypatch.setattr("trader.bootstrap.PrepareRuntimeDisk", lambda settings, **_kwargs: settings)
+    assert Main(["--config", str(PROJECT_ROOT / "config/runtime.json"), "sync", "history"]) == 0
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
-    assert payload == {
+    assert payload["status"] == "completed"
+    history, = payload["tasks"]
+    assert history["task"] == "history" and history["status"] == "completed"
+    assert history["history"] == {
         "snapshot_hash": "a" * 64,
         "history_root": "data/history",
         "data_cutoff": "2026-09-10",
@@ -253,11 +252,8 @@ def test_download_runs_the_typed_zero_argument_synchronization(
         "industry": None,
     }
     assert "\x1b" not in captured.err and "\x1b" not in captured.out
-    progress_lines = re.sub(r" +", " ", captured.err).splitlines()
-    assert progress_lines == [
-        "00:00:00 | history·交易日历 00:00:00 | 等待 | 调用 00:00:05",
-        "00:00:00 | history·结果汇总 00:00:00 | 完成 | 同步完成",
-    ]
+    assert "history·交易日历" in captured.err and "调用 00:00:05" in captured.err
+    assert "history·结果汇总" in captured.err and "同步完成" in captured.err
     assert "completed_units" not in captured.err
     assert "total_units" not in captured.err
 

@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import date
 from typing import cast
 
-from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.domain.qfq_planning import QfqNonTradingFact, QfqNonTradingKind
 from trader.download.domain.price_review import PriceReviewRequestBudget
 from trader.infra.sqlite_codec import DecodeDate, EncodeDate
@@ -31,26 +29,9 @@ def ReadNonTradingFacts(
             if review_budget is not None and len(result) % 128 == 0:
                 review_budget.check_deadline()
             result.append(QfqNonTradingFact(
-                code, DecodeDate(day), cast(QfqNonTradingKind, kind),
-                DecodeDate(checked_on) if checked_on is not None else None, source,
+                code, DecodeDate(day), cast(QfqNonTradingKind, kind), DecodeDate(checked_on), source,
             ))
     return tuple(result)
-
-
-def ObservedNonTradingFacts(
-    window: PublishedHistoryWindow, source: str, checked_on: date | None
-) -> tuple[QfqNonTradingFact, ...]:
-    return tuple(
-        QfqNonTradingFact(
-            window.code, cell.trade_date,
-            "legacy_unverified" if checked_on is None else (
-                "confirmed" if cell.status == "supplier_marked_suspended" else "inferred"
-            ),
-            checked_on, source if checked_on is not None else None,
-        )
-        for cell in window.cells
-        if cell.status in ("supplier_marked_suspended", "tencent_inferred_suspended")
-    )
 
 
 def ReplaceNonTradingFacts(
@@ -62,7 +43,6 @@ def ReplaceNonTradingFacts(
     connection.run("DELETE FROM price_nontrading WHERE code=?", (code,))
     connection.run_many(
         "INSERT INTO price_nontrading(code,trade_date,kind,checked_on,source) VALUES(?,?,?,?,?)",
-        ((code, EncodeDate(item.trade_date), item.kind,
-          EncodeDate(item.checked_on) if item.checked_on is not None else None, item.source) for item in facts),
+        ((code, EncodeDate(item.trade_date), item.kind, EncodeDate(item.checked_on), item.source) for item in facts),
     )
     return True

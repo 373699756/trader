@@ -45,7 +45,7 @@ from trader.download.infra.company_sync_io import CompanySyncIoBudget
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
 from trader.download.infra.company_sync_preparation import PrepareCompanyIssuerInputs
 from trader.download.infra.company_sync_producers import (
-    CompanyAnnouncementProducer, CompanyRatioProducer, CompanyRetiredNewsProducer,
+    CompanyAnnouncementProducer, CompanyRatioProducer,
 )
 from trader.download.infra.company_sync_annual_income import CompanyAnnualIncomeProducer
 from trader.download.infra.company_facts_protocol import POSITIVE_TYPES
@@ -224,8 +224,6 @@ class CompanySyncRuntime:
             scope = requested_scope
         self._execution_scope = scope
         eligible_codes = tuple(code for code in scope.codes if code in current_codes)
-        retired_news = tuple(CompanyRetiredNewsProducer(plan) for plan in (() if active is None else active.plans)
-            if plan.family is CompanySyncFamily.NEWS)
         population_gaps = tuple(reason for changed, reason in (
             (eligible_codes != scope.codes, "population_members_became_ineligible"),
             (any(code not in scope.codes for code in codes), "new_population_members_wait_for_refresh"),
@@ -263,7 +261,6 @@ class CompanySyncRuntime:
             announcements,
             CompanyAnnualIncomeProducer(self.inputs, self._annual_source, annual_facts,
                 current_codes=eligible_codes, observe_download=self._observe_download),
-            *retired_news,
             fields,
         )
         plans = tuple(producer.plan for producer in producers)

@@ -26,9 +26,7 @@ from trader.download.infra.price_repair_attempts import PRICE_REPAIR_ATTEMPT_SQL
 from trader.download.infra.published_history_codec import EncodePublishedHistoryCell, DecodePublishedHistoryCellPayload
 from trader.download.domain.qfq_window import QfqWindowConfiguration, QfqWindowSnapshot, QfqWindowState
 from trader.download.domain.qfq_planning import QfqNonTradingFact, QfqPlanningSnapshot, QfqPlanningState
-from trader.download.infra.qfq_nontrading import (
-    ObservedNonTradingFacts, ReadNonTradingFacts, ReplaceNonTradingFacts,
-)
+from trader.download.infra.qfq_nontrading import ReadNonTradingFacts, ReplaceNonTradingFacts
 from trader.download.domain.price_review import PriceReviewBudgetExhausted, PriceReviewRequestBudget
 from trader.download.infra.qfq_review_guard import GuardQfqReviewSqlite
 from trader.download.infra.history_sqlite_read_connection import WatchHistoryRead
@@ -66,8 +64,9 @@ _REPAIR_SQL = (
     PRICE_REPAIR_ATTEMPT_SQL.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1),
     "CREATE TABLE IF NOT EXISTS price_issue(code TEXT NOT NULL, trade_date INTEGER NOT NULL, reason TEXT NOT NULL, PRIMARY KEY(code,trade_date)) WITHOUT ROWID",
     "CREATE TABLE IF NOT EXISTS price_candidate(code TEXT NOT NULL, trade_date INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(code,trade_date)) WITHOUT ROWID",
-    "CREATE TABLE price_nontrading(code TEXT NOT NULL,trade_date INTEGER NOT NULL,kind TEXT NOT NULL,"
-    "checked_on INTEGER,source TEXT,PRIMARY KEY(code,trade_date)) WITHOUT ROWID",
+    "CREATE TABLE price_nontrading(code TEXT NOT NULL,trade_date INTEGER NOT NULL,"
+    "kind TEXT NOT NULL CHECK(kind IN ('confirmed','inferred')),"
+    "checked_on INTEGER NOT NULL,source TEXT NOT NULL,PRIMARY KEY(code,trade_date)) WITHOUT ROWID",
 )
 _SCHEMA = SqliteSchema(
     statements=(
@@ -154,7 +153,7 @@ class SQLiteQfqWindowCache:
         with closing(self._connection(review_budget=review_budget)) as connection, GuardQfqReviewSqlite(connection, review_budget):
             # A rolled-back first publication has no schema or visible windows.
             # Populated incompatible databases require a fresh download.
-            if not HasSqliteSchema(connection, _SCHEMA):
+            if not HasSqliteSchema(connection, _SCHEMA, exact=True):
                 yield None
                 return
             if self._publication_depth == 0:
@@ -169,7 +168,7 @@ class SQLiteQfqWindowCache:
             self.verify_integrity()
         with closing(self._connection(write=True, review_budget=review_budget)) as connection, SqliteTransaction(connection, immediate=True):
             with GuardQfqReviewSqlite(connection, review_budget):
-                EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
+                EnsureSqliteSchema(connection, _SCHEMA, allow_create=True, exact=True)
                 yield connection
         self._mark_publication()
 
@@ -246,7 +245,7 @@ class SQLiteQfqWindowCache:
             if connection is not None:
                 binding = connection.run("SELECT source,start_date,end_date FROM window_binding WHERE profile=? AND code=?", (self.profile, code)).fetchone()
                 if binding is not None:
-                    days.update(fact.trade_date for fact in ReadNonTradingFacts(connection, (code,)) if fact.kind != "legacy_unverified" and fact.source == binding[0] and binding[1] <= EncodeDate(fact.trade_date) <= binding[2])
+                    days.update(fact.trade_date for fact in ReadNonTradingFacts(connection, (code,)) if fact.source == binding[0] and binding[1] <= EncodeDate(fact.trade_date) <= binding[2])
         return tuple(sorted(days))
 
     def repair_reference(self, code: str) -> PublishedHistoryWindow:
@@ -272,7 +271,7 @@ class SQLiteQfqWindowCache:
         if self.path.is_file():
             if not Path(f"{self.path}.sha256").is_file():
                 with closing(self._connection()) as connection:
-                    if not HasSqliteSchema(connection, _SCHEMA):
+                    if not HasSqliteSchema(connection, _SCHEMA, exact=True):
                         return
             self._file_verification = VerifySqliteFile(
                 self.path,
@@ -674,8 +673,9 @@ class SQLiteQfqWindowCache:
                         review_budget.check_deadline()
                     RecordTencentCheck(connection, code, calendar[-1], initial=source_identity.startswith("baostock:"))
                     window = next(item for item in windows if item.code == code)
-                    obtained = tuple(cell.trade_date for cell in window.cells if cell.status in ("complete", "supplier_marked_suspended", "tencent_inferred_suspended"))
-                    facts = tuple(fact for fact in nontrading_facts if fact.code == code) if nontrading_facts is not None else ObservedNonTradingFacts(window, source_identity, None)
+                    facts = tuple(fact for fact in nontrading_facts or () if fact.code == code)
+                    nontrading_dates = frozenset(fact.trade_date for fact in facts)
+                    obtained = tuple(cell.trade_date for cell in window.cells if cell.status == "complete" or cell.trade_date in nontrading_dates)
                     changed = ReplaceNonTradingFacts(connection, code, facts) or changed
                     connection.run_many("DELETE FROM price_candidate WHERE code=? AND trade_date=?", ((code, EncodeDate(day)) for day in obtained))
                     connection.run_many("DELETE FROM price_issue WHERE code=? AND trade_date=?", ((code, EncodeDate(day)) for day in obtained))

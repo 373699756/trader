@@ -8,7 +8,6 @@ import pytest
 from tests.download.component.company.test_company_sync_round import _SCOPE
 from tests.helpers.download.configuration import CompanyEventPolicyFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
-from trader.download.application.company_round_progress import IsCompanyNewsReference
 from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDownloadStore, CompanyInputValidationFailure, Disclosure, DisclosurePage, DisclosurePartition, DisclosureQuery, StructuredCompanyPage, StructuredCompanyQuery
 from trader.download.domain.company_financial_admission import CompanyFinancialRevisionProof
 from trader.download.domain.company_source_records import CompanyFinancialSourcePage
@@ -296,47 +295,52 @@ def test_new_runtime_scope_excludes_news_and_resumes_same_request_budget(tmp_pat
             cancel_requested=lambda: False, monotonic=lambda: 0)
     assert resumed.round_id == first.round_id and resumed.processing_complete
     assert runtime.journal.active().max_source_calls == 20
-    assert CompanySyncFamily.NEWS not in resumed.scope.families
+    assert all(family.value != "news" for family in resumed.scope.families)
     assert "https://example.test/news" not in physical
     with SqliteSession(runtime.inputs.path) as connection:
         assert connection.run("SELECT COUNT(*) FROM company_source_task WHERE family IN ('news','news_scope')").require_one()[0] == 0
 
 
-def test_runtime_keeps_old_news_plan_and_metadata_while_settling_the_phase(tmp_path):
-    first, _, first_transport, _ = _runtime(tmp_path / "plans")
-    first.initialize(_SCOPE.codes, _SCOPE.cutoff)
-    with first_transport:
-        first.run(_SCOPE.codes, _SCOPE.cutoff, CompanySyncBudget(1, 20, 20, 10),
-            cancel_requested=lambda: False, monotonic=lambda: 0)
-    plans = first.journal.active().plans
-    old_scope = replace(_SCOPE, families=tuple(CompanySyncFamily))
-    news_plan = CompanySyncPhasePlan(CompanySyncFamily.NEWS, CanonicalDigest(("news", False, old_scope.codes)),
-        ("news_metadata_does_not_verify_issuer_risk",))
-    runtime, _, transport, physical = _runtime(tmp_path / "old")
+@pytest.mark.parametrize("active", (True, False))
+def test_unsupported_plan_admission_preserves_charged_requests(tmp_path, active):
+    runtime, _, transport, physical = _runtime(tmp_path)
     runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
-    round_id = runtime.journal.begin(old_scope, (*plans[:-1], news_plan, plans[-1]), max_source_calls=20)
-    code, = old_scope.codes
-    runtime.inputs.complete_task(old_scope.identity, "news", code, 1, CanonicalDigest("accepted_news"))
-    runtime.inputs.complete_task(old_scope.identity, "news_scope", code, 0, CanonicalDigest(code))
-    runtime.journal.start(round_id, CompanySyncFamily.NEWS, CompanySyncPhaseState(CanonicalDigest(code), False))
-    runtime.journal.finish(round_id, CompanySyncFamily.NEWS, CompanySyncStepResult(False, True, accepted_inputs=1))
-    runtime.material.register_disclosures((Disclosure("eastmoney_news", "old-news", old_scope.codes, "消息", old_scope.cutoff,
-        "https://example.test/item", "a" * 64, "news"),))
+    plans = tuple(CompanySyncPhasePlan(family, CanonicalDigest(family)) for family in _SCOPE.families)
+    round_id = runtime.journal.begin(_SCOPE, plans, max_source_calls=20)
+    request_hash = CanonicalDigest("recorded_request")
+    with SqliteSession(runtime.journal.path) as connection:
+        connection.run("UPDATE company_sync_plan SET position=6 WHERE round_id=? AND family='fields'", (round_id,))
+        connection.run("INSERT INTO company_sync_plan VALUES(?,'news',5,?,'[]',0)",
+            (round_id, CanonicalDigest("retired_news")))
+        connection.run("""INSERT INTO company_sync_step(round_id,family,step,state_hash,source_required)
+            VALUES(?,'news',1,?,1)""", (round_id, CanonicalDigest("planned_request")))
+        connection.run("""INSERT INTO company_sync_request(round_id,family,step,request_hash,host,method)
+            VALUES(?,'news',1,?,'example.test','GET')""", (round_id, request_hash))
+        if not active:
+            connection.run("UPDATE company_sync_round SET active=0 WHERE round_id=?", (round_id,))
+    assert runtime.journal.source_calls(round_id) == 1
 
+    next_cutoff = _SCOPE.cutoff + timedelta(days=1)
     with transport:
-        result = runtime.run(_SCOPE.codes, _SCOPE.cutoff, CompanySyncBudget(100, 200, 20, 10),
-            cancel_requested=lambda: False, monotonic=lambda: 0)
-
-    assert result.round_id == round_id and result.scope == old_scope
-    assert runtime.journal.active().plans[-2] == news_plan
-    family = next(item for item in result.families if item.family is CompanySyncFamily.NEWS)
-    assert family.accepted_inputs == 1 and family.source_calls == family.unknown_attempts == 0
-    assert "news_automatic_collection_retired" in family.result.gaps
-    assert IsCompanyNewsReference(family)
-    assert "https://example.test/news" not in physical
-    assert runtime.inputs.task_done(old_scope.identity, "news_scope", code)
-    with SqliteSession(runtime.material.path) as connection:
-        assert connection.run("SELECT COUNT(*) FROM disclosures WHERE kind='news'").require_one()[0] == 1
+        if active:
+            with pytest.raises(CompanyDatabaseIncompatibleError) as initialize:
+                runtime.initialize(_SCOPE.codes, next_cutoff)
+            with pytest.raises(CompanyDatabaseIncompatibleError) as run:
+                runtime.run(_SCOPE.codes, next_cutoff, CompanySyncBudget(1, 20, 20, 10),
+                    cancel_requested=lambda: False, monotonic=lambda: 0)
+            assert initialize.value.store is run.value.store is CompanyDownloadStore.REQUEST_JOURNAL
+        else:
+            runtime.initialize(_SCOPE.codes, next_cutoff)
+            result = runtime.run(_SCOPE.codes, next_cutoff, CompanySyncBudget(1, 20, 20, 10),
+                cancel_requested=lambda: False, monotonic=lambda: 0)
+            assert result.round_id != round_id and result.scope.cutoff == next_cutoff
+    with SqliteSession(runtime.journal.path) as connection:
+        original = connection.run("SELECT active,max_source_calls FROM company_sync_round WHERE round_id=?", (round_id,))
+        assert tuple(original.require_one()) == (int(active), 20)
+        assert tuple(connection.run("SELECT family,request_hash,observed FROM company_sync_request").require_one()) == (
+            "news", request_hash, 0,
+        )
+    assert not physical
 
 
 def test_unfinished_round_resumes_original_time_and_does_not_refill_request_allowance(tmp_path):

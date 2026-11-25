@@ -12,7 +12,6 @@ from trader.training.domain.final_fit import BuildFinalFitDatePlan, FinalFitDate
 from trader.training.domain.production_diagnostic_dates import BuildProductionDiagnosticDatePlan
 from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra.research.close_return.v3_contracts import D25_HEAD_CONTRACT, TOMORROW_HEAD_CONTRACT
-from trader.training.infra.research.close_return.v3_sample_index import SQLiteV3TrainingSampleIndex
 from trader.training.infra.research.close_return.v5_contracts import V5_TRAINING_PROFILE
 from trader.training.infra.sample_index import FinalFitIndustryCounts, SQLiteTrainingSampleIndex, TrainingSample
 from trader.training.infra.sample_sequences import SampleSequenceLayout
@@ -92,8 +91,11 @@ def test_final_fit_counts_require_head_date_coverage_and_keep_industry_gaps(tmp_
     calendar = _calendar()
     split = BuildTrainingDateSplit(calendar, parent_manifest_hash="a" * 64)
     plan = BuildFinalFitDatePlan(calendar, source_cutoff=calendar[-1], fit_sessions=2, maturity_sessions=1)
-    with SQLiteV3TrainingSampleIndex(
-        tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture(),
+    with SQLiteTrainingSampleIndex(
+        tmp_path / "samples.sqlite3",
+        TOMORROW_HEAD_CONTRACT.feature_manifest.names,
+        sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(),
     ) as samples:
         samples.add_final((
             _sample(plan.fit_dates[0], industry="银行"),
@@ -121,8 +123,11 @@ def test_final_fit_batches_filter_exact_dates_null_labels_and_preserve_order(tmp
     calendar = _calendar()
     split = BuildTrainingDateSplit(calendar, parent_manifest_hash="a" * 64)
     plan = FinalFitDatePlan(calendar[-1], 1, (calendar[-6], calendar[-3]))
-    with SQLiteV3TrainingSampleIndex(
-        tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture(),
+    with SQLiteTrainingSampleIndex(
+        tmp_path / "samples.sqlite3",
+        TOMORROW_HEAD_CONTRACT.feature_manifest.names,
+        sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(),
     ) as samples:
         samples.add_final((
             _sample(calendar[-3], "600002", target=0.2),
@@ -146,8 +151,10 @@ def test_final_fit_matrix_releases_mappings_on_success_failure_and_cancel(tmp_pa
     calendar = _calendar()
     split = BuildTrainingDateSplit(calendar, parent_manifest_hash="a" * 64)
     plan = BuildFinalFitDatePlan(calendar, source_cutoff=calendar[-1], fit_sessions=1, maturity_sessions=1)
-    with SQLiteV3TrainingSampleIndex(
-        tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture(),
+    with SQLiteTrainingSampleIndex(
+        tmp_path / "samples.sqlite3",
+        TOMORROW_HEAD_CONTRACT.feature_manifest.names,
+        sqlite_policy=SqlitePolicyFixture(),
         sample_settings=TrainingSampleSettingsFixture(matrix_memory_bytes=1),
     ) as samples:
         samples.add_final((_sample(plan.fit_dates[0]),))

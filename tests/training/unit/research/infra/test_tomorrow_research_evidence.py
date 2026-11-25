@@ -105,6 +105,28 @@ def test_project_rejects_legacy_owner_even_when_payload_hash_is_valid(tmp_path) 
         index.load_handoff("resource_probe")
 
 
+@pytest.mark.parametrize("missing_field", ("resource_probe", "evidence_partitions"))
+def test_report_checkpoint_rejects_missing_fields_even_when_hash_is_valid(tmp_path, missing_field: str) -> None:
+    index = TomorrowResearchEvidenceIndex(tmp_path, available_disk_gb=lambda _path: 40.0)
+    probe = _handoff()
+    index.seal_handoff(probe)
+    graph = index.commit(index.load_graph().content_hash, probe)
+    run_id = index.current_run_id()
+    assert run_id is not None
+    checkpoint = tmp_path / run_id / ".report-checkpoint.json"
+    payload = json.loads(checkpoint.read_text(encoding="utf-8"))
+    payload.pop("content_hash")
+    payload.pop(missing_field)
+    payload["content_hash"] = CanonicalResearchHash(payload)
+    checkpoint.write_text(CanonicalText(payload), encoding="utf-8")
+
+    development = _development_handoff(graph)
+    index.seal_handoff(development)
+    with pytest.raises(TomorrowResearchEvidenceIndexError, match="report checkpoint is invalid"):
+        index.commit(graph.content_hash, development)
+    assert index.load_graph() == graph
+
+
 def test_single_invocation_continues_all_available_stages_and_seals_terminal_documents(tmp_path) -> None:
     index = TomorrowResearchEvidenceIndex(tmp_path, available_disk_gb=lambda _path: 40.0)
     resource_probe = _handoff()

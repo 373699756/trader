@@ -41,6 +41,12 @@ def test_catalogue_has_unique_complete_selections() -> None:
         assert SelectTool(item.business, item.module, item.action) is item
 
 
+@pytest.mark.parametrize("action", ("verify", "build", "rollback"))
+def test_removed_runtime_migration_actions_are_unavailable(action: str) -> None:
+    with pytest.raises(ValueError, match="unknown business/module/action selection"):
+        SelectTool("engineering", "migration", action)
+
+
 @pytest.mark.parametrize("status,expected", (
     ("passed", 0), ("degraded", 0), ("empty", 0), ("failed", 1),
     ("skipped", 1), ("pending", 1), ("timed_out", 1), ("cancelled", 1),
@@ -140,11 +146,6 @@ def test_long_evidence_and_public_report_require_distinct_files(tmp_path) -> Non
     ("training-alignment", "--training-probe-directory"),
     ("company-resume", "--company-replay-directory"),
     ("history-repack-build", "--target"),
-    ("migration", "--source"),
-    ("migration-build", "--source"),
-    ("migration-build", "--target"),
-    ("migration-rollback", "--backup"),
-    ("migration-rollback", "--target"),
 ))
 def test_public_report_stays_outside_explicit_business_output_directories(tmp_path, identity, option) -> None:
     output = tmp_path / "business-output"
@@ -190,14 +191,10 @@ def test_skill_parser_rejects_abbreviations_without_evaluation_or_report_reads(t
     assert error.value.code == 2
 
 
-@pytest.mark.parametrize(
-    ("identity", "argument"),
-    (("migration-build", "--target"), ("migration-rollback", "--backup"), ("history-repack-build", "--target")),
-)
-def test_public_report_cannot_be_an_ancestor_of_a_maintenance_directory(tmp_path, identity: str, argument: str) -> None:
+def test_public_report_cannot_be_an_ancestor_of_a_maintenance_directory(tmp_path) -> None:
     report = tmp_path / "new-report"
     with pytest.raises(SystemExit) as error:
-        ParseArguments([*SelectionArguments(identity), "--report", str(report), "--", argument, str(report / "nested")])
+        ParseArguments([*SelectionArguments("history-repack-build"), "--report", str(report), "--", "--target", str(report / "nested")])
     assert error.value.code == 2
     assert not report.exists()
 

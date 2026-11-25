@@ -29,7 +29,6 @@ def ProjectHistoryMaintenanceStatus(status: HistoryMaintenanceStatus) -> dict[st
             "examined_codes": status.price_review.examined_codes,
             "physical_requests": status.price_review.physical_requests,
             "remaining_inferred_codes": status.price_review.remaining_inferred_codes,
-            "discovery_pending": status.price_review.discovery_pending,
             "exhaustion_reason": status.price_review.exhaustion_reason,
         },
         "price_gaps": None

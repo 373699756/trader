@@ -42,7 +42,6 @@ _STAGE_LABELS: dict[HistorySyncProgressStage, str] = {
     "tencent_history": "Tencent下载",
     "history_st_reference": "历史ST名单",
     "history_published_gaps": "活动历史缺口",
-    "history_gap_resume": "旧断点恢复",
     "baostock_repair": "BaoStock补缺",
     "history_gap_inventory": "统计历史缺口",
     "persisting_partitions": "正式月库提交",
@@ -76,7 +75,6 @@ _ITEM_LABELS: dict[HistorySyncProgressStage, str] = {
     "sealing_partitions": "数据库",
     "checking_partitions": "数据库",
     "history_published_gaps": "月份",
-    "history_gap_resume": "处理项",
     "baostock_repair": "股票",
 }
 _VERIFICATION_STAGES = frozenset({"checking_partitions", "sealing_partitions"})
@@ -92,7 +90,6 @@ _COUNT_STAGES = frozenset(
     {
         "history_st_reference",
         "history_published_gaps",
-        "history_gap_resume",
         "baostock_repair",
         "downloading_codes",
         "tencent_history",

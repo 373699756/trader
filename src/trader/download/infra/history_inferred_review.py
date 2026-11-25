@@ -1,4 +1,4 @@
-"""Bounded discovery and durable review receipts for unconfirmed suspension facts."""
+"""Due review and durable receipts for recorded inferred suspensions."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from trader.download.domain.baostock_daily import BaoStockDailyCell
 from trader.download.domain.history_sync import HistorySupplierContext
@@ -17,10 +16,6 @@ from trader.infra.sqlite_codec import DecodeDate, EncodeDate
 from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
-if TYPE_CHECKING:
-    from trader.download.infra.history_direct_prices import HistoryDirectPrices
-
-
 HISTORY_INFERRED_REVIEW_SQL = (
     """CREATE TABLE IF NOT EXISTS download_inferred_suspension (
         code TEXT NOT NULL, trade_date INTEGER NOT NULL, observation_sequence INTEGER NOT NULL,
@@ -28,9 +23,6 @@ HISTORY_INFERRED_REVIEW_SQL = (
     ) WITHOUT ROWID""",
     """CREATE INDEX IF NOT EXISTS download_inferred_review_due_idx
         ON download_inferred_suspension(checked_cutoff,code,trade_date)""",
-    """CREATE TABLE IF NOT EXISTS download_inferred_cursor (
-        singleton INTEGER PRIMARY KEY CHECK(singleton=1), after_code TEXT NOT NULL
-    )""",
 )
 
 
@@ -53,8 +45,6 @@ def RecordHistoryInferredSuspensions(
     inferred_dates: tuple[date, ...],
     sequence: int,
     cutoff: date,
-    *,
-    discovery: bool = False,
 ) -> None:
     """Track qualified output only; repeated observations retain their review age."""
     inferred = frozenset(inferred_dates)
@@ -71,7 +61,7 @@ def RecordHistoryInferredSuspensions(
     connection.run_many(
         "INSERT INTO download_inferred_suspension VALUES(?,?,?,?) "
         "ON CONFLICT(code,trade_date) DO UPDATE SET observation_sequence=excluded.observation_sequence",
-        ((code, EncodeDate(day), sequence, EncodeDate(day if discovery else cutoff)) for day in inferred_dates),
+        ((code, EncodeDate(day), sequence, EncodeDate(cutoff)) for day in inferred_dates),
     )
 
 
@@ -129,13 +119,12 @@ class HistoryInferredReviewIndex:
     def plan(
         self,
         context: HistorySupplierContext,
-        prices: HistoryDirectPrices,
         sequence: int,
         configuration: PriceReviewConfiguration,
         budget: PriceReviewBudget,
         cancel: Callable[[], bool],
     ) -> tuple[HistoryInferredReviewTask, ...]:
-        """Prefer due facts, then rotate through exact keys for at most eight stocks."""
+        """Select overdue recorded facts within the shared review budget."""
         calendar = context.calendar.open_dates
         eligible = {item.code: item for item in context.universe}
         threshold = calendar[-1 - configuration.interval_sessions] if len(calendar) > configuration.interval_sessions else date.min
@@ -156,52 +145,6 @@ class HistoryInferredReviewIndex:
                     if code not in grouped and not budget.reserve_code(code):
                         break
                     grouped.setdefault(code, []).append(day)
-        selected = set(grouped)
-        with SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
-            cursor_row = connection.run("SELECT after_code FROM download_inferred_cursor WHERE singleton=1").fetchone()
-        cursor = str(cursor_row[0]) if cursor_row else ""
-        codes = sorted(eligible)
-        candidates = (*tuple(code for code in codes if code > cursor), *tuple(code for code in codes if code <= cursor))
-        try:
-            for code in candidates:
-                if code in selected:
-                    continue
-                if cancel():
-                    raise KeyboardInterrupt
-                if not budget.reserve_code(code):
-                    break
-                cells = prices.read_for_review(code, context.calendar.expected_dates(eligible[code]), budget)
-                inferred = tuple(cell.trade_date for cell in cells if cell.status == "tencent_inferred_suspended")
-                with (
-                    SqliteSession(self._path, sqlite_policy=self._sqlite_policy) as connection,
-                    SqliteTransaction(connection, immediate=True),
-                    _watch_budget(connection, budget),
-                ):
-                    RecordHistoryInferredSuspensions(
-                        connection,
-                        code,
-                        tuple(cell.trade_date for cell in cells),
-                        inferred,
-                        sequence,
-                        calendar[-1],
-                        discovery=True,
-                    )
-                    connection.run(
-                        "INSERT INTO download_inferred_cursor VALUES(1,?) "
-                        "ON CONFLICT(singleton) DO UPDATE SET after_code=excluded.after_code", (code,),
-                    )
-                    due = tuple(
-                        DecodeDate(row[0]) for row in connection.run(
-                            "SELECT trade_date FROM download_inferred_suspension "
-                            "WHERE code=? AND checked_cutoff<=? ORDER BY trade_date",
-                            (code, EncodeDate(threshold)),
-                        ) if DecodeDate(row[0]) in inferred
-                    )
-                if due:
-                    grouped[code] = list(due)
-                budget.check_deadline()
-        except PriceReviewBudgetExhausted:
-            pass
         tasks = []
         for code, days in grouped.items():
             expected = context.calendar.expected_dates(eligible[code])

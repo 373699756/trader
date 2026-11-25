@@ -67,7 +67,7 @@ class HistoryRemoteFailureError(RuntimeError):
 
 def HistoryFailureCode(exc: BaseException) -> str:
     value = str(exc).strip()
-    if re.fullmatch(r"[a-z0-9_]{1,64}", value):
+    if value != "sqlite_schema_unsupported" and re.fullmatch(r"[a-z0-9_]{1,64}", value):
         return value
     cause = exc.__cause__
     if cause is not None and cause is not exc:
@@ -78,6 +78,8 @@ def HistoryFailureCode(exc: BaseException) -> str:
             cause = cause.__cause__
     failure = cause or exc
     if isinstance(failure, sqlite3.Error):
+        if str(failure) == "sqlite_schema_unsupported":
+            return "history_format_requires_rebuild"
         return "history_sqlite_failed"
     if isinstance(failure, WorkerResourceRejectedError):
         return "history_worker_unavailable"

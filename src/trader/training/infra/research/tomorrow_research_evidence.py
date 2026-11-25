@@ -43,6 +43,7 @@ class _TomorrowCommitContext:
     run_root: Path
     next_stage: TomorrowResearchStage | None
     resource_probe: TomorrowResearchResourceProbe | None
+    evidence_partitions: tuple[TomorrowResearchEvidencePartitionRef, ...]
 
 
 class TomorrowResearchEvidenceIndex:
@@ -114,7 +115,9 @@ class TomorrowResearchEvidenceIndex:
         try:
             with ProcessLock(self._lock_path):
                 context = self._prepare_commit(expected_graph_hash, handoff)
-                evidence = self._seal_commit_evidence(context.run_root, handoff.evidence_partitions)
+                evidence = self._seal_commit_evidence(
+                    context.run_root, context.evidence_partitions, handoff.evidence_partitions,
+                )
                 self._publish_commit(context, handoff, evidence)
                 self._handoff_path(handoff.stage).unlink(missing_ok=True)
                 return context.graph
@@ -141,13 +144,15 @@ class TomorrowResearchEvidenceIndex:
         self._validate_current_run(current_run_id, run_id)
         run_root = self._run_root(run_id)
         next_stage = NextResearchStage(updated)
+        resource_probe, evidence_partitions = _read_report_checkpoint(run_root / ".report-checkpoint.json")
         return _TomorrowCommitContext(
             updated,
             run_id,
             current_run_id,
             run_root,
             next_stage,
-            handoff.resource_probe or _read_report_resource_probe(run_root / ".report-checkpoint.json"),
+            handoff.resource_probe or resource_probe,
+            evidence_partitions,
         )
 
     def _validate_current_run(self, current_run_id: str | None, run_id: str) -> None:
@@ -159,10 +164,10 @@ class TomorrowResearchEvidenceIndex:
     def _seal_commit_evidence(
         self,
         run_root: Path,
+        previous: tuple[TomorrowResearchEvidencePartitionRef, ...],
         additions: tuple[TomorrowResearchEvidencePartitionRef, ...],
     ) -> tuple[TomorrowResearchEvidencePartitionRef, ...]:
-        evidence = _read_report_evidence(run_root / ".report-checkpoint.json")
-        evidence_by_path = {item.relative_path: item for item in evidence}
+        evidence_by_path = {item.relative_path: item for item in previous}
         for reference in additions:
             existing = evidence_by_path.get(reference.relative_path)
             if existing is not None and existing != reference:
@@ -404,24 +409,18 @@ def _report(
     return CanonicalText(payload)
 
 
-def _read_report_resource_probe(path: Path) -> TomorrowResearchResourceProbe | None:
-    if not path.is_file():
-        return None
+def _read_report_checkpoint(
+    path: Path,
+) -> tuple[TomorrowResearchResourceProbe | None, tuple[TomorrowResearchEvidencePartitionRef, ...]]:
     try:
         raw = _verified_object(path.read_text(encoding="utf-8"))
-        value = raw.get("resource_probe")
-        return None if value is None else _decode_resource_probe(_object(value))
-    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise TomorrowResearchEvidenceIndexError("Tomorrow research report checkpoint is invalid") from exc
-
-
-def _read_report_evidence(path: Path) -> tuple[TomorrowResearchEvidencePartitionRef, ...]:
-    if not path.is_file():
-        return ()
-    try:
-        raw = _verified_object(path.read_text(encoding="utf-8"))
-        return tuple(_decode_report_evidence(_object(item)) for item in _array(raw.get("evidence_partitions", [])))
-    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        resource = raw["resource_probe"]
+        probe = None if resource is None else _decode_resource_probe(_object(resource))
+        evidence = tuple(_decode_report_evidence(_object(item)) for item in _array(raw["evidence_partitions"]))
+        return probe, evidence
+    except FileNotFoundError:
+        return None, ()
+    except (KeyError, OSError, TypeError, ValueError) as exc:
         raise TomorrowResearchEvidenceIndexError("Tomorrow research report checkpoint is invalid") from exc
 
 

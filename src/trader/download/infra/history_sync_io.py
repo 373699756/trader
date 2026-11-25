@@ -223,7 +223,7 @@ class HistorySyncIo:
             sqlite_policy=self.sqlite_policy,
             verification_cache=self.resources.verification_cache,
         )
-        return _CurrentHistoryReview(self, inputs, snapshot, prices, self._flow(inputs, prices, snapshot))
+        return _CurrentHistoryReview(self, inputs, snapshot, self._flow(inputs, prices, snapshot))
 
     def _seal_deferred_review(
         self, files: tuple[_ReviewPriceFile, ...], *, include_created: bool = False,
@@ -279,7 +279,6 @@ class HistorySyncIo:
     def _review_batch(
         self,
         inputs: HistoryBatchInput,
-        prices: HistoryDirectPrices,
         flow: HistoryDownloadFlow,
         files: tuple[_ReviewPriceFile, ...],
         budget: PriceReviewBudget,
@@ -288,7 +287,7 @@ class HistorySyncIo:
             review = HistoryInferredReviewIndex(
                 self.configuration.history_root / "catalog.sqlite3", sqlite_policy=self.sqlite_policy,
             )
-            planned = review.plan(inputs.context, prices, inputs.batch.sequence, self.configuration.price_review, budget, self.cancel)
+            planned = review.plan(inputs.context, inputs.batch.sequence, self.configuration.price_review, budget, self.cancel)
             results = flow.prepare_inferred_reviews(planned, budget, inputs.batch.sequence)
             flow.commit_inferred_reviews(results, inputs.batch.sequence, budget)
         except PriceReviewBudgetExhausted:
@@ -318,7 +317,6 @@ class _CurrentHistoryReview:
     owner: HistorySyncIo
     inputs: HistoryBatchInput
     snapshot: HistorySnapshot
-    prices: HistoryDirectPrices
     flow: HistoryDownloadFlow
     results: tuple[HistoryInferredReviewResult, ...] | None = None
     files: tuple[_ReviewPriceFile, ...] = ()
@@ -344,7 +342,7 @@ class _CurrentHistoryReview:
             owner.configuration.history_root / "catalog.sqlite3", sqlite_policy=owner.sqlite_policy,
         )
         planned = review.plan(
-            inputs.context, self.prices, self.snapshot.sequence, owner.configuration.price_review, budget, owner.cancel,
+            inputs.context, self.snapshot.sequence, owner.configuration.price_review, budget, owner.cancel,
         )
         self.results = self.flow.prepare_inferred_reviews(planned, budget, inputs.batch.sequence)
         revised_dates = tuple(sorted({
@@ -420,7 +418,7 @@ class _HistoryPriceBatch:
         self.prices.record_missing(security, dates)
 
     def review_inferred(self, budget: PriceReviewBudget) -> None:
-        self.owner._review_batch(self.inputs, self.prices, self.flow, self.files, budget)
+        self.owner._review_batch(self.inputs, self.flow, self.files, budget)
 
     def publishable_partitions(self, dates: tuple[date, ...]) -> tuple[HistorySnapshotPartition, ...]:
         return self.prices.publishable_partitions(

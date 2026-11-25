@@ -17,7 +17,6 @@ from trader.download.domain.company_events import CompanyDataState, CompanyEvent
 from trader.download.domain.prepared_reference import PreparedReference
 
 Market = Literal["sse", "szse", "bse"]
-Component = Literal["announcements", "financial", "pledge", "unlock", "news"]
 EvidenceProgressState = Literal["running", "complete", "reused", "deferred"]
 DocumentRepairMode = Literal["ocr", "limits"]
 DocumentRoute = Literal["standard", "ocr", "limits"]
@@ -27,7 +26,6 @@ class CompanyDownloadStore(str, Enum):
     SOURCES = "sources"
     FACTS = "facts"
     REQUEST_JOURNAL = "request_journal"
-    RETIRED_LAYOUT = "retired_layout"
 
 
 class CompanyDatabaseIncompatibleError(ValueError):
@@ -183,7 +181,6 @@ class CompanyEvidenceRequest:
     observed_at: datetime
     configuration: CompanySyncConfiguration
     event_policy: CompanyEventPolicy
-    news_codes: tuple[str, ...] = ()
     stock_names: tuple[tuple[str, str], ...] = ()
     listings: tuple[CompanyListing, ...] = ()
     fill_missing: bool = False
@@ -196,7 +193,6 @@ class CompanyEvidenceRequest:
         configuration: CompanySyncConfiguration,
         event_policy: CompanyEventPolicy,
         *,
-        news_codes: tuple[str, ...] = (),
         fill_missing: bool = False,
     ) -> CompanyEvidenceRequest:
         population = reference.eligible_universe
@@ -205,7 +201,6 @@ class CompanyEvidenceRequest:
             observed_at=observed_at,
             configuration=configuration,
             event_policy=event_policy,
-            news_codes=news_codes,
             stock_names=tuple((item.code, item.name) for item in population),
             listings=tuple(CompanyListing(item.code, item.listed_on) for item in population),
             fill_missing=fill_missing,
@@ -533,7 +528,7 @@ class StructuredCompanyPage:
 
 CompanyOperationKind = Literal[
     "prepare", "inventory", "directory", "download", "text", "ocr", "document_commit",
-    "structured", "annual_income", "news", "publication", "collection_commit", "finish",
+    "structured", "annual_income", "publication", "collection_commit", "finish",
 ]
 
 
@@ -931,7 +926,6 @@ __all__ = [
     "CompanyDownloadStore",
     "CompanyFinancial",
     "CompanyRatio",
-    "Component",
     "Disclosure",
     "DisclosureMonths",
     "DisclosurePage",

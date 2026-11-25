@@ -11,31 +11,24 @@ import pytest
 
 from scripts.core.paths import PROJECT_ROOT
 from scripts.download.history import repack
-from scripts.engineering.migration import cli as migration_cli
 from scripts.recommendation.assets import cli as assets_cli
 
 
 @pytest.mark.parametrize(
-    "module,identity,arguments",
+    "identity,arguments",
     (
-        (migration_cli, "migration", ["--sou", "/external/source", "--config", "/external/config.json"]),
-        (migration_cli, "migration-build", ["--source", "/external/source", "--tar", "/external/target", "--default-profile", "v2"]),
-        (migration_cli, "migration-rollback", ["--tar", "/external/target", "--backup", "/external/backup"]),
-        (repack, "history-repack-build", ["--source", "/external/source", "--tar", "/external/target"]),
-        (repack, "history-repack-activate", ["--source", "/external/source", "--tar", "/external/target"]),
-        (repack, "history-repack-rollback", ["--source", "/external/source", "--tar", "/external/target"]),
-        (repack, "history-repack-finalize", ["--source", "/external/source", "--tar", "/external/target", "--training-root", "/external/training", "--memory-evidence", "/external/memory.json"]),
+        ("history-repack-build", ["--source", "/external/source", "--tar", "/external/target"]),
+        ("history-repack-activate", ["--source", "/external/source", "--tar", "/external/target"]),
+        ("history-repack-rollback", ["--source", "/external/source", "--tar", "/external/target"]),
+        ("history-repack-finalize", ["--source", "/external/source", "--tar", "/external/target", "--training-root", "/external/training", "--memory-evidence", "/external/memory.json"]),
     ),
 )
-def test_maintenance_rejects_abbreviated_paths_before_loading_configuration_or_running(module, identity, arguments, monkeypatch) -> None:
-    policy = Mock(side_effect=AssertionError("configuration loaded"))
+def test_maintenance_rejects_abbreviated_paths_before_loading_configuration_or_running(identity, arguments, monkeypatch) -> None:
     coordinator = Mock(side_effect=AssertionError("maintenance started"))
-    monkeypatch.setattr(migration_cli, "_sqlite_policy", policy)
     monkeypatch.setattr(repack, "_coordinator", coordinator)
     with pytest.raises(SystemExit) as failure:
-        module.Run(identity, arguments)
+        repack.Run(identity, arguments)
     assert failure.value.code == 2
-    policy.assert_not_called()
     coordinator.assert_not_called()
 
 
@@ -127,9 +120,6 @@ def test_outer_interruption_reaps_a_nested_session_through_worker_finally(tmp_pa
     (
         ("scripts.recommendation.assets.cli", "assets"),
         ("scripts.recommendation.assets.cli", "assets-generate"),
-        ("scripts.engineering.migration.cli", "migration"),
-        ("scripts.engineering.migration.cli", "migration-build"),
-        ("scripts.engineering.migration.cli", "migration-rollback"),
         ("scripts.download.history.repack", "history-repack-build"),
         ("scripts.download.history.repack", "history-repack-activate"),
         ("scripts.download.history.repack", "history-repack-rollback"),
@@ -153,7 +143,6 @@ def test_help_finishes_before_loading_maintenance_or_configuration(module: str, 
             module,
             identity,
             "scripts.recommendation.assets.generation",
-            "scripts.engineering.migration.operations",
             "trader.bootstrap",
             "trader.infra.settings",
             "trader.download.infra.history_partition_repack",
@@ -203,52 +192,6 @@ def test_asset_mismatch_is_a_failed_read_only_result(monkeypatch) -> None:
     assert outcome.exit_code == 1
     assert outcome.payload["status"] == "failed"
     asset.write_text.assert_not_called()
-
-
-def test_migration_build_keeps_candidate_schema_and_failure_code(monkeypatch, tmp_path: Path) -> None:
-    from scripts.engineering.migration import operations
-
-    manifest = operations.MigrationManifest("a" * 64, "b" * 64, 0, 0, ("models",), ())
-    candidate = Mock(return_value=manifest)
-    monkeypatch.setattr(operations, "migrate", candidate)
-    monkeypatch.setattr(migration_cli, "_sqlite_policy", lambda _configuration: object())
-    arguments = ["--source", str(tmp_path / "source"), "--target", str(tmp_path / "candidate"), "--default-profile", "v2"]
-
-    outcome = migration_cli.Run("migration-build", arguments)
-    assert outcome.exit_code == 0
-    assert "schema_version" not in outcome.payload
-    assert outcome.payload["state"] == "candidate_verified"
-    candidate.assert_called_once()
-    assert not tuple(tmp_path.iterdir())
-
-    candidate.side_effect = operations.MigrationError("migration_source_changed")
-    failed = migration_cli.Run("migration-build", arguments)
-    assert failed.exit_code == 1
-    assert failed.payload["state"] == "failed"
-    assert failed.payload["error_code"] == "migration_source_changed"
-
-
-def test_migration_rollback_does_not_load_sqlite_configuration(monkeypatch, tmp_path: Path) -> None:
-    from scripts.engineering.migration import operations
-
-    restore = Mock()
-    monkeypatch.setattr(operations, "rollback", restore)
-    monkeypatch.setattr(migration_cli, "_sqlite_policy", Mock(side_effect=AssertionError("configuration loaded")))
-    outcome = migration_cli.Run("migration-rollback", ["--target", str(tmp_path / "target"), "--backup", str(tmp_path / "backup")])
-    assert outcome.exit_code == 0
-    assert outcome.payload["state"] == "rolled_back"
-    restore.assert_called_once_with(tmp_path / "target", tmp_path / "backup")
-    assert not tuple(tmp_path.iterdir())
-
-
-def test_migration_paths_still_reject_project_and_relative_inputs(tmp_path: Path) -> None:
-    from scripts.engineering.migration import operations
-
-    with pytest.raises(operations.MigrationError, match="outside_repository"):
-        operations._external_path(PROJECT_ROOT / "data")
-    with pytest.raises(operations.MigrationError, match="absolute_external_paths"):
-        operations._external_path(Path("relative"))
-    assert operations._external_path(tmp_path) == tmp_path.resolve()
 
 
 @pytest.mark.parametrize(

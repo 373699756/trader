@@ -28,7 +28,7 @@ from trader.download.application.progress_message import (
     ProgressTask,
 )
 from trader.download.application.company_round_progress import (
-    CompanyEventFieldCoverage, CompanyFieldOutcomeCounts, CompanyFormalCoverage, CompanyRequestProgress, IsCompanyNewsReference,
+    CompanyEventFieldCoverage, CompanyFieldOutcomeCounts, CompanyFormalCoverage, CompanyRequestProgress,
 )
 from trader.download.infra.progress_projection import ProgressNumber
 from trader.download.entrypoints.sync_progress import SyncProgress
@@ -140,26 +140,26 @@ def ReportCompanyFailure(
 _LABELS = {
     "prepare": "准备资料", "resume": "断点恢复", "st_eligibility": "ST资格", "calendar": "交易日历",
     "financial": "财务", "annual_income": "年度营收", "pledge": "质押", "unlock": "解禁",
-    "announcements": "目录", "risk_documents": "正文", "news": "新闻", "facts": "核验",
+    "announcements": "目录", "risk_documents": "正文", "facts": "核验",
     "publish": "正式发布", "finish": "收尾", "complete": "结果汇总",
 }
 _UNITS = {
     "prepare": "项", "resume": "篇", "st_eligibility": "股", "calendar": "份", "financial": "页",
     "annual_income": "组", "pledge": "页", "unlock": "页", "announcements": "范围",
-    "risk_documents": "篇", "news": "股", "facts": "股", "publish": "股", "finish": "项", "complete": "股",
+    "risk_documents": "篇", "facts": "股", "publish": "股", "finish": "项", "complete": "股",
 }
 _OPERATIONS: dict[CompanyOperationKind, str] = {
     "prepare": "准备", "inventory": "核对库存", "directory": "目录查询", "download": "下载",
     "text": "文本提取", "ocr": "OCR", "document_commit": "正文入库", "structured": "结构化查询",
-    "annual_income": "年度营收", "news": "新闻查询", "publication": "核验发布",
+    "annual_income": "年度营收", "publication": "核验发布",
     "collection_commit": "资料入库", "finish": "收尾",
 }
 _SOURCES = {"cninfo": "巨潮", "eastmoney": "东财", "eastmoney_news": "东财", "eastmoney_annual_income": "东财", "local": "本地"}
 _TASK_GROUPS = (
     ("prepare", "resume"), ("financial",), ("pledge",), ("unlock",), ("announcements",),
-    ("risk_documents",), ("facts", "publish"), ("annual_income", "news"), ("finish",),
+    ("risk_documents",), ("facts", "publish"), ("annual_income",), ("finish",),
 )
-_GROUP_LABELS = ("准备恢复", "财务", "质押", "解禁", "目录", "正文", "核验发布", "营收新闻", "收尾")
+_GROUP_LABELS = ("准备恢复", "财务", "质押", "解禁", "目录", "正文", "核验发布", "营收", "收尾")
 
 
 def _source_label(sources: tuple[str, ...]) -> str:
@@ -180,7 +180,6 @@ _FAMILY_NAMES = {
     CompanySyncFamily.UNLOCK: "东财解禁",
     CompanySyncFamily.ANNOUNCEMENTS: "巨潮公告",
     CompanySyncFamily.ANNUAL_INCOME: "东财年度营收",
-    CompanySyncFamily.NEWS: "历史辅助新闻",
     CompanySyncFamily.FIELDS: "本地字段核验",
 }
 _JournalStep = tuple[str, CompanySyncFamily, int]
@@ -696,8 +695,6 @@ def _family_status(family: CompanySyncFamilyResult, result: CompanySyncRoundResu
         return "失败"
     if step.business_complete:
         return "完成"
-    if IsCompanyNewsReference(family):
-        return "采集结束"
     if result.cancelled and step.can_continue:
         return "取消"
     if "source_budget_exhausted" in step.gaps or (result.budget_exhausted and step.can_continue):
@@ -1082,7 +1079,7 @@ class CompanyEvidenceProgress:
         new_failures = set(filter(None, progress.failure.split(","))) - self._reported_failures
         self._reported_failures.update(new_failures)
         messages: list[ProgressMessage] = []
-        if (progress.component in {"financial", "pledge", "unlock", "announcements", "news"}
+        if (progress.component in {"financial", "pledge", "unlock", "announcements"}
                 and progress.completion_scope == "component" and progress.status == "complete" and progress.pending == 0
                 and (progress.component != "announcements" or progress.dates is not None
                      and progress.dates.completed_days == progress.dates.total_days)):
@@ -1323,8 +1320,6 @@ class CompanyEvidenceProgress:
             return f"正式覆盖{progress.completed}/{_quantity(self._population)}股；本轮提交{len(self._committed_codes)}股"
         if progress.component == "announcements":
             return f"目录已持久推进{progress.completed}个范围，已知待补{_quantity(progress.pending)}个范围（可继续细分）；已知待取{progress.known_pages}页、待发现页数的查询{progress.unknown_queries}个"
-        if progress.component == "news" and progress.completed == progress.pending == 0:
-            return "无候选，未抓取新闻；本轮未覆盖"
         if progress.component == "complete":
             return f"目录待补{_quantity(progress.pending)}个范围；正文待补{_quantity(progress.pending_documents)}篇；本轮变更{len(self._changed_codes)}股（去重）"
         return f"{_LABELS[progress.component]}{progress.completed}/{total}{_UNITS[progress.component]}"
@@ -1444,7 +1439,6 @@ def _failure_text(failure: str) -> str:
         "financial": "财务",
         "pledge": "质押",
         "unlock": "解禁",
-        "news": "新闻",
     }
     reasons = {
         "source_stopped": "来源暂缓（连续失败或限流）",

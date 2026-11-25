@@ -103,25 +103,6 @@ class CompanyRatioProducer:
         return CompanySyncStepResult(True, False, pending_count=0)
 
 
-class CompanyRetiredNewsProducer:
-    """Settle a retired local phase using the exact plan of an active round."""
-
-    def __init__(self, plan: CompanySyncPhasePlan) -> None:
-        if plan.family is not CompanySyncFamily.NEWS:
-            raise ValueError("company_retired_news_plan_invalid")
-        self._plan = plan
-
-    @property
-    def plan(self) -> CompanySyncPhasePlan:
-        return self._plan
-
-    def state(self, scope: CompanySyncRoundScope) -> CompanySyncPhaseState:
-        return CompanySyncPhaseState(CanonicalDigest("news_automatic_collection_retired"), False)
-
-    def advance(self, scope: CompanySyncRoundScope, *, cancel_requested: Callable[[], bool], deadline: float) -> CompanySyncStepResult:
-        return CompanySyncStepResult(True, False, pending_count=0, gaps=("news_automatic_collection_retired",))
-
-
 @dataclass(frozen=True, slots=True)
 class _RequiredDocument:
     disclosure: Disclosure
@@ -534,7 +515,7 @@ class CompanyAnnouncementProducer:
         ))
 
 
-__all__ = ["CompanyRatioProducer", "CompanyRetiredNewsProducer", "CompanyAnnouncementProducer"]
+__all__ = ["CompanyRatioProducer", "CompanyAnnouncementProducer"]
 
 
 def _risk_priority(title: str) -> bool:

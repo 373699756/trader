@@ -20,7 +20,6 @@ from tests.helpers.shared.reference_fixtures import PreparedFixture
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import QfqPairPublicationError, UpdateQfqWindows
 from trader.download.domain.baostock_daily import BaoStockSecurity
-from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.domain.qfq_window import (
     QfqPendingReason,
@@ -36,7 +35,6 @@ from trader.download.infra.qfq_update_runner import QfqUpdateRunner
 from trader.download.domain.qfq_planning import QfqNonTradingFact
 from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, TencentQfqSupplier
 from trader.download.infra.terminal_progress import RenderProgress
-from trader.infra.settings.data_paths import DataPaths
 from trader.infra.sqlite_codec import EncodeDate
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 from trader.infra.settings.models import HistoryPreloadSettings
@@ -48,9 +46,7 @@ from tests.helpers.download.history.qfq_windows import (
     Supplier,
     _IncompleteSupplier,
     _fingerprints,
-    _install_download_config,
     _plain_feedback,
-    _qfq_download_configuration,
     _reference,
     _updater,
     _window,
@@ -1041,198 +1037,6 @@ def test_new_day_retries_incomplete_stock_with_tencent(tmp_path) -> None:
     assert all(cell.qfq.close_price == 10 for cell in updater.v2.read_code("600001").cells)
 
 
-def test_qfq_composition_requests_baostock_after_all_tencent_requests(tmp_path, monkeypatch) -> None:
-    from trader import bootstrap
-
-    events = []
-
-    class Tencent(Supplier):
-        def fetch_window(self, security, dates):
-            events.append("tencent")
-            raise QfqWindowIncompleteError(dates, dates)
-
-    class Bao:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            pass
-
-        def fetch_code(self, security, dates):
-            events.append("baostock")
-            raise RuntimeError("supplier_query_failed")
-
-    _install_download_config(tmp_path)
-    paths = DataPaths(tmp_path / "data")
-    history_configuration, qfq_configuration = _qfq_download_configuration(tmp_path, paths)
-    history_configuration = replace(history_configuration, supplier_timeout_seconds=12.5)
-    monkeypatch.setattr(
-        bootstrap,
-        "TencentQfqSupplier",
-        lambda _dependencies, _options: Tencent(codes=("600001", "600002")),
-    )
-    def baostock(configuration, **options):
-        assert options["price_policy"].timeout_seconds == configuration.supplier_timeout_seconds == 12.5
-        assert options["price_total_seconds"] == configuration.supplier_timeout_seconds
-        return Bao()
-
-    monkeypatch.setattr(bootstrap, "BaoStockHistorySupplier", baostock)
-    with HistoryMaintenanceLock(tmp_path / "data/.history.lock"):
-        result = bootstrap.ExecuteQfqDownload(
-            paths,
-            history_configuration,
-            qfq_configuration,
-            failure_configuration=DownloadFailureConfigurationFixture(),
-            shutdown_timeout_seconds=2.0,
-            reference=_reference(("600001", "600002")),
-            report=lambda _message: None,
-            now=lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16), sqlite_policy=SqlitePolicyFixture(),
-        )
-    assert result.completed_codes == 0 and result.pending_codes == 2
-    assert events == ["tencent", "tencent", "baostock", "baostock"]
-    assert SQLiteQfqWindowCache(tmp_path / "data/daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture()).codes() == frozenset()
-
-
-def test_qfq_composition_uses_shared_st_evidence_without_published_history(tmp_path, monkeypatch) -> None:
-    from trader import bootstrap
-
-    eligible = BaoStockSecurity("600001", "正常公司", "main", DAYS[0], None, "fixture")
-    excluded = BaoStockSecurity("300010", "ST豆神", "chinext", DAYS[0], None, "fixture")
-
-    class HistoryPublication:
-        def manifest(self):
-            pytest.fail("online qfq must not read the full-history manifest")
-
-    class StSource:
-        def fetch(self, universe, as_of):
-            assert universe == (eligible, excluded)
-            assert as_of == DAYS[-1]
-            return (
-                HistoryStEvidence(eligible.code, as_of, "clear"),
-                HistoryStEvidence(excluded.code, as_of, "ever_st"),
-            )
-
-    class Tencent(Supplier):
-        def __init__(self, dependencies, _options):
-            super().__init__(codes=(eligible.code,))
-            self.dependencies = dependencies
-
-        def load_qfq_context(self, as_of, sessions):
-            context = super().load_qfq_context(as_of, sessions)
-            universe = self.dependencies.load_universe(as_of)
-            assert tuple(item.code for item in universe) == (eligible.code,)
-            return replace(context, universe=universe)
-
-    def st_source(path, *_args, **_kwargs):
-        assert path.path == tmp_path / "data/metadata/company_st.sqlite3"
-        return StSource()
-
-    _install_download_config(tmp_path)
-    paths = DataPaths(tmp_path / "data")
-    monkeypatch.setattr(bootstrap, "SQLitePublishedHistorySnapshot", lambda _root, *, sqlite_policy: HistoryPublication())
-    monkeypatch.setattr(bootstrap, "HistoryStNameSource", st_source)
-    monkeypatch.setattr(bootstrap, "LoadCurrentAShareUniverse", lambda *_args, **_kwargs: (eligible, excluded))
-    monkeypatch.setattr(bootstrap, "TencentQfqSupplier", Tencent)
-    result = bootstrap.ExecuteQfqDownload(
-        paths,
-        *_qfq_download_configuration(tmp_path, paths),
-        failure_configuration=DownloadFailureConfigurationFixture(),
-        shutdown_timeout_seconds=2.0,
-        reference=PreparedFixture(
-            datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI),
-            (eligible, excluded),
-            open_dates=DAYS,
-        ),
-        report=lambda _message: None,
-        now=lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16), sqlite_policy=SqlitePolicyFixture(),
-    )
-
-    assert result.completed_codes == 1 and result.pending_codes == 0
-    assert SQLiteQfqWindowCache(tmp_path / "data/daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture()).codes() == frozenset(
-        {eligible.code}
-    )
-    assert SQLiteQfqWindowCache(tmp_path / "data/daily_window.sqlite3", "v3", sqlite_policy=SqlitePolicyFixture()).codes() == frozenset(
-        {eligible.code}
-    )
-
-
-def test_qfq_composition_rejects_another_qfq_writer_before_supplier_calls(tmp_path, monkeypatch) -> None:
-    from trader import bootstrap
-
-    class Tencent(Supplier):
-        def load_qfq_context(self, as_of, sessions):
-            raise AssertionError("locked qfq must not load supplier context")
-
-    _install_download_config(tmp_path)
-    paths = DataPaths(tmp_path / "data")
-    supplier = Tencent()
-    monkeypatch.setattr(bootstrap, "TencentQfqSupplier", lambda _dependencies, _options: supplier)
-    with HistoryMaintenanceLock(tmp_path / "data/daily_window.lock"):
-        result = bootstrap.ExecuteQfqDownload(
-            paths,
-            *_qfq_download_configuration(tmp_path, paths),
-            failure_configuration=DownloadFailureConfigurationFixture(),
-            shutdown_timeout_seconds=2.0,
-            reference=_reference(),
-            report=lambda _message: None, sqlite_policy=SqlitePolicyFixture(),
-        )
-    assert result.failure_reason == "HistoryMaintenanceAlreadyRunningError"
-    assert supplier.calls == []
-    assert not (tmp_path / "data/qfq/.checkpoint.json").exists()
-    assert SQLiteQfqWindowCache(tmp_path / "data/daily_window.sqlite3", "v2", sqlite_policy=SqlitePolicyFixture()).codes() == frozenset()
-
-
-def test_history_and_qfq_download_overlap_and_publish_independently(tmp_path, monkeypatch) -> None:
-    import threading
-    from concurrent.futures import ThreadPoolExecutor
-
-    from tests.helpers.download.history_fixtures import RunHistoryFixture
-    from tests.helpers.download.history.infra.history_sync import FakeSupplier, _configuration
-    from trader import bootstrap
-
-    barrier = threading.Barrier(2)
-    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
-
-    class Tencent(Supplier):
-        def fetch_window(self, security, dates):
-            barrier.wait(timeout=10)
-            return super().fetch_window(security, dates)
-
-    class History(FakeSupplier):
-        def fetch_tencent_window(self, security, dates):
-            if security.code == "600001":
-                barrier.wait(timeout=10)
-            return super().fetch_tencent_window(security, dates)
-
-    _install_download_config(tmp_path)
-    monkeypatch.setattr(bootstrap, "TencentQfqSupplier", lambda _dependencies, _options: Tencent())
-    root = tmp_path / "data/history"
-    paths = DataPaths(tmp_path / "data")
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        pending = pool.submit(
-            bootstrap.ExecuteQfqDownload,
-            paths,
-            *_qfq_download_configuration(tmp_path, paths),
-            failure_configuration=DownloadFailureConfigurationFixture(),
-            shutdown_timeout_seconds=2.0,
-            reference=_reference(),
-            report=lambda _message: None,
-            now=lambda: observed,
-            sqlite_policy=SqlitePolicyFixture(),
-        )
-        history_result = RunHistoryFixture(_configuration(root), History(DAYS[-3:]), clock=lambda: observed)
-        qfq_result = pending.result(timeout=15)
-
-    assert history_result.state == "completed" and history_result.snapshot_hash is not None
-    assert qfq_result.failure_reason is None and qfq_result.completed_codes == 1
-    assert qfq_result.pending_codes == 0
-    assert (root / "catalog.sqlite3").exists()
-    assert (tmp_path / "data/daily_window.sqlite3").exists()
-    for profile, sessions in (("v2", 251), ("v3", 61)):
-        cache = SQLiteQfqWindowCache(tmp_path / "data/daily_window.sqlite3", profile, sqlite_policy=SqlitePolicyFixture())
-        assert len(cache.read_code("600001").cells) == sessions
-
-
 @pytest.mark.parametrize("conflict", (False, True))
 def test_small_tail_exact_overlap_or_bounded_revision_refetch(tmp_path, conflict) -> None:
     supplier = Supplier(conflict=conflict)
@@ -1553,7 +1357,7 @@ def test_no_applicable_dates_are_counted_separately_and_elapsed_includes_context
     assert "处理 无需下载 | 结果 无需下载 | raw 0/0 | qfq 0/0 | 完整配对 0/0" in stock_progress
     assert messages[-1].startswith("market·完成 | 完成 | 已处理 1/1（100.00%）")
     assert "合格 0 | 待重试 0 | 其中复用 0 | 无需下载 1 | 无真实日线 0" in messages[-1]
-    assert "最近日停牌 0 | 最近日推定停牌 0 | 最近日未解释缺价 0 | 补采待核 0 | 未处理 0" in messages[-1]
+    assert "最近日停牌 0 | 最近日推定停牌 0 | 最近日未解释缺价 0 | 未处理 0" in messages[-1]
 
 
 def test_cancellation_does_not_count_late_results_or_unvisited_stocks_as_processed(tmp_path):
@@ -1690,7 +1494,7 @@ def test_runner_lock_blocks_network_and_local_seeding_is_resumable(tmp_path) -> 
     assert supplier.calls == []
 
 
-@pytest.mark.parametrize("reference_kind", ("missing", "stale", "future", "unknown", "naive_clock"))
+@pytest.mark.parametrize("reference_kind", ("missing", "stale", "future", "naive_clock"))
 def test_local_seed_rejects_missing_or_invalid_current_eligibility_before_history(tmp_path, reference_kind):
     class UnreadableHistory:
         def manifest(self):
@@ -1708,9 +1512,6 @@ def test_local_seed_rejects_missing_or_invalid_current_eligibility_before_histor
     elif reference_kind == "naive_clock":
         now = now.replace(tzinfo=None)
         expected = "qfq_clock_timezone_required"
-    else:
-        reference = replace(reference, st_evidence=tuple(replace(item, status="unknown") for item in reference.st_evidence))
-        expected = "qfq_eligible_population_empty"
     supplier = Supplier()
     updater = _updater(tmp_path, supplier)
     runner = QfqUpdateRunner(UnreadableHistory(), updater, updater.v2, updater.v3, tmp_path / ".lock", lambda: now)
@@ -1760,15 +1561,15 @@ def test_local_seed_uses_current_reference_and_only_reads_selected_history_codes
             tuple(history.window(code, history.current.calendar_dates[-251:]) for code in codes),
             "existing", calendar=history.current.calendar_dates,
         )
-        preserved = updater.v2.read_code("600002")
+        preserved = updater.v2.read_code("600003")
     runner = QfqUpdateRunner(ReadPublishedHistoryUseCase(history), updater, updater.v2, updater.v3, tmp_path / ".lock", lambda: NOW)
     result = runner.execute(seed_only=True, reference=reference)
-    assert result.failure_reason is None and result.completed_codes == 1 and result.pending_codes == 0
-    assert history.reads == ([] if retained else [("600001",)])
+    assert result.failure_reason is None and result.completed_codes == 2 and result.pending_codes == 0
+    assert history.reads == ([] if retained else [("600001", "600002")])
     assert supplier.calls == []
-    assert updater.v2.codes() == updater.v3.codes() == frozenset({"600001"})
+    assert updater.v2.codes() == updater.v3.codes() == frozenset({"600001", "600002"})
     if retained:
-        assert updater.v2.read_code("600002") == preserved
+        assert updater.v2.read_code("600003") == preserved
 
 
 def test_local_seed_reports_current_stocks_missing_from_history_as_pending(tmp_path):

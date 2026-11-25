@@ -5,7 +5,9 @@ from tests.helpers.training.training_resources import TrainingSampleSettingsFixt
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 
 import math
+from pathlib import Path
 from shutil import copytree
+from types import SimpleNamespace
 
 from dataclasses import replace
 
@@ -27,6 +29,8 @@ from trader.recommendation.domain.market.v5.features import CalculatePriceVolume
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 
+from trader.training.application.profile_training import TrainingRunResult
+from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort
 from trader.training.infra.d25.artifact import (
     D25ProbabilityArtifact, D25ProbabilityBinding, HasD25Probability, StageD25Probability,
 )
@@ -40,14 +44,13 @@ from trader.training.infra.model_bundles.profile_publication import (
     InspectPublishedProfileBundles, PublishStrategyModelDirectory,
 )
 from trader.training.infra.research.close_return.scoring import LoadDiagnosticScoringProfile
+from trader.training.infra.research.close_return.v5_contracts import V5_TRAINING_PROFILE
 
 
 
 from trader.training.infra.tcn.tensors import DecodeTcnNetwork, DecodeTcnTensors, TensorShapes
 
-from trader.training.infra.research.close_return.v5_training import RunV5Training
-
-from trader.training.infra.training_settings import LoadProfileTrainingSettings
+from trader.training.infra.training_settings import LoadProfileTrainingSettings, ProfileTrainingSettings
 
 from tests.helpers.training.configuration import TcnFittingParametersFixture
 
@@ -56,6 +59,28 @@ from tests.helpers.training.profiles.v5.v5_training import (
     _history,
     _point,
 )
+
+
+def _run_v5_training(
+    history: SimpleNamespace,
+    models: Path,
+    settings: ProfileTrainingSettings,
+    progress: TomorrowTrainingProgressPort | None = None,
+) -> TrainingRunResult:
+    return RunProfileTraining(
+        ProfileTrainingRequest(
+            history.history_root,
+            models,
+            V5_TRAINING_PROFILE,
+            V5_TRAINING_PROFILE.heads,
+            settings,
+            progress,
+            sample_root=models.parent / "samples",
+            sample_settings=TrainingSampleSettingsFixture(),
+            industry_snapshot=history.snapshot.industry_snapshot,
+        ),
+        sqlite_policy=SqlitePolicyFixture(),
+    )
 
 
 def test_missing_future_label_reports_exact_partition_without_discarding_other_head(tmp_path, monkeypatch):
@@ -81,11 +106,7 @@ def test_missing_future_label_reports_exact_partition_without_discarding_other_h
 
     history.iter_training_rows = rows
     monkeypatch.setattr("trader.training.infra.engine.SQLiteHistoryTrainingInputSnapshot.open", lambda _p, *, industry_snapshot, sqlite_policy: history)
-    result = RunV5Training(
-        history.history_root, tmp_path / "models", sample_root=tmp_path / "samples", settings=settings, sqlite_policy=SqlitePolicyFixture(),
-        sample_settings=TrainingSampleSettingsFixture(),
-        industry_snapshot=history.snapshot.industry_snapshot,
-    )
+    result = _run_v5_training(history, tmp_path / "models", settings)
     assert result.status == "blocked"
     d25 = next(head for head in result.heads if head.strategy is Strategy.D25)
     coverage = next(item for item in d25.coverage if item.partition == "training")
@@ -187,11 +208,7 @@ def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tm
         def publish(self, update):
             updates.append(update)
 
-    result = RunV5Training(
-        history.history_root, models, sample_root=tmp_path / "samples", settings=settings, progress=Progress(), sqlite_policy=SqlitePolicyFixture(),
-        sample_settings=TrainingSampleSettingsFixture(),
-        industry_snapshot=history.snapshot.industry_snapshot,
-    )
+    result = _run_v5_training(history, models, settings, Progress())
     assert result.status == "engineering_ready", result.heads
     assert {h.strategy for h in result.heads} == {Strategy.TOMORROW, Strategy.D25}
     for head in result.heads:
@@ -252,7 +269,7 @@ def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tm
             loaded.heads[strategy].predictor.predict((ModelInput("600000", (0.1,) * width, "capco:J66货币金融服务"),))
     original = {p: p.read_bytes() for p in models.rglob("*.json")}
     rejected = replace(settings, fitting=replace(settings.fitting, minimum_industry_training_rows=1000000))
-    failed = RunV5Training(history.history_root, models, sample_root=tmp_path / "samples", settings=rejected, sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture(), industry_snapshot=history.snapshot.industry_snapshot)
+    failed = _run_v5_training(history, models, rejected)
     assert failed.status != "engineering_ready"
     assert all(p.read_bytes() == before for p, before in original.items())
 
@@ -263,14 +280,11 @@ def test_v5_actual_dual_head_fit_publish_reload_and_failed_run_preserves_pair(tm
                 raise InterruptedError("cancelled fixture")
 
     with pytest.raises(InterruptedError):
-        RunV5Training(
-            history.history_root,
+        _run_v5_training(
+            history,
             models,
-            sample_root=tmp_path / "samples",
-            settings=replace(settings, fitting=replace(settings.fitting, seed=1)),
-            progress=_CancelledFit(), sqlite_policy=SqlitePolicyFixture(),
-            sample_settings=TrainingSampleSettingsFixture(),
-            industry_snapshot=history.snapshot.industry_snapshot,
+            replace(settings, fitting=replace(settings.fitting, seed=1)),
+            _CancelledFit(),
         )
     assert all(p.read_bytes() == before for p, before in original.items())
 

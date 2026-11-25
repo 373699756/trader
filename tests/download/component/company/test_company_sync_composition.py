@@ -191,17 +191,20 @@ def test_old_formal_schema_is_identified_before_other_company_stores_are_created
     assert not settings.data_paths.company_sync.exists()
 
 
-def test_retired_company_layout_is_rejected_without_creating_new_stores(tmp_path, monkeypatch):
+def test_company_sync_uses_current_database_names_when_other_files_exist(tmp_path, monkeypatch):
     settings, physical = _settings(tmp_path, monkeypatch)
     paths = settings.data_paths
-    legacy = paths.retired_company_databases[0]
-    legacy.parent.mkdir(parents=True)
-    legacy.write_bytes(b"must remain intact")
+    unrelated = tuple(paths.company.parent / name for name in (
+        "company_facts.sqlite3", "company_normalized.sqlite3", "company_inputs.sqlite3", "raw/company_collection.sqlite3",
+    ))
+    for path in unrelated:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"must remain intact")
     result = bootstrap.ExecuteSync(settings.config_path, "company")
     task, = result.tasks
-    assert task.incompatible_company_store is CompanyDownloadStore.RETIRED_LAYOUT
-    assert legacy.read_bytes() == b"must remain intact" and not physical
-    assert not any(path.exists() for path in (paths.company, paths.company_sources, paths.company_sync))
+    assert task.company is not None and task.incompatible_company_store is None
+    assert not physical and all(path.read_bytes() == b"must remain intact" for path in unrelated)
+    assert all(path.is_file() for path in (paths.company, paths.company_sources, paths.company_sync))
 
 
 @pytest.mark.parametrize("cancelled", (False, True))

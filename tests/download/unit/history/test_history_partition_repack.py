@@ -48,8 +48,8 @@ from trader.training.infra.history.repack_training_evidence import (
 )
 from trader.training.infra.model_bundles.bundle_snapshot import PublishedHeadBundle
 from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
-from trader.training.infra.research.close_return.v3_training import RunRepackTomorrowTraining, RunRepackV3Training
-from trader.training.infra.research.close_return.v3_memory_evidence import TomorrowTrainingMemoryEvidence
+from trader.training.infra.research.close_return.v3_training import RunRepackV3Training
+from trader.training.infra.memory_evidence import TomorrowTrainingMemoryEvidence
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
 NOW = datetime(2026, 9, 12, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -314,7 +314,7 @@ def test_fenced_training_may_proceed_only_for_the_exact_activated_snapshot(
         lambda *_args, **_kwargs: SimpleNamespace(heads=(expected,)),
     )
 
-    result = RunRepackTomorrowTraining(
+    result = RunRepackV3Training(
         source,
         tmp_path / "data/training/models",
         settings=LoadProfileTrainingSettings(PROJECT_ROOT, "v3"),
@@ -324,9 +324,9 @@ def test_fenced_training_may_proceed_only_for_the_exact_activated_snapshot(
         industry_snapshot=CurrentIndustrySnapshotFixture(("600001",)),
     )
 
-    assert result is expected
+    assert result.heads == (expected,)
 
-    mismatch = RunRepackTomorrowTraining(
+    mismatch = RunRepackV3Training(
         source,
         tmp_path / "data/training/models",
         settings=LoadProfileTrainingSettings(PROJECT_ROOT, "v3"),
@@ -336,7 +336,8 @@ def test_fenced_training_may_proceed_only_for_the_exact_activated_snapshot(
         industry_snapshot=CurrentIndustrySnapshotFixture(("600001",)),
     )
     assert mismatch.status == "blocked"
-    assert mismatch.failure_reasons == ("history_archive_repack_activation_pending",)
+    assert tuple(head.strategy for head in mismatch.heads) == (Strategy.TOMORROW, Strategy.D25)
+    assert all(head.failure_reasons == ("history_archive_repack_activation_pending",) for head in mismatch.heads)
 
 
 def test_fenced_v3_training_uses_one_request_for_all_heads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

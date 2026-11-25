@@ -241,15 +241,25 @@ def test_review_caps_codes_and_physical_requests(tmp_path: Path) -> None:
     assert all(state.nontrading[0].checked_on == _DAYS[14] for state in remaining)
 
 
-def test_incompatible_provenance_requires_deletion_and_a_fresh_download(tmp_path: Path) -> None:
+@pytest.mark.parametrize("layout", ("date_only", "nullable_evidence", "extra_table"))
+def test_incompatible_provenance_requires_deletion_and_a_fresh_download(tmp_path: Path, layout: str) -> None:
     source = tmp_path / "sealed"
     supplier = _Supplier(suspended_on=_DAYS[14])
     updater = _updater(source, supplier)
     updater.execute(_observed(_DAYS[14]))
     with updater.v2._write_connection() as connection:
-        connection.run("DROP TABLE price_nontrading")
-        connection.run("CREATE TABLE price_nontrading(code TEXT NOT NULL,trade_date INTEGER NOT NULL,PRIMARY KEY(code,trade_date)) WITHOUT ROWID")
-        connection.run("INSERT INTO price_nontrading VALUES(?,?)", ("600001", EncodeDate(_DAYS[14])))
+        if layout == "extra_table":
+            connection.run("CREATE TABLE retired_qfq_layout (key TEXT PRIMARY KEY) WITHOUT ROWID")
+        else:
+            connection.run("DROP TABLE price_nontrading")
+            columns = ",kind TEXT NOT NULL,checked_on INTEGER,source TEXT" if layout == "nullable_evidence" else ""
+            connection.run("CREATE TABLE price_nontrading(code TEXT NOT NULL,trade_date INTEGER NOT NULL"
+                f"{columns},PRIMARY KEY(code,trade_date)) WITHOUT ROWID")
+            row = ("600001", EncodeDate(_DAYS[14]))
+            if layout == "nullable_evidence":
+                connection.run("INSERT INTO price_nontrading VALUES(?,?,'legacy_unverified',NULL,NULL)", row)
+            else:
+                connection.run("INSERT INTO price_nontrading VALUES(?,?)", row)
     before = {path.name: path.read_bytes() for path in source.iterdir() if path.is_file()}
     with pytest.raises(sqlite3.DatabaseError, match="schema_unsupported"):
         updater.v2.planning_snapshot(frozenset(supplier.codes))
@@ -477,10 +487,11 @@ def test_unknown_seed_does_not_create_confirmed_facts_and_candidates_agree(tmp_p
     updater = _updater(tmp_path, supplier)
     window = supplier.fetch_window(supplier.load_qfq_context(_DAYS[14], 251).universe[0], supplier.days)
     updater.seed((window,), _SOURCE, calendar=supplier.days)
-    legacy = updater.v2.planning_snapshot(frozenset(supplier.codes))
-    assert legacy.metadata[0].nontrading[0].kind == "legacy_unverified"
+    snapshot = updater.v2.planning_snapshot(frozenset(supplier.codes))
+    assert snapshot.metadata[0].nontrading == ()
     assert _DAYS[14] not in updater.v2.covered_dates("600001")
-    assert legacy == updater.v2.planning_snapshot(frozenset(supplier.codes), batched=True)
+    assert updater.v2.price_issues() == (PriceIssue("600001", (_DAYS[14],), "price_window_incomplete"),)
+    assert snapshot == updater.v2.planning_snapshot(frozenset(supplier.codes), batched=True)
     assert updater.v3.planning_snapshot(frozenset(supplier.codes)) == updater.v3.planning_snapshot(frozenset(supplier.codes), batched=True)
     updater.v2.record_price_issue(PriceIssue("600001", (_DAYS[0], _DAYS[14]), "wanted_fixture"))
     updater.v2.record_price_issue(PriceIssue("600002", (_DAYS[14],), "retired_fixture"))

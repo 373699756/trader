@@ -40,8 +40,7 @@ def test_cancellation_before_initialization_does_not_create_database(tmp_path):
 
 
 @pytest.mark.parametrize("during_request", (False, True))
-@pytest.mark.parametrize("component", ("pledge", "news"))
-def test_structured_request_receives_cancellation_and_discards_late_response(during_request, component):
+def test_structured_request_receives_cancellation_and_discards_late_response(during_request):
     cancelled = Event()
 
     class Transport(Session):
@@ -55,8 +54,5 @@ def test_structured_request_receives_cancellation_and_discards_late_response(dur
     if not during_request:
         cancelled.set()
     with pytest.raises(CompanySourceCancelled):
-        if component == "pledge":
-            source.pledge_day(fixtures.NOW)
-        else:
-            source.news("600001", observed_at=fixtures.NOW)
+        source.pledge_day(fixtures.NOW)
     assert len(session.requests) == int(during_request)

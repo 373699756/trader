@@ -216,25 +216,25 @@ market的结果与公开摘要新增`latest_suspended_codes`和`latest_inferred_
 
 ### 2.7 停牌事实复用与有界自动复核
 
-Tencent明确停牌解析沿348复用，不另加清单或报价请求。market的`price_nontrading`在原writer事务中保留`kind/checked_on/source`：`confirmed`是已核验明确非交易事实，`inferred`仍是来源缺行推定，`legacy_unverified`表示未附核验观察日的日期事实，不能作为明确停牌。只接受含全部证据列的当前结构，不补旧表、不双读旧投影，读边界不写库；不兼容资料按第6章明确范围拒绝并提示人工重下。价格、两档窗口、完成凭证及事实仍在同一个配对事务提交；原事实只覆盖原日期，来源不符或核验日来自未来时不复用，已确认日期不因随后仅缺行而降为推定。
+Tencent明确停牌解析沿348复用。market的`price_nontrading`在原writer事务中保存核验日期和来源，类型分为依据明确停牌的`confirmed`以及来源缺行推定的`inferred`。缺少核验证据时将该日期记录为待补。价格、两档窗口、完成凭证及事实在同一事务提交。先核对原事实的日期、来源和观察时点，再决定是否复用。已确认日期保留原证据。
 
-同日重跑可复用完整同窗内的明确停牌；下一交易日不以旧`S`推断继续停牌。market只读价格接口继续返回真实价格，非交易事实通过有类型规划对象参与覆盖和请求合并。内部seed只有核验合法history发布后才显式传本地读取观察日，并保留`history:<snapshotHash>`；省略观察日仍为未核验，原推定状态不升级明确。history保留原逐日状态，以catalog附加复核元数据记录已发现推定日和轮询游标，不改已发布价格或旧快照。
+同日重跑可复用完整同窗内的明确停牌；下一交易日不以旧`S`推断继续停牌。market只读价格接口继续返回真实价格，非交易事实通过有类型规划对象参与覆盖和请求合并。内部seed核验合法history发布后显式传本地读取观察日，并保留`history:<snapshotHash>`。无观察日的停牌日期进入待补。history在普通下载确认事务中登记推定停牌。复核按已登记事实的期限索引选择证券，选中后读取对应日期及价格锚点。
 
 配置来源：`config/download.json`的唯一`price_review`组，由history和market共用；所有叶子在配置边界严格解析，不缺省回退到另一套配置。
 
 | 字段 | 当前值/单位 | 用途与消费者 |
 | --- | --- | --- |
 | `interval_sessions` | 5个交易日 | 推定事实的自动复核间隔；成功的实际来源观察才推进核验日期，失败、单纯复用不刷新 |
-| `maximum_codes` | 8股/命令 | 额外发现及复核的唯一股票预算，history按代码索引有界轮询，不默认整库扫描 |
+| `maximum_codes` | 8股/命令 | 已登记的到期事实共用这个证券额度，同一证券重复涉及多日只计一股 |
 | `maximum_requests` | 16次物理HTTP/命令 | raw/qfq、分页、重试及备用Tencent端点全部计入，正常下载不计入此额外额度 |
-| `maximum_seconds` | 15秒附加工作 | 单调时钟累计发现/复核段；段间正常下载和发布暂停计时，单次HTTP超时不超过剩余预算；已开始的原子提交/fsync及必要安全封存允许完成，其耗时仍计入完整链路 |
+| `maximum_seconds` | 15秒附加工作 | 单调时钟累计复核段；段间正常下载和发布暂停计时，单次HTTP超时不超过剩余预算；已开始的原子提交/fsync及必要安全封存允许完成，其耗时仍计入完整链路 |
 
 普通下载和既有补缺先执行，已在同次成功请求中核验的日期不再次复核。附加核验耗尽、取消或未得新事实时保留原值及后续机会，不将未知升级明确或污染普通供应商失败/缺口状态。取得迟到价格或明确新事实后，history仅在未发布的新序号写合法修订，market走原配对事务；网络失败不能抹去已保存成交。辅助新批次开始后延期返回`history_review_deferred`并保留pending；辅助延期或取消的安全收尾只封存已变文件，不推进正式快照，使新reader仍能核验并读取旧正式序号。
 
 历史／行情手动fill、限定证券范围、从正式窗口派生的辅助补采扫描及相应结果计数已按用户要求删除。普通同步继续执行当前资格／日历范围内的自动缺价修复及上表有界停牌复核，不因辅助字段空值另起全库补采，也不把未知停牌或缺失值改写为已核实。
 
 
-`sync all`在组合根创建一份预算并交给history与market；独立业务调用各建一份，adapter和domain不隐式创建预算。同步摘要增加`price_review`白名单：已检查股数、实际额外请求及耗尽原因，market还报已知待复核股数和发现是否完成；history报已发现待核股数和`discovery_pending`。发现未完成时数量只是已知下界，0不表示全历史已核实；附加预算耗尽不改变原合法发布和退出合同。
+历史同步在组合根创建独立复核预算。`price_review`结果报告已检查股数、实际额外请求、耗尽原因和已登记待复核股数。等待超限或SQLite锁争用时，库存数量是已知下界。附加预算耗尽保留已有发布与断点，沿原退出合同结束。
 
 批量规划/旧价读取、稀疏月份统计、摘要读取顺序、catalog重复收尾、Tencent分页前缀/最小行数和BaoStock冷却期探测均为显式隔离性能候选，默认关闭；默认8并发不变。同覆盖、同复核工作量和相同缓存条件的HDD对照达门后才采用，功能或mock结果不签性能。此前隔离副本上的旧结构演练仅作历史证据，当前不提供元数据升级路径；验收与待测仍见g原349及第4.5节。
 
@@ -368,7 +368,7 @@ company先ST过滤，再查合格股票的财务、质押、解禁和公告目�
 | 公告目录 | 巨潮 `hisAnnouncement/query` | 来源键、标题、披露日、证券关联、版本 | 判断目录覆盖和是否需正文 |
 | 公告正文 | 巨潮PDF | 原文、主体、案件、事件时点和证据 | 风险/利好核验 |
 
-`sync company`与`sync company fill`使用同一组正式资料来源和固定轮次。自动新闻采集已退役，历史新闻请求的消耗及未确认状态继续保留在原账本。
+`sync company`与`sync company fill`使用同一组正式资料来源和固定轮次。尚处于活动状态的请求账本含已退役步骤时，程序按不兼容的请求账本报告并停止。已消费及待核请求仍保留原记录，下载资料的重建范围限于来源资料和正式事实库。
 
 财务同一上海业务日复用不晚于本次观察时点的已确认页和成功凭据，未完成分页优先续传。新日期核对365日`NOTICE_DATE`窗口，每页500条，最多256页。观察记录保留原披露日期及确切八值，同日完成后发生的来源修正可能在下一业务日才发现。来源失败或最新报告不完整时保留合法旧快照和明确状态。年度窗口之外的首次披露仍需独立凭据。
 
@@ -699,7 +699,7 @@ local_only候选的持久路径若已失效，仅从本轮本地选择中排除�
 
 接入顺序为批量结构化测量、按事件核对缺项及证据、仅为剩余必要事项读取正文。现有资料发现、必要正文及持续风险覆盖在正式切换前仍按已实施合同执行；来源/字段验收沿g阶段332，冻结候选的完整作业成本及8小时目标证据沿第4.5节CodexC后台和原授权真实同步登记，不以缩窗、漏字段或排除恢复时间达标。
 
-年度营业收入由普通七族同步中的`CompanyAnnualIncomeProducer`按当前正式合同事实规划：正文须明确引用唯一年度，且已有正式财务事实确认该年报在一年窗口内、早于合同披露；只为发行人未取消且仍缺营收或原披露日期的合同请求对应公司、对应年度。采用Eastmoney F10的公司类型页和`lrbAjaxNew`年度利润表，每组最多5个已知报告期，沿注入HTTP、超时、取消及全轮物理请求预算执行。输入由`company_annual_income_observation`保留版本，原`company_source_task`保存精确请求意图、逐期完成和已知失败；正式合同事实与`eastmoney_annual_income`输入凭证同事务发布。该路径不取`TOTAL_OPERATE_INCOME`代替`OPERATE_INCOME`，不猜未注明的年度；同日或合同之后修订、早于已知财务版本、同版本冲突、非CNY和空值均不能补为可用依据。已发布同源同版本出现不同记录hash，也不用于补新合同，旧事实保留。补齐营收不会自行计算占比或改变税口径、资格、分数及历史等级；结构化输入凭证不等于原文逐字段出证，缺原文仍待核。
+年度营业收入由`CompanyAnnualIncomeProducer`按当前正式合同事实规划：正文须明确引用唯一年度，且已有正式财务事实确认该年报在一年窗口内、早于合同披露；只为发行人未取消且仍缺营收或原披露日期的合同请求对应公司、对应年度。采用Eastmoney F10的公司类型页和`lrbAjaxNew`年度利润表，每组最多5个已知报告期，沿注入HTTP、超时、取消及全轮物理请求预算执行。输入由`company_annual_income_observation`保留版本，原`company_source_task`保存精确请求意图、逐期完成和已知失败；正式合同事实与`eastmoney_annual_income`输入凭证同事务发布。该路径不取`TOTAL_OPERATE_INCOME`代替`OPERATE_INCOME`，不猜未注明的年度；同日或合同之后修订、早于已知财务版本、同版本冲突、非CNY和空值均不能补为可用依据。已发布同源同版本出现不同记录hash，也不用于补新合同，旧事实保留。补齐营收不会自行计算占比或改变税口径、资格、分数及历史等级；结构化输入凭证不等于原文逐字段出证，缺原文仍待核。
 
 年度producer在每个有限调度步读取当前正式合同需求，同轮新公告形成的合同可以进入后续年度步；本地准备读取已落库年度观察并复用原纯选择器，避免启动时旧事实快照漏单。年度来源协议仍绑定原轮次身份，本地字段规则变化独立重核，不借更新本地规则重置来源预算。旧`company_report_inputs`及`report_input_plan`不再是活动入口；官方原文仍沿普通公告和既有本地字段出证边界处理，不恢复逐股PDF财务自动补值。
 
@@ -850,13 +850,15 @@ local_only候选的持久路径若已失效，仅从本轮本地选择中排除�
 
 可下载数据库只支持当前结构；结构不兼容时按整套相关下载资料删除后重新下载恢复，不维护格式版本或升级兼容路径。读取、同步失败不会自动清空文件；模型、正式冻结记录和DeepSeek请求预算不属于可重下资料，不能跟随下载数据库批量删除。
 
+`sync history`初始化时核对完整目录库结构。含原停牌轮询游标表的目录库会在写入前拒绝。重下时先停止使用历史资料的任务，把 `data/history/catalog.sqlite3`、同目录全部 `prices_<year>.sqlite3` 及各自封签与 SQLite 配套文件一并移出，再运行 `./run.sh sync history`。现有封签及快照、修订身份验证通过时，已发布快照仍可按现有只读合同读取。参考资料、模型、正式冻结及请求账本分别保存。
+
 以下沿用该次移除冗余格式标记时的文件路径，现行目录见第8.1节。
 
 本次移除冗余格式标记涉及的具体结构是：`market/reference/company_st.sqlite3`去掉纯标记表，`company/raw/company_collection.sqlite3`去掉纯标记表；`market/history/catalog.sqlite3`只保留实际`reference_file`，各`market/history/prices_<year>.sqlite3`只保留实际`calendar_year`。完整当前DDL与字段校验会明确拒绝旧结构，不忽略旧编号、补表、改列、清空或自动迁移。这里只列受影响资料，没有执行删除或重新下载；历史catalog与年度发布分区须作为一致下载资料核对，不能单删一张表绕过检查。公司正式事实及规范输入的当前规则摘要另须核对，摘要失配不能补签旧证明；不由此泛化为删除整个`company/`。`company/company_sync.sqlite3`的来源请求账本、已有正文／风险原件、模型、冻结和研究记录均不属于本次删除范围。旧history-repack状态／激活报告也只接受当前完整字段与真实摘要，不升级旧报告。
 
 company在初始化写入及正文恢复前，只读检查当前三库结构及正式发布身份。CLI以`CompanyDatabaseIncompatibleError`明确异常范围。当前结构内的未确认发布可依精确正式回执恢复。
 
-从旧布局重下时，先停止同步和荐股服务，将 `company_facts.sqlite3`、`company_normalized.sqlite3`、`company_inputs.sqlite3` 和 `raw/company_collection.sqlite3` 连同各自的 `.sha256`、`-wal`、`-shm`、`-journal` 配套文件移至备份目录。原位保留 `company_sync.sqlite3` 及其全部配套文件、目录响应凭据、`raw/documents/`、`raw/text/` 和其它原件。然后运行 `./run.sh sync company`。程序检测到旧资料库时会报告具体范围。若账本仍有旧活跃轮次，空库只在更晚的上海日期且原轮次已到终态并满足第5.15节的恢复规则时启动。历史快照及证据索引留在备份，下载期间使用当前新库可用的资料。
+公司同步只使用当前三库路径。目录里的历史库名可以自行归档，启动时无需处理。当前来源或正式资料库结构不匹配时，停止使用该库的进程后，按诊断指出的范围处置库及对应 SQLite 配套文件和正式封签，再运行 `./run.sh sync company`。请求预算账本、已确认的请求历史和仍需留存的正式原件应原位保留。空资料库的同步启动仍受第5.15节的原轮次和上海日期约束。
 
 company最终库存位于收尾之后；收尾取消或中断不再查询库存，未核对数量保持未知。实际失败和待补原因进入终端摘要及全量同步JSON，取消退出码为130，待补为1。来源无记录不伪造运行异常，已处理但不可提取的资料另列质量未知，执行结束不代表全部字段已核实。
 
@@ -884,7 +886,7 @@ company最终库存位于收尾之后；收尾取消或中断不再查询库存�
 
 company发布身份由父版本、本批事实/来源/凭据及发布时点确定，不遍历全部正式表生成逐行摘要；没有事实或凭据变化时保留原身份。正式事实和输入成功凭据仍在同一事务，父版本冲突及回滚不能冒充成功。文件核验与字段提取正确性分别验收，前者不证明公告字段齐全。
 
-market配对价格、窗口、修复与停牌证据表由`SQLiteQfqWindowCache`按完整当前DDL一次创建。`window_population`的`profile TEXT NOT NULL`为评分档位`v2`/`v3`，`code TEXT NOT NULL`为六位代码，联合主键`(profile,code)`，无额外索引，`WITHOUT ROWID`；发布manifest、成员读取及下载诊断共同消费。停牌表直接包含`kind/checked_on/source`，不再补列或从旧绑定重建缺表；缺失当前结构的数据库拒绝读写，删除相关下载资料后重新下载。有效当前库的成员调整和配对价格仍在同一事务发布，不自动删除活动文件或给无凭据旧库补签。
+market配对价格、窗口、修复与停牌证据表由`SQLiteQfqWindowCache`按完整当前DDL一次创建。`window_population`的`profile TEXT NOT NULL`为评分档位`v2`/`v3`，`code TEXT NOT NULL`为六位代码，联合主键`(profile,code)`，无额外索引，`WITHOUT ROWID`。发布manifest、成员读取及下载诊断共同消费。停牌类型、观察日和来源为必填。发现不符合当前结构的短窗库时，退出相关任务，移走 `daily_window.sqlite3` 及其 `.sha256`、`-wal`、`-shm`、`-journal` 配套文件。正式 `sync` 入口下载完整历史和公司资料，短窗取样由独立诊断入口生成。有效当前库的成员调整和配对价格在同一事务发布。
 
 下载诊断`qfq_sqlite.py`的`profiles`仅统计发布成员；`pending_stocks`/`pending_days`保留全库问题库存，另以`published_pending_stocks`和`unpublished_pending_stocks`区分问题归属，`retained_binding_codes`显示未发布但保留绑定的不同代码数。全库配对与凭证审计继续包含保留资料，不能把库存问题数当成本轮下载分母。
 
@@ -972,7 +974,6 @@ history已有完整命令中的年度回写及连接关闭等待证据，不能�
 | price_source（WR） | code/source TEXT；sync_sequence INTEGER | PK(code,sync_sequence)；按发布序号记录价格来源，历史补缺／审计读取 |
 | price_replacement（WR） | code/board/source/payload TEXT；trade_date D；sync_sequence INTEGER | PK(code,trade_date)；`HistoryPriceRepair`记录待回放规范价格单元，核证券／日期／序号后才重放 |
 | download_inferred_suspension（WR） | code TEXT；trade_date/checked_cutoff D；observation_sequence INTEGER | PK(code,trade_date)；索引 download_inferred_review_due_idx(checked_cutoff,code,trade_date)，有预算的推定停牌复查读取／回写 |
-| download_inferred_cursor | singleton INTEGER；after_code TEXT | PK(singleton=1)；有界复查发现游标，不替代逐日已确认状态 |
 
 catalog 还包含第8.5节共同定义的 price_tencent_check、price_repair_attempt；它们由本库writer的原事务持有，没有独立修复数据库。训练到期与提醒表只在e第3.7节的独立维护库创建、读写；历史原件中的旧训练表不再作为活动维护状态读取或改写；活动catalog只接受完整当前下载结构，旧表不被忽略或自动删除。
 
@@ -1020,7 +1021,7 @@ Tencent原始日线响应若含同证券、同目标日15:00之后的qt报价，
 | window_population（WR） | profile/code TEXT | PK(profile,code)；当前发布成员，库存仍包含退出成员的保留资料，见6.1 |
 | price_issue（WR） | code/reason TEXT；trade_date D | PK(code,trade_date)；待修原因，更新／检查及诊断读取 |
 | price_candidate（WR） | code/payload TEXT；trade_date D | PK(code,trade_date)；配对修复候选，规范载荷核验后由原writer采用 |
-| price_nontrading（WR） | code/kind TEXT；trade_date D；checked_on D?；source TEXT? | PK(code,trade_date)；ObservedNonTradingFacts／ReadNonTradingFacts区分停牌事实、证据来源和核对日期 |
+| price_nontrading（WR） | code/kind/source TEXT；trade_date/checked_on D，均非空 | PK(code,trade_date)，`kind`限`confirmed`或`inferred`。ReadNonTradingFacts读取具体停牌类型、来源和核对日期 |
 
 下列修复表在catalog和market各自创建，失败表在market及company采集库各自创建，语义只在这里定义一次。均复用所在库事务；没有另外的跨业务writer。SQL见 [price_repair_attempts.py](../src/trader/download/infra/price_repair_attempts.py)、[download_failure_diagnostics.py](../src/trader/download/infra/download_failure_diagnostics.py)。
 

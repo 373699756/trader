@@ -617,25 +617,7 @@ def _parse_pipeline(payload: Mapping[str, object]) -> PipelineSnapshot:
         invalid_fields.extend(stage.invalid_fields)
     keys = tuple(stage.key for stage in stages)
     current_stage = _text(payload.get("current_stage"))
-    legacy = keys == (
-        "input_readiness",
-        "dynamic_filter",
-        "board_cross_section",
-        "strategy_history",
-        "model_input",
-        "candidate_score",
-        "board_limit",
-        "candidate_refresh",
-        "input_coverage",
-        "evidence_score",
-        "model_cost_gate",
-        "local_score",
-        "deepseek_review",
-        "fusion",
-        "action_gate",
-        "concentration",
-    )
-    if keys != _PIPELINE_STAGE_ORDER and not legacy:
+    if keys != _PIPELINE_STAGE_ORDER:
         invalid_fields.append("stages.order")
     if current_stage not in keys:
         invalid_fields.append("current_stage")
@@ -648,38 +630,20 @@ def _parse_pipeline(payload: Mapping[str, object]) -> PipelineSnapshot:
 
 
 def _parse_committed_audit(value: object) -> CommittedPipelineAudit:
-    # Old records may lack audit; never reconstruct it from the separate live input pipeline.
     if value is None or value == [] or value == ():
         return CommittedPipelineAudit(False, 0)
     if not isinstance(value, (list, tuple)):
         return CommittedPipelineAudit(True, 0, ("stage_snapshots",))
     invalid: list[str] = []
-    legacy_order = (
-        "data_source",
-        "static_market",
-        "static_standardize",
-        "static_filter",
-        "dynamic_market",
-        "dynamic_standardize",
-        "dynamic_filter",
-        "candidate_pool",
-        "quality_check",
-        "local_score",
-        "risk_review",
-        "score_merge",
-        "downside_action",
-        "final_selection",
-    )
-    legacy = _mapping(value[0]).get("stage") == "data_source"
-    order = legacy_order if legacy else _PIPELINE_STAGE_ORDER
-    if len(value) != len(order):
+    if len(value) != len(_PIPELINE_STAGE_ORDER):
         invalid.append("stage_snapshots.length")
     previous: Mapping[str, object] | None = None
     stages: list[WebPipelineStageSnapshot] = []
-    for index, raw in enumerate(value[: len(order)]):
+    for index, raw in enumerate(value[: len(_PIPELINE_STAGE_ORDER)]):
         stage = _mapping(raw)
+        stage_key = _PIPELINE_STAGE_ORDER[index]
         prefix = f"stage_snapshots[{index}]"
-        if stage.get("stage") != order[index] or _nonnegative_int(stage.get("stage_order")) != index + 1:
+        if stage.get("stage") != stage_key or _nonnegative_int(stage.get("stage_order")) != index + 1:
             invalid.append(f"{prefix}.order")
         state = _text(stage.get("state"))
         if state not in {item.value for item in StageState}:
@@ -693,20 +657,16 @@ def _parse_committed_audit(value: object) -> CommittedPipelineAudit:
                 "rejected_count",
                 "pending_count",
                 "failed_count",
-                *(() if legacy else ("not_selected_count",)),
+                "not_selected_count",
             )
         }
         inputs = counts["input_count"]
         outcomes = tuple(
-            counts.get(key, 0)
+            counts[key]
             for key in ("output_count", "rejected_count", "pending_count", "failed_count", "not_selected_count")
         )
         if inputs is not None and all(count is not None for count in outcomes):
-            if (
-                sum(count for count in outcomes if count is not None) > inputs
-                if legacy
-                else sum(count for count in outcomes if count is not None) != inputs
-            ):
+            if sum(count for count in outcomes if count is not None) != inputs:
                 invalid.append(f"{prefix}.population")
         for key in ("input_batch_id", "output_batch_id"):
             identity = _text(stage.get(key))
@@ -720,7 +680,7 @@ def _parse_committed_audit(value: object) -> CommittedPipelineAudit:
         previous = stage
         stages.append(
             _stage_details(
-                WebPipelineStageSnapshot(order[index], state, inputs, counts["output_count"], ()), stage, audit=True
+                WebPipelineStageSnapshot(stage_key, state, inputs, counts["output_count"], ()), stage, audit=True
             )
         )
     return CommittedPipelineAudit(True, len(value), tuple(invalid), tuple(stages))

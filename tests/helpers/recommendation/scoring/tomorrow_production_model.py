@@ -2,12 +2,11 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from tests.helpers.recommendation.scoring_helpers import BuildUtilityScorer, profile_for
+from tests.helpers.recommendation.scoring_helpers import BOARD_AMOUNT_EXPOSURE_FIXTURE, BuildUtilityScorer, profile_for
 from trader.recommendation.application.pipeline.local_score.model_scoring import ProductionModelScoringService
 from trader.recommendation.application.ports.loaded_profile import ModelInput, ModelPrediction
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.domain.scoring.residualization import LEGACY_EXPOSURE_CONTRACT
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
 
 NOW = datetime(2026, 8, 31, 14, 50, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -43,7 +42,7 @@ class _Predictor:
         "qfq_residual_momentum_40d_skip5",
         "qfq_residual_momentum_60d_skip5",
     )
-    exposure_contract = LEGACY_EXPOSURE_CONTRACT
+    exposure_contract = BOARD_AMOUNT_EXPOSURE_FIXTURE
     industry_ids: tuple[str, ...] = ()
 
     def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:

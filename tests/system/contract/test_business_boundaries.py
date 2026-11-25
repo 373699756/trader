@@ -617,11 +617,10 @@ def test_training_application_package_is_profile_owned_and_infrastructure_free()
 
 def test_entrypoints_route_download_and_joint_training_through_current_owners() -> None:
     commands = (PROJECT_ROOT / "src" / "trader" / "training" / "entrypoints" / "commands.py").read_text(encoding="utf-8")
-    download_commands = (PROJECT_ROOT / "src" / "trader" / "download" / "entrypoints" / "commands.py").read_text(
-        encoding="utf-8"
-    )
-    assert "ExecuteHistoryDownload" in download_commands
-    assert "DownloadHistoryUseCase" in (PROJECT_ROOT / "src/trader/bootstrap.py").read_text(encoding="utf-8")
+    cli = (PROJECT_ROOT / "src/trader/entrypoints/cli.py").read_text(encoding="utf-8")
+    bootstrap = (PROJECT_ROOT / "src/trader/bootstrap.py").read_text(encoding="utf-8")
+    assert "ExecuteSync" in cli
+    assert "ExecuteHistoryDownload" in bootstrap and "DownloadHistoryUseCase" in bootstrap
     selected = (PROJECT_ROOT / "src/trader/training/infra/selected_training.py").read_text(encoding="utf-8")
     application = (TRAINING_APPLICATION / "selected_training.py").read_text(encoding="utf-8")
     assert "RunSelectedTrainingTasks" in application

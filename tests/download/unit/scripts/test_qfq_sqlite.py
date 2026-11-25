@@ -104,6 +104,8 @@ def test_missing_database_is_not_created(tmp_path):
 
 
 def test_audit_locates_latest_absent_prices_without_claiming_confirmed_suspension(tmp_path):
+    from trader.download.domain.qfq_planning import QfqNonTradingFact
+
     path = tmp_path / "daily_window.sqlite3"
     primary = SQLiteQfqWindowCache(path, "v2", sqlite_policy=SqlitePolicyFixture())
     peer = SQLiteQfqWindowCache(path, "v3", sqlite_policy=SqlitePolicyFixture())
@@ -115,7 +117,8 @@ def test_audit_locates_latest_absent_prices_without_claiming_confirmed_suspensio
         for cell in window.cells[-251:]
     ))
     primary.replace_paired_windows(
-        peer, (window,), "fixture", QFQ_CONFIGURATION, calendar=days, completed_day=days[-1]
+        peer, (window,), "fixture", QFQ_CONFIGURATION, calendar=days, completed_day=days[-1],
+        nontrading_facts=tuple(QfqNonTradingFact("600001", day, "inferred", days[-1], "fixture") for day in days[-2:]),
     )
     before = hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mtime_ns
 

@@ -262,13 +262,18 @@ def test_v3_research_repack_is_separate_from_the_two_production_models() -> None
     shared_training_root = SOURCE_ROOT / "training/infra"
 
     assert not (SOURCE_ROOT / "infra/tomorrow_production_model.py").exists()
-    offline_training_modules = {
+    assert (research / "v3_training.py").is_file()
+    retired_training_wrappers = {
+        "v2_training.py",
+        "v3_memory_evidence.py",
         "v3_sample_builder.py",
-        "v3_training.py",
         "v3_sample_index.py",
+        "v5_training.py",
     }
-    assert all((research / name).is_file() for name in offline_training_modules)
+    assert all(not (research / name).exists() for name in retired_training_wrappers)
     assert (shared_training_root / "model_fitting.py").is_file()
+    assert (shared_training_root / "sample_builder.py").is_file()
+    assert (shared_training_root / "sample_index.py").is_file()
     assert (shared_training_root / "tomorrow/v3/model.py").is_file()
     assert (shared_training_root / "d25/v3/probability.py").is_file()
     assert not any((shared_training_root / "profile/v3").rglob("*.py"))

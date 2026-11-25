@@ -8,7 +8,7 @@ from enum import Enum
 from typing import Literal
 
 ProgressState = Literal[
-    "开始", "处理中", "等待", "重试", "完成", "失败", "取消", "待补证", "待继续", "暂停", "阻塞", "采集结束",
+    "开始", "处理中", "等待", "重试", "完成", "失败", "取消", "待补证", "待继续", "暂停", "阻塞",
 ]
 
 

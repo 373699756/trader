@@ -226,7 +226,10 @@ def _merge_complete_realtime(
     if set(sources) != set(_SOURCE_PRIORITY):
         return None
     if any(
-        observation.status != "success" or len(observation.fields) != len(_QUOTE_FIELDS) or observation.missing_reasons
+        observation.status != "success"
+        or observation.security_identity != observation.subject_key
+        or len(observation.fields) != len(_QUOTE_FIELDS)
+        or observation.missing_reasons
         for observation in observations
     ):
         return None

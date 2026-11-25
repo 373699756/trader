@@ -14,8 +14,12 @@ from trader.recommendation.application.ports.loaded_profile import (
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
+from trader.recommendation.domain.scoring.residualization import ExposureContract
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
 from trader.training.infra.model_bundles.composition import SingleHeadCombiner
+
+
+BOARD_AMOUNT_EXPOSURE_FIXTURE = ExposureContract(("market", "board", "log_average_amount_20d"))
 
 
 def BuildUtilityScorer(

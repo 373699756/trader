@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from trader.download.application.company_round_progress import CompanyRequestProgress
 from trader.download.application.company_sync import CompanyDirectoryResponseReceipt
+from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDownloadStore
 from trader.download.infra.company_disclosure_source import CNINFO_DIRECTORY_URL
 from trader.download.infra.company_sync_io import CompanySyncIoBudget
 from trader.download.domain.company_sync import CompanySyncRoundIdentity
@@ -122,7 +123,7 @@ class SQLiteCompanySyncRoundJournal:
     def validate_existing(self) -> None:
         if self.path.exists():
             with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
-                EnsureSqliteSchema(connection, _SCHEMA, exact=True)
+                EnsureSqliteSchema(connection, _SCHEMA, validate=_validate_active_families, exact=True)
 
     def active(self) -> CompanySyncResume | None:
         with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection):
@@ -130,7 +131,7 @@ class SQLiteCompanySyncRoundJournal:
             if row is None:
                 return None
             codes = tuple(item[0] for item in connection.run("SELECT code FROM company_sync_code WHERE round_id=? ORDER BY code", (row[0],)))
-            plans = tuple(CompanySyncPhasePlan(CompanySyncFamily(item[0]), item[1], _strings(item[2]), bool(item[3])) for item in connection.run(
+            plans = tuple(CompanySyncPhasePlan(_phase_family(item[0]), item[1], _strings(item[2]), bool(item[3])) for item in connection.run(
                 "SELECT family,request_hash,gaps,refresh_on_input_change FROM company_sync_plan WHERE round_id=? ORDER BY position", (row[0],),
             ))
             return CompanySyncResume(row[0], CompanySyncRoundScope(codes, datetime.fromisoformat(row[1]), tuple(plan.family for plan in plans)), plans, row[2], _source_calls(connection, row[0]))
@@ -289,7 +290,7 @@ class SQLiteCompanySyncRoundJournal:
             rows = connection.run("SELECT family FROM company_sync_step WHERE round_id=? AND complete=0", (round_id,)).fetchall()
             if len(rows) > 1:
                 raise ValueError("company_sync_multiple_unacknowledged_steps")
-            return CompanySyncFamily(rows[0][0]) if rows else None
+            return _phase_family(rows[0][0]) if rows else None
 
     def start(self, round_id: str, family: CompanySyncFamily, state: CompanySyncPhaseState) -> None:
         with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
@@ -459,6 +460,21 @@ class SQLiteCompanySyncRoundJournal:
 
     def publication_identity(self) -> str:
         return self._publication_identity()
+
+
+def _phase_family(value: object) -> CompanySyncFamily:
+    try:
+        return CompanySyncFamily(value)
+    except ValueError as exc:
+        raise CompanyDatabaseIncompatibleError(CompanyDownloadStore.REQUEST_JOURNAL) from exc
+
+
+def _validate_active_families(connection: SqliteConnection) -> None:
+    for (family,) in connection.run("""
+        SELECT plan.family FROM company_sync_round round JOIN company_sync_plan plan USING(round_id)
+        WHERE round.active=1
+        """):
+        _phase_family(family)
 
 
 def _request_hash(method: str, url: str, body: bytes | None) -> str:

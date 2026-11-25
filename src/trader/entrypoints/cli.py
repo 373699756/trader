@@ -79,7 +79,6 @@ def BuildParser() -> argparse.ArgumentParser:
         "history-automation-status",
         help="Read the persisted history due and reminder state without recalculation.",
     )
-    subparsers.add_parser("history-automation-uninstall", help="Explicitly remove retired Trader user scheduler tasks.")
     subparsers.add_parser("research-status", help="Read immutable research coverage and capacity status.")
     subparsers.add_parser(
         "research-scoring-hot-path-baseline",
@@ -144,10 +143,6 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
         status = ExecuteTrainingReminderStatus(runtime)
         print(json.dumps(ProjectTrainingReminderStatus(status), ensure_ascii=False, sort_keys=True, indent=2))
         return 0
-    if args.command == "history-automation-uninstall":
-        from trader.download.entrypoints.commands import RunDownloadCommand
-
-        return RunDownloadCommand(args.command, config_path=config_path)
     if args.command == "performance-check":
         return _run_performance_report(
             config_path,
@@ -215,8 +210,7 @@ def _run_sync(args: argparse.Namespace, progress: SyncProgress) -> int:
     if company_only:
         print(FormatCompanySyncSummary(result, terminal_state))
         return result.exit_code
-    pending_label = "采集结束，新闻为辅助" if terminal_state == "采集结束" else "待补齐"
-    progress(ProgressMessage(tuple(ProgressField(f"{task.task} {pending_label if task.status == 'pending' else task.status} 原因 {task.reason or '无'}") for task in result.tasks)
+    progress(ProgressMessage(tuple(ProgressField(f"{task.task} {'待补齐' if task.status == 'pending' else task.status} 原因 {task.reason or '无'}") for task in result.tasks)
                              + tuple(ProgressField(f"company·{family.family.value} 错误 {family.result.failure}", ProgressLevel.ERROR)
                                      for task in result.tasks if task.company is not None
                                      for family in task.company.families if family.result.failure is not None)
@@ -242,16 +236,15 @@ def _report_sync_failure(result: SyncResult, progress: SyncProgress) -> None:
             "sync: 交易日历准备超时，AkShare/Sina 在30秒内未完成；本轮尚未进入下载，已有断点保留，请稍后重试。",
         )
     for task in result.tasks:
+        if task.task == "history" and task.reason == "history_format_requires_rebuild":
+            _sync_error(progress,
+                "sync history: 历史目录结构需要重建。停止使用历史库的任务后，归档配置数据目录下的 history/，"
+                "其中包含 catalog.sqlite3、年度价格分区、封签及配套文件。然后重新运行 ./run.sh sync history。",
+            )
         if task.task == "company" and task.reason == "CompanyDatabaseIncompatibleError":
             store = task.incompatible_company_store
             if store is CompanyDownloadStore.REQUEST_JOURNAL:
                 detail = "仅company/company_sync.sqlite3请求预算账本不兼容；保留已消费和未知请求记录，需核实处理，不作为资料删除重下范围。"
-            elif store is CompanyDownloadStore.RETIRED_LAYOUT:
-                detail = (
-                    "检测到旧版资料库。停止相关任务后，将 company_facts.sqlite3、company_normalized.sqlite3、"
-                    "company_inputs.sqlite3、raw/company_collection.sqlite3 及对应封签和SQLite配套文件移至备份目录。"
-                    "保留 company_sync.sqlite3、请求响应凭据和 raw 下的正文与原件，再运行 ./run.sh sync company。"
-                )
             elif store is not None:
                 path = {
                     CompanyDownloadStore.SOURCES: "company/company_sources.sqlite3",

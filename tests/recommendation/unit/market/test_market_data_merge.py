@@ -110,6 +110,7 @@ def test_complete_realtime_columnar_projection_matches_scalar_field_merge(monkey
     assert TryMergeCompleteRealtime((tencent, replace(sina, fields={"price": 10.04}))) is None
     assert TryMergeCompleteRealtime((replace(tencent, fields={**complete_fields, "price": "10.0"}), sina)) is None
     assert TryMergeCompleteRealtime((tencent, replace(sina, status="failed", error_code="offline"))) is None
+    assert TryMergeCompleteRealtime((tencent, replace(sina, security_identity="600002"))) is None
 
 
 def test_volume_only_change_survives_scalar_merge_and_both_dirty_projections() -> None:
@@ -426,6 +427,7 @@ def test_older_partial_overlay_cannot_regress_same_source_version_when_adding_a_
             data_version="z-older",
         ),
         subject_key="600002",
+        security_identity="600002",
     )
     partial = MergeMarketObservations((older_code,), observed_at=NOW + timedelta(seconds=1), merge_epoch="fixture:1")
 
@@ -579,8 +581,9 @@ def test_merge_rejects_trade_date_and_observation_point_conflicts() -> None:
     assert "conflicting" in snapshot.failure_categories
 
 
-def test_merge_rejects_security_identity_and_expired_observations() -> None:
-    identity_conflict = replace(_observation("sina"), security_identity="different-security")
+@pytest.mark.parametrize("security_identity", ("different-security", "600002"))
+def test_merge_rejects_security_identity_and_expired_observations(security_identity: str) -> None:
+    identity_conflict = replace(_observation("sina"), security_identity=security_identity)
     expired = _observation(
         "eastmoney",
         source_time=NOW - timedelta(seconds=301),
@@ -597,6 +600,7 @@ def test_merge_rejects_security_identity_and_expired_observations() -> None:
         (expired,), observed_at=NOW, limits=MergeObservationLimits(max_age_seconds=300.0), merge_epoch="fixture:1"
     )
 
+    assert identity_snapshot.quotes == ()
     assert "security_identity_conflict:600001" in identity_snapshot.degraded_reasons
     assert "freshness_expired:600001:eastmoney" in expired_snapshot.degraded_reasons
     assert expired_snapshot.status == "missing"

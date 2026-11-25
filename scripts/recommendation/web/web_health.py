@@ -220,7 +220,7 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
                             "committed_pipeline_audit_invalid",
                             sample,
                             strategy,
-                            "committed fourteen-stage audit violates order, population or batch continuity",
+                            "committed stage audit violates order, population or batch continuity",
                             {"fields": ",".join(audit.invalid_fields)},
                         )
                     )

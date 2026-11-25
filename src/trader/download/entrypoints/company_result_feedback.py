@@ -7,7 +7,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from trader.download.application.company_round_progress import IsCompanyNewsReference
 from trader.download.application.progress_message import (
     ProgressField, ProgressLevel, ProgressMessage, ProgressRow, ProgressState, ProgressTask,
 )
@@ -29,7 +28,7 @@ from trader.infra.progress_format import ShortProgressText
 _SOURCES = {"cninfo": "巨潮", "eastmoney": "东财", "eastmoney_news": "东财", "local": "本地"}
 _LABELS = {
     "prepare": "准备资料", "resume": "恢复库存", "financial": "财务", "pledge": "质押", "unlock": "解禁",
-    "announcements": "目录", "risk_documents": "正文", "news": "新闻", "annual_income": "年度营收",
+    "announcements": "目录", "risk_documents": "正文", "annual_income": "年度营收",
     "publish": "股票发布", "finish": "收尾",
 }
 _COMPONENTS = {
@@ -41,7 +40,7 @@ _ACTIONS = {
     "download": "正文获取", "text": "文本提取", "ocr": "OCR", "document_commit": "正文入库",
     "directory": "目录查询", "structured": "结构化查询", "collection_commit": "资料落库",
     "publication": "正式发布", "inventory": "库存核对", "prepare": "资料准备", "finish": "收尾",
-    "annual_income": "年度营收", "news": "新闻获取",
+    "annual_income": "年度营收",
 }
 _SUMMARY_FAMILIES = {"announcements": "公告", "fields": "字段核验"}
 _PAUSE_EXPLANATIONS: dict[CompanySyncPauseReason, str] = {
@@ -80,10 +79,7 @@ _ROUND_REASON_EXPLANATIONS = {
     "accepted_input_count_unconfirmed": "旧步骤接纳数量待核",
     "issuer_revision_relationship_unverified": "同一发行人公告的新旧修订关系待核",
     "persistent_risk_initial_state_unverified": "公告窗口开始时仍生效的历史风险待核",
-    "news_metadata_does_not_verify_issuer_risk": "新闻用于辅助研究，风险核验需要正式披露凭据",
-    "news_automatic_collection_retired": "辅助新闻已停止自动采集",
     "field_proof_incomplete": "仍有适用字段缺值或字段凭据待核",
-    "news_skipped_by_fill": "补缺模式跳过新的新闻请求",
     "request_counts_unconfirmed": "步骤中断，终态请求数待核",
     "source_budget_exhausted": "本轮来源请求额度已用完",
     "step_interrupted": "本次步骤中断，沿原回执续传",
@@ -120,7 +116,7 @@ def ExplainCompanySyncPause(reason: CompanySyncPauseReason | None) -> str:
 
 def FormatCompanySyncSummary(result: SyncResult, state: ProgressState) -> str:
     """Summarize an explicit company command without projecting internal JSON."""
-    status: str = "采集结束（新闻为辅助资料）" if state == "采集结束" else state
+    status: str = state
     task = next((item for item in result.tasks if item.task == "company"), None)
     company = task.company if task is not None else None
     if company is None:
@@ -145,9 +141,8 @@ def FormatCompanySyncSummary(result: SyncResult, state: ProgressState) -> str:
             failures.append(f"{label}：{_summary_failure(step.failure)}")
         if step.pending_count:
             pending.append(f"{label} {step.pending_count:,} 项")
-        elif step.failure is None and not step.business_complete and not IsCompanyNewsReference(family):
-            if "news_skipped_by_fill" not in step.gaps:
-                pending.append(label)
+        elif step.failure is None and not step.business_complete:
+            pending.append(label)
     if failures:
         lines.append("异常：" + "。".join(failures) + "。")
     if pending and not result.cancelled:
@@ -159,13 +154,13 @@ def FormatCompanySyncSummary(result: SyncResult, state: ProgressState) -> str:
 def _source_summary(company: CompanySyncRoundResult) -> str:
     steps = {
         family.family: family.result for family in company.families
-        if family.family not in {CompanySyncFamily.FIELDS, CompanySyncFamily.NEWS}
+        if family.family is not CompanySyncFamily.FIELDS
     }
     if not steps:
         return "来源库：本轮采集状态未核对。"
     sources = (
         f"{_SUMMARY_FAMILIES.get(family.value, _LABELS[family.value])}{_source_status(steps.get(family))}"
-        for family in company.scope.families if family not in {CompanySyncFamily.FIELDS, CompanySyncFamily.NEWS}
+        for family in company.scope.families if family is not CompanySyncFamily.FIELDS
     )
     return "来源库：" + "、".join(sources) + "。"
 
@@ -367,7 +362,7 @@ class CompanyResultFeedback:
             parts.append(f"正文 {result.text_chars}字")
         if result.ocr_completed_pages is not None:
             parts.append(f"OCR已处理 {result.ocr_completed_pages}/{result.ocr_total_pages}页")
-        call_label = "获取调用（含节流及解析）" if result.kind in {"structured", "directory", "download", "annual_income", "news"} else "处理调用"
+        call_label = "获取调用（含节流及解析）" if result.kind in {"structured", "directory", "download", "annual_income"} else "处理调用"
         parts.extend((f"排队 {_seconds(result.queued_seconds)}", f"{call_label} {_seconds(result.call_seconds)}"))
         if result.commit_operation_id is not None:
             parts.append(f"提交操作 {result.commit_operation_id} 落库 {_seconds(result.commit_seconds)}")
@@ -451,7 +446,7 @@ class CompanyResultFeedback:
         )
         cause_parts = (f"原因 {_reason(record.reason)}", f"错误码 {record.reason}",
                        f"因果链 {record.causes}", f"位置与校验 {record.diagnostic}")
-        request = context.operation_kind in {"structured", "directory", "download", "annual_income", "news"}
+        request = context.operation_kind in {"structured", "directory", "download", "annual_income"}
         local = context.operation_kind in {"text", "ocr", "document_commit", "collection_commit", "publication",
                                            "inventory", "prepare", "finish"}
         timing_parts = (f"排队 {_seconds(context.queued_seconds)}",

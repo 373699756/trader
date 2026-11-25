@@ -4,8 +4,8 @@ from datetime import date, timedelta
 
 import pytest
 
+from tests.helpers.recommendation.scoring_helpers import BOARD_AMOUNT_EXPOSURE_FIXTURE
 from trader.recommendation.application.ports.loaded_profile import ModelInput, ModelPrediction
-from trader.recommendation.domain.scoring.residualization import LEGACY_EXPOSURE_CONTRACT
 from trader.training.application.tomorrow_historical_validation import (
     TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC,
     BuildHistoricalRiskProbability,
@@ -27,7 +27,7 @@ class _Predictor:
         "qfq_residual_momentum_40d_skip5",
         "qfq_residual_momentum_60d_skip5",
     )
-    exposure_contract = LEGACY_EXPOSURE_CONTRACT
+    exposure_contract = BOARD_AMOUNT_EXPOSURE_FIXTURE
 
     def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
         return tuple(

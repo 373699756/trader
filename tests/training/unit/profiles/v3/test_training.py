@@ -36,34 +36,28 @@ from trader.training.infra.training_contract import BuildTrainingContractHash
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
 from trader.training.infra.execution_options import TrainingExecutionOptions
 from trader.training.infra.model_bundles.bundle_codec import TrainedLightGBMModelSnapshot, TrainedRidgeModelSnapshot
+from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 from trader.training.infra.model_bundles.profile_publication import ClearProfileStaging
 from trader.training.infra.model_evaluation import CalibrationResult, CalibrationUnavailableError, PredictionMetrics
 from trader.training.infra.model_fitting import FitIndustryModels
 from trader.training.infra.fitting_settings import RidgeFittingParameters
 from trader.training.infra.model_fitting_results import FittedIndustryModel, IndustryFitResult
 from trader.training.infra.research.close_return.v2_contracts import V2_TRAINING_PROFILE
-from trader.training.infra.research.close_return.v2_training import RunV2Training as _run_v2_training
 from trader.training.infra.research.close_return.v3_contracts import (
     HEAD_CONTRACTS,
     TOMORROW_HEAD_CONTRACT,
     V3_TRAINING_PROFILE,
 )
-from trader.training.infra.research.close_return.v3_sample_builder import (
+from trader.training.infra.sample_builder import (
     AlignedSampleDates,
     BuildTrainingSamples,
     ResidualizeSampleDay,
     TrainingAlphaTarget,
+    TrainingSampleBuildRequest,
+    _finalize_sample_day,
+    _PendingSample,
 )
-from trader.training.infra.research.close_return.v3_training import (
-    RunTomorrowTraining as _run_tomorrow_training,
-)
-from trader.training.infra.research.close_return.v3_training import RunV3Training as _run_v3_training
-from trader.training.infra.research.close_return.v3_sample_index import (
-    SQLiteV3TrainingSampleIndex,
-    V3TrainingIndustryCounts,
-    V3TrainingSample,
-)
-from trader.training.infra.sample_builder import TrainingSampleBuildRequest, _finalize_sample_day, _PendingSample
+from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingIndustryCounts, TrainingSample
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 from tests.helpers.training.profiles.v5.v5_training import _history
 
@@ -71,40 +65,28 @@ PROJECT_ROOT = Path(__file__).resolve().parents[5]
 _INPUT_INDUSTRY = CurrentIndustrySnapshotFixture(tuple(f"60000{number}" for number in range(6)))
 
 
-def run_v2_training(history_root: Path, train_root: Path, **kwargs):
-    return _run_v2_training(
-        history_root,
-        train_root,
-        settings=LoadProfileTrainingSettings(PROJECT_ROOT, "v2"),
-        sample_root=(train_root).parent / "samples",
-        sample_settings=TrainingSampleSettingsFixture(),
-        industry_snapshot=_INPUT_INDUSTRY,
-        **kwargs, sqlite_policy=SqlitePolicyFixture(),
+def _run_training(history_root: Path, train_root: Path, profile: TrainedProfileContract):
+    return RunProfileTraining(
+        ProfileTrainingRequest(
+            history_root,
+            train_root,
+            profile,
+            profile.heads,
+            LoadProfileTrainingSettings(PROJECT_ROOT, profile.profile_id),
+            sample_root=train_root.parent / "samples",
+            sample_settings=TrainingSampleSettingsFixture(),
+            industry_snapshot=_INPUT_INDUSTRY,
+        ),
+        sqlite_policy=SqlitePolicyFixture(),
     )
 
 
-def run_v3_training(history_root: Path, train_root: Path, **kwargs):
-    return _run_v3_training(
-        history_root,
-        train_root,
-        settings=LoadProfileTrainingSettings(PROJECT_ROOT, "v3"),
-        sample_root=(train_root).parent / "samples",
-        sample_settings=TrainingSampleSettingsFixture(),
-        industry_snapshot=_INPUT_INDUSTRY,
-        **kwargs, sqlite_policy=SqlitePolicyFixture(),
-    )
+def run_v3_training(history_root: Path, train_root: Path):
+    return _run_training(history_root, train_root, V3_TRAINING_PROFILE)
 
 
-def run_tomorrow_training(history_root: Path, train_root: Path, **kwargs):
-    return _run_tomorrow_training(
-        history_root,
-        train_root,
-        settings=LoadProfileTrainingSettings(PROJECT_ROOT, "v3"),
-        sample_root=(train_root).parent / "samples",
-        sample_settings=TrainingSampleSettingsFixture(),
-        industry_snapshot=_INPUT_INDUSTRY,
-        **kwargs, sqlite_policy=SqlitePolicyFixture(),
-    )
+def run_tomorrow_training(history_root: Path, train_root: Path):
+    return run_v3_training(history_root, train_root).heads[0]
 
 
 def _cadence_history(history_root: Path) -> SimpleNamespace:
@@ -167,7 +149,7 @@ def _populate_samples(request: TrainingSampleBuildRequest) -> None:
         days = tuple(sorted({*days, *(day for plan in plans for day in plan.fit_dates)}))
     width = max(max(head.feature_positions) for head in request.profile.heads) + 1
     request.index.add_final(
-        V3TrainingSample("600000", day, "main", "银行", 1.0, (0.0,) * width, (0.01, 0.02, 0.03, 0.04, 0.05, 0.035))
+        TrainingSample("600000", day, "main", "银行", 1.0, (0.0,) * width, (0.01, 0.02, 0.03, 0.04, 0.05, 0.035))
         for day in days
     )
     request.index.prepare_for_model_fitting(split)
@@ -214,16 +196,16 @@ def test_training_rejects_empty_samples_instead_of_reusing_existing_result(
     assert result.model_hash == result.report_hash == ""
 
 
-@pytest.mark.parametrize("run_training", (run_v2_training, run_v3_training))
-def test_sample_sqlite_failure_returns_both_heads_and_releases_locks(tmp_path, monkeypatch, run_training):
+@pytest.mark.parametrize("profile", (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE), ids=("v2", "v3"))
+def test_sample_sqlite_failure_returns_both_heads_and_releases_locks(tmp_path, monkeypatch, profile):
     history = _cadence_history(tmp_path / "history")
     _patch_history(monkeypatch, history)
 
-    def fail_samples(_request, *, aligned_rows=None):
+    def fail_samples(_request, *, aligned_rows=None, aligned_dates=None):
         raise sqlite3.OperationalError("fixture disk full with private supplier details")
 
     monkeypatch.setattr("trader.training.infra.engine.BuildTrainingSamples", fail_samples)
-    result = run_training(tmp_path / "history", tmp_path / "train")
+    result = _run_training(tmp_path / "history", tmp_path / "train", profile)
     assert result.status == "blocked"
     assert len(result.heads) == 2
     assert all(head.failure_reasons == ("training_database_failed",) for head in result.heads)
@@ -231,7 +213,7 @@ def test_sample_sqlite_failure_returns_both_heads_and_releases_locks(tmp_path, m
     assert result.sample_database_peak_bytes > 0
     assert not tuple((tmp_path / "samples").glob("*/complete.json"))
     monkeypatch.setattr("trader.training.infra.engine.BuildTrainingSamples", lambda _request, **_kwargs: None)
-    retry = run_training(tmp_path / "history", tmp_path / "train")
+    retry = _run_training(tmp_path / "history", tmp_path / "train", profile)
     assert all(head.failure_reasons == ("profile_training_rows_empty",) for head in retry.heads)
 
 
@@ -270,8 +252,8 @@ def test_latest_final_day_is_required_before_any_fit_without_resource_ports(tmp_
     assert not tuple((tmp_path / "models").rglob("model.json"))
 
 
-@pytest.mark.parametrize("run_training", (run_v2_training, run_v3_training))
-def test_both_heads_report_their_own_final_date_gaps_before_any_fit(tmp_path, monkeypatch, run_training):
+@pytest.mark.parametrize("profile", (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE), ids=("v2", "v3"))
+def test_both_heads_report_their_own_final_date_gaps_before_any_fit(tmp_path, monkeypatch, profile):
     history = _cadence_history(tmp_path / "history")
     _patch_history(monkeypatch, history)
     tomorrow_gap, d25_gap = history.snapshot.calendar.open_dates[-2], history.snapshot.calendar.open_dates[-7]
@@ -283,7 +265,7 @@ def test_both_heads_report_their_own_final_date_gaps_before_any_fit(tmp_path, mo
 
     monkeypatch.setattr("trader.training.infra.engine.BuildTrainingSamples", build)
     monkeypatch.setattr("trader.training.infra.engine.FitIndustryModels", lambda *_a, **_kw: pytest.fail("coverage must finish before fitting"))
-    result = run_training(tmp_path / "history", tmp_path / "models")
+    result = _run_training(tmp_path / "history", tmp_path / "models", profile)
     assert result.status == "blocked"
     for head, missing in zip(result.heads, (tomorrow_gap, d25_gap), strict=True):
         observed = next(item for item in head.date_coverage if item.basis == "sample_index" and item.partition == "final_fitting")
@@ -332,7 +314,7 @@ def test_fitting_failure_reuses_only_complete_samples_on_retry(tmp_path, monkeyp
     _patch_history(monkeypatch, history)
     builds = 0
 
-    def build_samples(request, *, aligned_rows=None):
+    def build_samples(request, *, aligned_rows=None, aligned_dates=None):
         nonlocal builds
         builds += 1
         _populate_samples(request)
@@ -403,7 +385,7 @@ def test_v2_2000_day_budget_reaches_sample_scan_with_full_fit_window(
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("scan reached")),
     )
 
-    result = run_v2_training(tmp_path / "history", tmp_path / "train")
+    result = _run_training(tmp_path / "history", tmp_path / "train", V2_TRAINING_PROFILE)
 
     assert result.status == "blocked"
     assert all(head.failure_reasons == ("profile_training_failed",) for head in result.heads)
@@ -416,7 +398,7 @@ def test_v3_training_scans_history_once_then_fits_heads_sequentially(
     _patch_history(monkeypatch, history)
     scan_calls = 0
 
-    def build_samples(request: TrainingSampleBuildRequest, *, aligned_rows=None) -> None:
+    def build_samples(request: TrainingSampleBuildRequest, *, aligned_rows=None, aligned_dates=None) -> None:
         nonlocal scan_calls
         scan_calls += 1
         _populate_samples(request)
@@ -497,7 +479,7 @@ def test_v3_training_always_fits_both_heads(tmp_path: Path, monkeypatch: pytest.
     history = _cadence_history(tmp_path / "history")
     _patch_history(monkeypatch, history)
 
-    def build_samples(request: TrainingSampleBuildRequest, *, aligned_rows=None) -> None:
+    def build_samples(request: TrainingSampleBuildRequest, *, aligned_rows=None, aligned_dates=None) -> None:
         _populate_samples(request)
 
     monkeypatch.setattr("trader.training.infra.engine.BuildTrainingSamples", build_samples)
@@ -678,8 +660,15 @@ def test_sample_building_creates_t1_through_t5_and_d25_from_one_stream(tmp_path:
                 yield HistoryTrainingRow("600000", point.trade_date, "main", "银行", point)
             progress(66)
 
-    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3", sqlite_policy=SqlitePolicyFixture(), sample_settings=TrainingSampleSettingsFixture()) as index:
-        BuildTrainingSamples(HistoryInput(), ("600000",), TomorrowTrainingWindow(split), index)  # type: ignore[arg-type]
+    with SQLiteTrainingSampleIndex(
+        tmp_path / "samples.sqlite3",
+        TOMORROW_HEAD_CONTRACT.feature_manifest.names,
+        sqlite_policy=SqlitePolicyFixture(),
+        sample_settings=TrainingSampleSettingsFixture(),
+    ) as index:
+        BuildTrainingSamples(TrainingSampleBuildRequest(
+            HistoryInput(), ("600000",), TomorrowTrainingWindow(split), index, V3_TRAINING_PROFILE,
+        ))
         row = index._connection.run(
             "SELECT trade_date, target_t1, target_t2, target_t3, target_t4, target_t5, target_d25_aggregate "
             "FROM samples WHERE trade_date=?",
@@ -774,14 +763,14 @@ def test_model_progress_keeps_real_industry_count_for_each_head(monkeypatch, cal
             return nullcontext()
 
         @staticmethod
-        def industry_counts(_contract) -> tuple[V3TrainingIndustryCounts, ...]:
+        def industry_counts(_contract) -> tuple[TrainingIndustryCounts, ...]:
             assert updates[-1].stage == "industry_statistics"
             assert updates[-1].state == "started"
             if calibration_failure:
-                return tuple(V3TrainingIndustryCounts(name, 20_000, 20, 2, 1, 2) for name in ("银行", "软件"))
+                return tuple(TrainingIndustryCounts(name, 20_000, 20, 2, 1, 2) for name in ("银行", "软件"))
             return (
-                V3TrainingIndustryCounts("银行", 0, 0, 0, 0),
-                V3TrainingIndustryCounts("软件", 0, 0, 0, 0),
+                TrainingIndustryCounts("银行", 0, 0, 0, 0),
+                TrainingIndustryCounts("软件", 0, 0, 0, 0),
             )
 
         @staticmethod

@@ -10,7 +10,7 @@ from typing import Literal
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistorySide
 from trader.download.domain.qfq_window import QfqWindowSnapshot
 
-QfqNonTradingKind = Literal["confirmed", "inferred", "legacy_unverified"]
+QfqNonTradingKind = Literal["confirmed", "inferred"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,24 +18,20 @@ class QfqNonTradingFact:
     code: str
     trade_date: date
     kind: QfqNonTradingKind
-    checked_on: date | None
-    source: str | None
+    checked_on: date
+    source: str
 
     def __post_init__(self) -> None:
         if (
             len(self.code) != 6 or not self.code.isascii() or not self.code.isdigit()
             or type(self.trade_date) is not date
-            or self.kind not in ("confirmed", "inferred", "legacy_unverified")
-            or (self.kind == "legacy_unverified" and (self.checked_on is not None or self.source is not None))
-            or (self.kind != "legacy_unverified" and (
-                type(self.checked_on) is not date or not self.source or self.checked_on < self.trade_date
-            ))
+            or self.kind not in ("confirmed", "inferred")
+            or type(self.checked_on) is not date or self.checked_on < self.trade_date
+            or not isinstance(self.source, str) or not self.source
         ):
             raise ValueError("qfq_nontrading_fact_invalid")
 
     def cell(self) -> PublishedHistoryCell:
-        if self.kind == "legacy_unverified":
-            raise ValueError("qfq_nontrading_fact_unverified")
         if self.kind == "inferred":
             return PublishedHistoryCell(self.code, self.trade_date, "tencent_inferred_suspended", None, None)
         raw = PublishedHistorySide(

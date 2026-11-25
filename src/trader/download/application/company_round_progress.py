@@ -4,7 +4,6 @@ from dataclasses import dataclass
 
 from trader.download.domain.company_field_results import CompanyFieldName
 from trader.download.domain.company_source_records import CompanyFinancialField
-from trader.download.domain.company_sync import CompanySyncFamily, CompanySyncFamilyResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,24 +103,9 @@ class CompanyFieldOutcomeCounts:
     coverage: CompanyFormalCoverage | None = None
 
 
-def IsCompanyNewsReference(family: CompanySyncFamilyResult) -> bool:
-    """Recognize a settled auxiliary news phase in a historical round."""
-    step = family.result
-    return (
-        family.family is CompanySyncFamily.NEWS
-        and step.processed_scope_complete
-        and step.pending_count == 0
-        and step.failure is None
-        and family.unknown_attempts == 0
-        and (step.gaps == ("news_metadata_does_not_verify_issuer_risk",)
-             or "news_automatic_collection_retired" in step.gaps)
-    )
-
-
 __all__ = [
     "CompanyEventFieldCoverage",
     "CompanyFieldOutcomeCounts",
     "CompanyFormalCoverage",
     "CompanyRequestProgress",
-    "IsCompanyNewsReference",
 ]

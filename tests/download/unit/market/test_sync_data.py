@@ -17,6 +17,7 @@ from trader.download.domain.company_sync import COMPANY_SYNC_FAMILIES, CompanySy
 from tests.helpers.download.company_round import CompanySyncFamilyFixture, CompanySyncRoundFixture
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.entrypoints.sync_projection import ProjectSyncResult
+from trader.download.infra.history_sync_failure import HistoryFailureCode
 from trader.download.infra.sync_database_failure import AdaptSyncDatabaseFailures
 from trader.infra.sqlite_connection import SqliteSession
 
@@ -227,17 +228,15 @@ def test_typed_history_terminal_state_reaches_the_cli_without_downgrading_failur
     (None, (), None, False, True, "company_round_budget_exhausted", "暂停"),
     (None, ("supplier_input_rejected",), "company_round_page_number_mismatch", False, True, "company_round_budget_exhausted", "暂停"),
     (None, (), "source_attempt_unconfirmed", False, False, "fields:source_attempt_unconfirmed", "阻塞"),
-    (0, ("news_metadata_does_not_verify_issuer_risk",), None, False, False, "news:news_metadata_does_not_verify_issuer_risk", "采集结束"),
 ))
 def test_company_terminal_reason_reaches_projection_and_cli(
     tmp_path, monkeypatch, capsys, pending, gaps, failure, cancelled, paused, reason, terminal_state,
 ):
-    tested_family = CompanySyncFamily.NEWS if terminal_state == "采集结束" else CompanySyncFamily.FIELDS
-    selected = tuple(CompanySyncFamily) if tested_family is CompanySyncFamily.NEWS else COMPANY_SYNC_FAMILIES
+    tested_family = CompanySyncFamily.FIELDS
     company = CompanySyncRoundFixture(
         _NOW, families=tuple(CompanySyncFamilyFixture(
             family, pending_count=pending, gaps=gaps, failure=failure,
-        ) if family is tested_family else CompanySyncFamilyFixture(family) for family in selected),
+        ) if family is tested_family else CompanySyncFamilyFixture(family) for family in COMPANY_SYNC_FAMILIES),
         cancelled=cancelled, budget_exhausted=paused,
     )
     result = SyncData(
@@ -261,8 +260,6 @@ def test_company_terminal_reason_reaches_projection_and_cli(
     assert cli._run_sync(args, progress) == (130 if cancelled else int(reason is not None))
     output = capsys.readouterr().out
     assert output.startswith(f"公司同步：{terminal_state}") and "\"status\"" not in output
-    if tested_family is CompanySyncFamily.NEWS:
-        assert "新闻为辅助资料" in output and "待处理" not in output
     if failure is not None:
         assert "异常：字段核验" in output
     payload = ProjectSyncResult(result)
@@ -277,7 +274,6 @@ def test_company_terminal_reason_reaches_projection_and_cli(
 @pytest.mark.parametrize("store,path", (
     (CompanyDownloadStore.SOURCES, "company/company_sources.sqlite3"),
     (CompanyDownloadStore.FACTS, "company/company_published.sqlite3"),
-    (CompanyDownloadStore.RETIRED_LAYOUT, "raw/company_collection.sqlite3"),
     (CompanyDownloadStore.REQUEST_JOURNAL, "company/company_sync.sqlite3"),
 ))
 def test_company_incompatible_database_is_a_failure_with_explicit_material_scope(tmp_path, monkeypatch, capsys, store, path):
@@ -292,6 +288,16 @@ def test_company_incompatible_database_is_a_failure_with_explicit_material_scope
     assert ProjectSyncResult(result)["tasks"][0]["incompatible_company_store"] == store.value
     _assert_cli_summary(tmp_path, monkeypatch, capsys, result, "failed", "失败", 1,
                         diagnostic=path)
+
+
+def test_history_schema_failure_reports_the_exact_rebuild_scope(tmp_path, monkeypatch, capsys):
+    error = RuntimeError("history control initialization failed")
+    error.__cause__ = sqlite3.DatabaseError("sqlite_schema_unsupported")
+    history = replace(_history(state="failed"), reason=HistoryFailureCode(error), snapshot_hash=None)
+    result = SyncData(lambda: PreparedFixture(_NOW), lambda _: history, lambda _: pytest.fail("unexpected company task"),
+                      lambda: False).execute("history")
+    assert result.tasks[0].reason == "history_format_requires_rebuild"
+    _assert_cli_summary(tmp_path, monkeypatch, capsys, result, "failed", "失败", 1, diagnostic="./run.sh sync history")
 
 
 def _assert_cli_summary(tmp_path, monkeypatch, capsys, result, status, state, exit_code, diagnostic=None):

@@ -626,8 +626,6 @@ def _scan_unit(scan: _UnitScan, budget: PriceAuditBudget, policy: SqliteIoPolicy
                 if code not in stocks or day not in days:
                     continue
                 stock, bit = stocks[code], days[day]
-                if kind == "legacy_unverified":
-                    continue
                 if kind not in ("confirmed", "inferred") or checked is None or not day <= checked <= today or source != sources[code]:
                     scan.invalid_states += 1
                     continue
