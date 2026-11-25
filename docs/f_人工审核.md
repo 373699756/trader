@@ -148,3 +148,47 @@ Q29–Q35原反例以 `c846f2ca` 为基线，360保存实现证据。真实资�
 | 荐股与 Web | 报价合并曾接受六位证券代码不匹配的记录。标量和列式路径均要求键与证券相符。在线诊断只读当前阶段结构，浏览器按当前投影标识应用增量，收益因子契约由调用方明确传递。冻结写入只有类型化入口，历史原字节及首次正式记录保护继续由原读写路径处理。 |
 
 历史冻结、旧目标结算、来源可信度、同一结构断点续跑和预算账本各自承载业务事实。旧活动 Company 计划含退役族时，当前入口报告请求账本不兼容，保留已消费和未确认记录。已结束的旧计划不影响新建当前轮次。独立的旧提交对照工具只为复现实测而读取明确选定的检出目录。验证结果及未实测项见[阶段386](g_施工进度.md#1-待完成任务)。
+
+## 15. 全仓工程审查（2026-11-25）
+
+以 `309b7829` 为基线。覆盖普通同步、训练、荐股到 Web、历史查询和收盘结算，以及维护与诊断入口。工作区同时存在其它任务修改，本节依据已提交的相关路径。证据包括源码追链、无网络夹具、内存 SQLite 查询计划和原施工台账的实测。没有新跑全市场同步、正式训练、当前盘中整轮或活跃数据库写入。
+
+### 15.1 先修正确性
+
+| 发现 | 证据和修复验收 |
+| --- | --- |
+| SSE 订阅泄漏可阻断正常推送 | `/api/events` 允许 HEAD，路由在响应迭代前分配订阅，取消订阅放在生成器内部。真实 Flask 应用夹具将容量设为 2，两次 HEAD 返回 200 并关闭后仍占两席，后续正常 GET 返回 503。HEAD 不应预占席位，响应关闭要幂等清理。复验 HEAD、未开始迭代的 GET、正常断开和停盘无新事件。 [路由](../src/trader/http_api/handlers/product_handler.py#L335) [流响应](../src/trader/http_api/freeze_sse.py#L27) |
+| 同日断线恢复可把显示退回旧一轮 | 客户端已有较新的 HTTP 当前批时，仍用原事件游标重连，且同日旧批未被拒绝。JS 夹具复现 HTTP 第 3 轮加载后接受同日第 2 轮，页面回退。HTTP 当前批需要携带与投影一致的发布水位，浏览器按水位拒绝旧事件。复验重连、服务重启、跨日和完整批次原子替换。 [当前批](../src/trader/http_api/handlers/product_handler.py#L146) [重连游标](../src/trader/web/static/dashboard_stream.js#L47) [浏览器替换](../src/trader/web/static/dashboard.js#L1224) |
+| 概率工件更新会漏报模型重启提示 | 隔离 V3 D25 先后发布两个有效概率模型，收益权重和元数据相同。新加载器能采用新概率，但发布观察身份保持不变，`restart_required=False`。正常入口的观察器仅覆盖 D25，Tomorrow 也缺同类观察。应观察实际评分工件身份和可用状态，继续保持启动时采用、运行时只读观察。复验同收益异概率、概率缺失和 Tomorrow 目标变化。 [D25 加载](../src/trader/training/infra/d25/artifact.py#L183) [发布身份](../src/trader/training/infra/model_bundles/bundle_codec.py#L373) [服务接线](../src/trader/bootstrap.py#L698) |
+
+### 15.2 数据库和性能
+
+SQLite、按年价格分区、Company 来源／正式事实／请求账本分离、训练样本与模型分离，均对应不同的写入、发布和恢复边界。正式冻结保留 first-wins 和原身份。现有发现集中在访问方式、更新粒度和观察身份，尚无证据要求整体合库或更换数据库。
+
+| 发现 | 证据和下一项验证 |
+| --- | --- |
+| Company 的字段复核仍按全体证券执行 | 单篇公告引起输入变化时，先读全体事实及关联材料计算水位，再批读事实、字段和链接并逐股处理。水位计算在执行计时之外。阶段383冻结三库同源隔离组件的一对复测为 78.27→36.34 秒，适用范围是该组件。应给水位计算单独计时，按公告、证券和依赖确定小范围重核，规则、覆盖范围或总体变化再铺开。验收逐字段、风险依据、发布身份和真实完整墙钟。 [字段水位和计算](../src/trader/download/infra/company_sync_runtime.py#L333) [阶段计时](../src/trader/download/application/company_sync.py#L149) [原证据](g_施工进度.md#1-待完成任务) |
+| `sync company` 等待它用不到的全市场行业准备 | 公共准备里的行业过期刷新走逐股读取。公司的采集范围消费公共资格总体。此前一轮实跑 62.65 秒中约 61 秒在公共准备，来源分项待测。按选中任务拆开证券／ST／日历与行业准备，测参考命中、行业过期和 Company 单独运行，避免改变资格口径。 [同步组合根](../src/trader/bootstrap.py#L215) [参考准备](../src/trader/download/application/prepare_reference.py#L77) [行业刷新](../src/trader/download/infra/current_industry_publication.py#L179) |
+| Company 请求授权在写事务内重复扫描历史账本 | 请求表只有 `attempt` 主键，轮次预算每次重新计数，阶段汇总也有多条计数。当前 DDL 的 33,280 行内存夹具返回同样 512，覆盖索引 `(round_id,family,step,observed)` 使轮次计数的每百条 SQLite 虚拟机指令回调从 1,003 次降到 16 次。先合并同阶段计数，再实测索引对保留数据的查询、写入和文件体积。已消耗额度及未确认尝试逐行保全。 [账本 DDL](../src/trader/download/infra/company_sync_journal.py#L63) [预约事务](../src/trader/download/infra/company_sync_journal.py#L330) |
+| 收盘结算有逐席开库的查询放大 | 每头最多检查 64 日，每个带报价的席位单开只读会话判断是否已经结算。四档双策略且窗口满席时，上限为 `4 × 2 × 64 × 6 = 3,072` 次，只计该检查。正式 History 后续仍有分散价格读取。按档位、窗口批读已结算键，按同一正式历史身份合并待结算价格查询。核对原目标、冻结摘要、修订身份和补结算结果。 [收盘调度](../src/trader/recommendation/application/runtime/close_control.py#L225) [逐席查询](../src/trader/recommendation/infra/persistence/outcome_evidence_index.py#L217) |
+| 历史 Web 轮询反复解码正式冻结 | 可见标签页每 3 秒重算历史投影。一次可涉及当前冻结和最近 31 条，单标签每分钟理论上限约 640 次解码，另有收益查询。当前 ETag 在完整投影后检查，提前省不了数据库工作。可缓存由正式冻结身份和结算修订决定的汇总，让行情覆盖独立刷新。验收连接数、解码数、未变化请求成本及新结算可见性。 [前端轮询](../src/trader/web/static/dashboard.js#L224) [历史读用例](../src/trader/recommendation/application/pipeline/freeze_publish/read_only_queries.py#L315) [收益汇总](../src/trader/recommendation/infra/persistence/outcome_evidence_index.py#L428) |
+| 历史月份报价后台可能重复超时且一直零产出 | 月份只在全量扫描完成时缓存。时钟夹具三次均反复读前四条，始终到不了第五条，报价调用为零。扫描与报价共用 10 秒。按需求身份保存有界扫描进度，完成后一次发布股票集合。以中途超时、换月、取消及四档有需求的夹具验证。 [月份刷新](../src/trader/recommendation/application/history_quotes.py#L129) |
+| D25 V5 的概率拟合没有沿数据库批次维持有界矩阵 | 源码先保留各批再拼接。2,048 行 × 365 列的隔离调用生成 5,980,160 字节的特征，拟合前 Python 分配峰值 12,003,224 字节。内存准入估算的是收益拟合矩阵。把概率路径纳入同一准入，复用有界矩阵或映射。以同输入核最大行业、校准阶段、RSS、换页及模型数值。夹具分配量不能替代进程 RSS。 [概率矩阵](../src/trader/training/infra/d25/training.py#L73) [内存准入](../src/trader/training/infra/engine.py#L425) |
+| D25 一个启动动作读取同一模型文件两次 | 隔离 V3 工件的收益加载与概率加载各读 `model.json` 一次，两段各持锁，发布插入其间可能短暂绑定失败。训练到期维护还会再解析工件。一次发布锁内读取同一代文件，分别校验收益和概率后复用一次读取，维护只取必要元数据。统计每档读次数、字节、启动墙钟和故障分类。 [加载入口](../src/trader/bootstrap.py#L644) [概率读取](../src/trader/training/infra/d25/artifact.py#L244) [训练到期](../src/trader/training/infra/history/history_training_due.py#L483) |
+| 成功发布后的历史目录库有重复封签 | 提交发布指针时已经写封签，正常收尾再次封签。摘要有缓存，第二次原子写及同步仍可能执行。先测同文件代际下的重复计数，只复用已校验的原封签，保留文件变更、取消和恢复路径的重验。 [历史发布](../src/trader/download/infra/history_control_index.py#L324) [收尾](../src/trader/download/infra/history_sync_io.py#L140) [封签写入](../src/trader/infra/sqlite_publication.py#L225) |
+
+旧实盘证据中，三档从采集到 SSE 的五轮为 55.3–90.8 秒，浏览器收到事件后约 23–32 毫秒完成更新。对照基线只有一轮，且时段、行情和机器负载不同。正常盘中性能应继续用同输入重复测采集、评分、批次发布、SSE 和浏览器可见。历史页面和收盘结算分别测，不把它们的改进直接计入盘中整轮。 [既有实盘记录](g_施工进度.md#45-codexc后台承接原d全部性能实测)
+
+### 15.3 模块边界、可删代码和工程门禁
+
+| 发现 | 判断和核对方向 |
+| --- | --- |
+| 组合根过于集中，四档启动重复读配置 | `bootstrap.py` 1,425 行，154 条顶层导入语句，`BuildSystem` 343 行。四档组合先载入运行配置一次，再为每档重读一次。每次运行配置读取 8 个 JSON，合计至少 40 次。四档共同校验目标，其他共享政策没有这一轮统一配置快照的保证。保持一个组合根，把服务接线、下载命令与训练命令的组装分别落在具名装配函数，先冻结一套已解析配置再派生档位。复验同一启动期的来源、风险、预算和定版身份。 [组合](../src/trader/bootstrap.py#L900) [各档构建](../src/trader/bootstrap.py#L555) [配置读取](../src/trader/infra/settings/runtime_loader.py#L79) |
+| `sync company fill` 名义上独立，实际流程相同 | CLI 转交 `fill_missing`，组合根仅用它校验范围。普通和 fill 进入同一作用域、执行器与计划。可收口到一个入口，验收现有断点、补缺与退出码。 [CLI](../src/trader/entrypoints/cli.py#L199) [组合根](../src/trader/bootstrap.py#L215) |
+| 仍有仅测试或无读取者的旧路径 | `QfqUpdateRunner` 只在测试被实例化，独立短窗诊断直接调用 `UpdateQfqWindows`。普通训练适配器的双收益研究分支只有测试传入，显式离线研究另有真实入口。`RuntimeDependencies.publish_overlay` 的旧回调在生产传 `None`，调度器没有读取，浏览器诊断仍注入它。三处各自核真实替代入口和相应回归后可删除。 [QFQ 编排](../src/trader/download/infra/qfq_update_runner.py#L132) [训练分支](../src/trader/training/infra/selected_training.py#L113) [闲置依赖](../src/trader/recommendation/application/runtime/runtime_dependencies.py#L55) |
+| 模型验读和训练日志仍有两处信息失真 | 上次移除未使用的残差化默认参数即改变三档 D25 源码摘要，验读据此拒绝旧概率工件。考虑将源码溯源与可加载所需的计算、特征、目标、输入及结构身份分开。概率拟合重复发 `0/1`，V5 收益已落盘、概率校准失败在汇总中难区分。阶段和回执应给出真实行业进度、收益文件状态与概率状态。 [实现摘要](../src/trader/training/infra/implementation_identity.py#L27) [拟合和发布](../src/trader/training/infra/engine.py#L527) |
+| 正常全策略训练的工作边界还可缩小 | 普通命令等待 Tomorrow 全部结束后才准备 D25。现有四档 Tomorrow 夹具需两次历史读取，其后 D25另走共享扫描。训练期间与历史同步共用历史锁。先分量测样本、拟合、锁占用与 CPU/RSS/I/O，再试受控重叠或在持久固定输入后尽早释放锁。保留双策略标签、日期和作业身份，V5仍10轮。 [训练编排](../src/trader/training/infra/selected_training.py#L205) [历史维护锁](../src/trader/download/infra/history_sync_io.py#L102) |
+| 诊断脚本仍绕过 SQLite 公共连接边界 | 当前单独运行架构门失败。按同一 AST 条件核对有 3 个历史诊断脚本共 26 处原生连接或直接语句。外部 I/O 所有权的独立架构检查通过。诊断接入同一连接、超时和计量入口后验证原生工具是否仍能给出同口径证据。 [架构测试](../tests/system/contract/test_architecture.py#L35) [代表脚本](../scripts/download/history/history_publication_audit.py#L99) |
+| 用户入口文档与当前程序有漂移 | README 仍提已撤销的旧调度卸载命令，写预读线程退出且运行中没有观察，并列 2 GiB RSS。当前线程保留间隔观察，配置门槛为 3 GiB。系统设计把独立短窗连到荐股启动，当前组装读取年度 History。把文档核对连到当次 CLI 入口、配置和实际数据链。 [README](../README.md#L80) [观察循环](../src/trader/recommendation/infra/market_data/published_input_preloader.py#L104) [RSS 配置](../config/performance.json#L56) [年度 History 接线](../src/trader/bootstrap.py#L1053) |
+
+实施顺序按正确性、Company 单轮工作量、SQL 和文件读取放大排列。全仓改结构之前先收口能够证明无当前消费者的入口和配置重复读取。性能项目沿施工台账原有队列，以相同输入的重复整轮计量裁决。
