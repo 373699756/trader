@@ -40,10 +40,13 @@ _STAGE_LABELS: dict[TomorrowTrainingStage, str] = {
     "target_statistics": "标签统计",
     "industry_statistics": "行业统计",
     "model_fit": "拟合",
+    "model_calibration": "校准",
+    "model_evaluation": "验证",
+    "model_reuse": "模型复用",
     "final_model_refit": "重拟合",
     "artifact_publish": "模型发布",
 }
-_STATE_LABELS = {"started": "开始", "running": "处理中", "completed": "完成"}
+_STATE_LABELS = {"started": "开始", "running": "处理中", "completed": "完成", "failed": "失败"}
 _FIT_PHASE_LABELS: dict[TrainingFitPhase, str] = {
     "preparation": "检查", "batch_cache": "缓存", "normalization": "标准化",
     "training": "训练", "early_stopping": "早停", "calibration": "校准",
@@ -183,7 +186,7 @@ class StderrTomorrowTrainingProgress:
                 previous = self._input_progress
                 self._input_progress = progress.input_progress
                 latest = self._latest
-                if latest is not None and latest.sample_progress is not None and latest.state != "completed":
+                if latest is not None and latest.sample_progress is not None and latest.state in {"started", "running"}:
                     if previous != progress.input_progress:
                         self._advanced_at = now
                     if now - self._emitted_at >= _PROGRESS_INTERVAL_SECONDS:
@@ -219,7 +222,7 @@ class StderrTomorrowTrainingProgress:
             self._latest = progress
             self._current_notice = None
             self._observe_epoch(progress, now)
-            boundary = progress.state in {"started", "completed"} or validation_started or first_skip
+            boundary = progress.state in {"started", "completed", "failed"} or validation_started or first_skip
             if boundary or now - self._emitted_at >= _PROGRESS_INTERVAL_SECONDS:
                 self._emit(progress, now)
 
@@ -288,7 +291,7 @@ class StderrTomorrowTrainingProgress:
                     details, f"距上次阶段更新 {ProgressDuration(now - updated)}",
                 )))
                 self._emitted_at = now
-            elif self._latest is not None and self._latest.state != "completed":
+            elif self._latest is not None and self._latest.state in {"started", "running"}:
                 self._emit(self._latest, now, waiting=True)
 
     def _stage_label(self, progress: TomorrowTrainingProgress) -> str:

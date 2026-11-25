@@ -24,10 +24,13 @@ TomorrowTrainingStage = Literal[
     "target_statistics",
     "industry_statistics",
     "model_fit",
+    "model_calibration",
+    "model_evaluation",
+    "model_reuse",
     "final_model_refit",
     "artifact_publish",
 ]
-TomorrowTrainingProgressState = Literal["started", "running", "completed"]
+TomorrowTrainingProgressState = Literal["started", "running", "completed", "failed"]
 TOMORROW_TRAINING_COMPUTE_THREADS = 2
 TOMORROW_TRAINING_PEAK_RSS_MIB = 2_048
 

@@ -96,9 +96,11 @@ def test_four_independent_algorithms_fit_and_reload_with_only_two_reads(tmp_path
     history = SimpleNamespace(open_dates=dates, universe_count=len(codes), snapshot_hash="a" * 64, iter_training_rows=rows)
     targets = LoadPredictionTargets(_ROOT / "config/strategy.json")
     budget = TrainingCpuBudget(2, TrainingResourceSettingsFixture().cpu)
+    progress = {profile: [] for profile in SCORING_PROFILE_IDS}
     arguments = dict(
         profiles=SCORING_PROFILE_IDS, prediction_targets=targets, project_root=_ROOT,
         cancelled=lambda: False, cpu_budget=budget, memory=TrainingMemoryBudget(120 * 1024**2),
+        progress=lambda profile, event: progress[profile].append(event),
     )
     fitted = TrainTomorrowProbability(history, tmp_path, **arguments)
     assert len(reads) == 2
@@ -117,10 +119,35 @@ def test_four_independent_algorithms_fit_and_reload_with_only_two_reads(tmp_path
         batch = model.predict_probabilities((zero, zero))
         assert all(0 <= value <= 1 for value in batch)
         assert batch == pytest.approx((model.predict_probability(zero),) * 2)
+        events = progress[head.profile]
+        assert all(event.strategy is Strategy.TOMORROW for event in events)
+        assert [(event.stage, event.state) for event in events if event.state != "running"] == [
+            ("training_preparation", "started"), ("training_preparation", "completed"),
+            ("history_conversion", "started"), ("history_conversion", "completed"),
+            ("model_fit", "started"), ("model_fit", "completed"),
+            ("model_calibration", "started"), ("model_calibration", "completed"),
+            ("model_evaluation", "started"), ("model_evaluation", "completed"),
+            ("artifact_publish", "started"), ("artifact_publish", "completed"),
+        ]
+        scan = next(event for event in events if event.stage == "history_conversion" and event.state == "completed")
+        calendar = reads[1] if head.profile == "v5" else reads[0]
+        assert scan.sample_progress is not None
+        assert scan.sample_progress.completed_days == scan.sample_progress.total_days == len(calendar)
+        assert scan.sample_progress.processed_rows == len(calendar) * len(codes)
+        assert scan.sample_progress.warmup_rows == (61 * len(codes) if head.profile == "v5" else 0)
+        assert any(event.state == "running" and event.completed_units > 0 for event in events)
+        events.clear()
 
     reused = TrainTomorrowProbability(history, tmp_path, **arguments)
     assert len(reads) == 2 and all(head.result.assessment_rows == 0 for head in reused)
     assert tuple(head.result.model_identity for head in reused) == tuple(head.result.model_identity for head in fitted)
+    assert all(
+        [(event.stage, event.state) for event in events] == [
+            ("training_preparation", "started"),
+            ("training_preparation", "completed"),
+            ("model_reuse", "completed"),
+        ] for events in progress.values()
+    )
 
     assert LoadTomorrowProbabilityModel(tmp_path, "v2", _HIGHER_TARGET, project_root=_ROOT) is None
     tree_model = LoadTomorrowProbabilityModel(tmp_path, "v2", _TARGET, project_root=_ROOT)
@@ -162,11 +189,16 @@ def test_training_respects_memory_admission_and_cancellation(tmp_path: Path) -> 
     history = SimpleNamespace(open_dates=dates, universe_count=6, snapshot_hash="a" * 64)
     budget = TrainingCpuBudget(2, TrainingResourceSettingsFixture().cpu)
     targets = LoadPredictionTargets(_ROOT / "config/strategy.json")
+    progress = []
     blocked, = TrainTomorrowProbability(
         history, tmp_path, profiles=("v3",), prediction_targets=targets, project_root=_ROOT,
         cancelled=lambda: False, cpu_budget=budget, memory=TrainingMemoryBudget(1),
+        progress=lambda _profile, event: progress.append(event),
     )
     assert blocked.result.failure == "tomorrow_probability_memory_budget_insufficient"
+    assert [(event.stage, event.state) for event in progress] == [
+        ("training_preparation", "started"), ("training_preparation", "failed"),
+    ]
     with pytest.raises(InterruptedError, match="training_cancelled"):
         TrainTomorrowProbability(
             history, tmp_path, profiles=("v3",), prediction_targets=targets, project_root=_ROOT,

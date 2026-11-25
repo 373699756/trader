@@ -31,6 +31,7 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.settings.loading import LoadPredictionTargets
 from trader.training.application.learned_rank_training import V1TrainingResult
 from trader.training.application.selected_training import SelectedD25IndustryUnavailable, SelectedTrainingDrainError, SelectedTrainingRun, SelectedTrainingTask, TrainSelectedProfiles, TrainingLocations
+from trader.training.application.tomorrow_training import TomorrowTrainingProgress
 from trader.download.infra.history_control_index import HistoryMaintenanceAlreadyRunningError, HistoryMaintenanceLock
 from trader.training.domain.tomorrow_probability import TomorrowProbabilityProfileResult, TomorrowProbabilityTrainingResult
 from trader.infra.shutdown import ShutdownDeadline
@@ -51,6 +52,14 @@ _CURRENT_INDUSTRY = CurrentIndustrySnapshotFixture(("000001", *(f"60000{number}"
 class _Progress:
     def publish(self, _update):
         pass
+
+
+class _RecordingProgress:
+    def __init__(self) -> None:
+        self.events: list[TomorrowTrainingProgress] = []
+
+    def publish(self, update: TomorrowTrainingProgress) -> None:
+        self.events.append(update)
 
 
 def _request(tmp_path: Path, *, industry: bool) -> SelectedTrainingRequest:
@@ -240,15 +249,27 @@ def test_selected_profiles_freeze_one_clock_and_current_industry_load_for_the_ru
     assert tuple(member.code for member in adopted[0].members) == ("000001",)
 
 
-def test_tomorrow_can_read_the_published_prices_before_d25_checks_industry(tmp_path):
-    request = _request(tmp_path, industry=False)
+def test_tomorrow_can_read_the_published_prices_before_d25_checks_industry(tmp_path, monkeypatch):
+    progresses = (_RecordingProgress(), _RecordingProgress())
+    request = replace(_request(tmp_path, industry=False), profiles=("v1", "v3"), progresses=progresses)
     stages = []
+    open_history = selected_training.OpenTomorrowHistoryInput
+    started = TomorrowTrainingProgress("input_read", "started", 0, 1, strategy=Strategy.TOMORROW)
+    completed = TomorrowTrainingProgress("input_read", "completed", 1, 1, strategy=Strategy.TOMORROW)
 
-    def fit_tomorrow(history, model_root, *, profiles, prediction_targets, **_resources):
+    def open_observed_history(*args, **kwargs):
+        assert all(item.events == [started] for item in progresses)
+        return open_history(*args, **kwargs)
+
+    monkeypatch.setattr(selected_training, "OpenTomorrowHistoryInput", open_observed_history)
+
+    def fit_tomorrow(history, model_root, *, profiles, prediction_targets, progress, **_resources):
         stages.append("tomorrow")
+        assert all(item.events == [started, completed] for item in progresses)
         rows = tuple(history.iter_training_rows(history.open_dates[-1:]))
         assert len(rows) == 1 and rows[0].code == "000001" and rows[0].industry is None
         assert model_root == request.paths.models
+        progress("v3", TomorrowTrainingProgress("model_fit", "running", 0, 1, strategy=Strategy.TOMORROW))
         return tuple(TomorrowProbabilityProfileResult(
             prediction_targets.for_profile(profile, Strategy.TOMORROW), profile,
             TomorrowProbabilityTrainingResult(history.snapshot_hash, "b" * 64, "lambdarank"),
@@ -266,18 +287,24 @@ def test_tomorrow_can_read_the_published_prices_before_d25_checks_industry(tmp_p
     with pytest.raises(SelectedD25IndustryUnavailable) as blocked, adapter.open():
         pytest.fail("D25 may not open without its current industry input")
     assert stages == ["tomorrow", "industry"]
-    assert len(blocked.value.tomorrow_probability) == 1
-    assert blocked.value.tomorrow_probability[0].result.ready
+    assert tuple(head.profile for head in blocked.value.tomorrow_probability) == ("v1", "v3")
+    assert all(head.result.ready for head in blocked.value.tomorrow_probability)
+    assert progresses[0].events == [started, completed]
+    assert progresses[1].events == [
+        started, completed, TomorrowTrainingProgress("model_fit", "running", 0, 1, strategy=Strategy.TOMORROW),
+    ]
 
 
 @pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
 def test_selected_strategy_reads_only_its_own_inputs(tmp_path, strategy):
-    request = replace(_request(tmp_path, industry=False), strategy=strategy)
+    progress_output = _RecordingProgress()
+    request = replace(_request(tmp_path, industry=False), progresses=(progress_output,), strategy=strategy)
     opened = []
 
-    def fit_tomorrow(history, _root, *, profiles, prediction_targets, **_resources):
+    def fit_tomorrow(history, _root, *, profiles, prediction_targets, progress, **_resources):
         assert strategy is Strategy.TOMORROW
         opened.append("tomorrow")
+        progress("v1", TomorrowTrainingProgress("model_fit", "running", 0, 1, strategy=Strategy.TOMORROW))
         return tuple(TomorrowProbabilityProfileResult(
             prediction_targets.for_profile(profile, Strategy.TOMORROW), profile,
             TomorrowProbabilityTrainingResult(history.snapshot_hash, "b" * 64, "lambdarank"),
@@ -299,7 +326,13 @@ def test_selected_strategy_reads_only_its_own_inputs(tmp_path, strategy):
     if strategy is Strategy.TOMORROW:
         assert tuple(head.profile for head in run.tomorrow_probability) == request.profiles
         assert not run.outcomes and not run.d25_targets and run.industry_snapshot is None
+        assert [(event.stage, event.state, event.strategy) for event in progress_output.events] == [
+            ("input_read", "started", Strategy.TOMORROW),
+            ("input_read", "completed", Strategy.TOMORROW),
+            ("model_fit", "running", Strategy.TOMORROW),
+        ]
     else:
+        assert all(event.strategy is not Strategy.TOMORROW for event in progress_output.events)
         assert not run.tomorrow_probability and run.industry_snapshot is not None
         assert run.industry_snapshot.publication_hash == _CURRENT_INDUSTRY.publication_hash
         assert tuple(member.code for member in run.industry_snapshot.members) == ("000001",)

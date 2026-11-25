@@ -54,6 +54,22 @@ def test_heartbeat_only_observes_the_current_stage_for_each_profile(capsys) -> N
     assert "样本索引" not in lines[0]
 
 
+def test_tomorrow_fit_heartbeat_stops_when_the_stage_fails(capsys) -> None:
+    clock = _MutableClock()
+    output = StderrTomorrowTrainingProgress(monotonic=clock, command_label="train·V5")
+    event = TomorrowTrainingProgress("model_fit", "started", 0, 1, strategy=Strategy.TOMORROW)
+    output.publish(event)
+    assert "train·V5·明日·拟合" in capsys.readouterr().err
+    output._emit_heartbeat(30)
+    assert "等待" in capsys.readouterr().err
+
+    clock.now = 31
+    output.publish(replace(event, state="failed"))
+    assert "失败" in capsys.readouterr().err
+    output._emit_heartbeat(62)
+    assert capsys.readouterr().err == ""
+
+
 def test_scan_bounds_and_global_v1_fit_do_not_claim_industry_or_percentage(capsys) -> None:
     output = StderrTomorrowTrainingProgress(monotonic=_Clock(0, 0, 5, 10), command_label="train·V1")
     output.publish(TomorrowTrainingProgress("history_conversion", "running", 50, 10_000, 7, total_is_exact=False))

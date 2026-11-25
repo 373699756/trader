@@ -6,13 +6,14 @@ import math
 from collections import deque
 from collections.abc import Callable, Generator, Iterable
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
+from functools import partial
 from importlib.util import find_spec
 from itertools import groupby
 from pathlib import Path
-from typing import Protocol, TypeAlias
+from typing import Literal, Protocol, TypeAlias
 
 import lightgbm as lgb
 import numpy as np
@@ -38,6 +39,13 @@ from trader.recommendation.domain.outcomes.tomorrow_target import TomorrowCloseG
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.application.resources import TrainingMemoryAdmission
+from trader.training.application.tomorrow_training import (
+    TomorrowTrainingProgress,
+    TomorrowTrainingProgressState,
+    TomorrowTrainingStage,
+    TrainingSampleProgress,
+    TrainingValidationProgress,
+)
 from trader.training.domain.tomorrow_probability import TomorrowProbabilityProfileResult, TomorrowProbabilityTrainingResult
 from trader.training.domain.v1.learned_rank import V1TrainingSettings
 from trader.training.infra.cpu_admission import TrainingCpuBudget
@@ -68,6 +76,33 @@ _SEATS = 6
 _BOARDS = ("main", "chinext", "star")
 _FloatArray: TypeAlias = NDArray[np.float64]
 _IntArray: TypeAlias = NDArray[np.int64]
+_ProfileProgress = Callable[[ScoringProfileId, TomorrowTrainingProgress], None]
+
+
+@dataclass(slots=True)
+class _Progress:
+    notify: Callable[[TomorrowTrainingProgress], None] | None
+    latest: TomorrowTrainingProgress | None = None
+
+    def publish(self, event: TomorrowTrainingProgress) -> None:
+        self.latest = event
+        if self.notify is not None:
+            self.notify(event)
+
+    def stage(
+        self, stage: TomorrowTrainingStage, state: TomorrowTrainingProgressState, *, validation_rows: int | None = None,
+    ) -> None:
+        self.publish(TomorrowTrainingProgress(
+            stage, state, int(state == "completed"), 1, strategy=Strategy.TOMORROW,
+            validation=(
+                TrainingValidationProgress(validation_rows if state == "completed" else 0, validation_rows)
+                if validation_rows is not None else None
+            ),
+        ))
+
+    def fail(self) -> None:
+        if self.latest is not None and self.latest.state in {"started", "running"}:
+            self.publish(replace(self.latest, state="failed"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +202,7 @@ class TomorrowTrainer(Protocol):
         cancelled: Callable[[], bool],
         cpu_budget: TrainingCpuBudget,
         memory: TrainingMemoryAdmission,
+        progress: _ProfileProgress | None = None,
     ) -> tuple[TomorrowProbabilityProfileResult, ...]: ...
 
 
@@ -180,6 +216,7 @@ def TrainTomorrowProbability(
     cancelled: Callable[[], bool],
     cpu_budget: TrainingCpuBudget,
     memory: TrainingMemoryAdmission,
+    progress: _ProfileProgress | None = None,
 ) -> tuple[TomorrowProbabilityProfileResult, ...]:
     def check() -> None:
         if cancelled():
@@ -187,8 +224,11 @@ def TrainTomorrowProbability(
 
     results: dict[ScoringProfileId, TomorrowProbabilityProfileResult] = {}
     pending: dict[tuple[PredictionTarget, bool], list[_PendingFit]] = {}
+    reporters = {profile: _Progress(partial(progress, profile) if progress is not None else None) for profile in profiles}
     for profile in profiles:
         check()
+        reporter = reporters[profile]
+        reporter.stage("training_preparation", "started")
         target = prediction_targets.for_profile(profile, Strategy.TOMORROW)
         try:
             current = LoadTomorrowProbabilityModel(model_root, profile, target, project_root=project_root)
@@ -197,10 +237,13 @@ def TrainTomorrowProbability(
         if current is not None and current.artifact.history_snapshot_hash == history.snapshot_hash:
             result = TomorrowProbabilityTrainingResult(history.snapshot_hash, current.identity, current.artifact.algorithm)
             results[profile] = TomorrowProbabilityProfileResult(target, profile, result)
+            reporter.stage("training_preparation", "completed")
+            reporter.stage("model_reuse", "completed")
         elif profile == "v5" and find_spec("torch") is None:
             results[profile] = TomorrowProbabilityProfileResult(
                 target, profile, _failed(history.snapshot_hash, "tomorrow_v5_tensor_dependency_unavailable"),
             )
+            reporter.fail()
         else:
             try:
                 settings = LoadTomorrowFitSettings(project_root, profile)
@@ -208,11 +251,13 @@ def TrainTomorrowProbability(
             except (OSError, ValueError) as exc:
                 result = _training_failure(history.snapshot_hash, exc)
                 results[profile] = TomorrowProbabilityProfileResult(target, profile, result)
+                reporter.fail()
             else:
                 pending.setdefault((target, profile == "v5"), []).append(request)
 
     for requests in pending.values():
-        for head in _train_sample_group(history, model_root, tuple(requests), cpu_budget, memory, check):
+        group_reporters = tuple(reporters[item.profile] for item in requests)
+        for head in _train_sample_group(history, model_root, tuple(requests), cpu_budget, memory, check, group_reporters):
             results[head.profile] = head
     return tuple(results[profile] for profile in profiles)
 
@@ -220,7 +265,12 @@ def TrainTomorrowProbability(
 def _train_sample_group(
     history: TomorrowHistoryInput, model_root: Path, requests: tuple[_PendingFit, ...],
     cpu_budget: TrainingCpuBudget, memory: TrainingMemoryAdmission, check: Callable[[], None],
+    reporters: tuple[_Progress, ...],
 ) -> tuple[TomorrowProbabilityProfileResult, ...]:
+    def publish_samples(event: TomorrowTrainingProgress) -> None:
+        for reporter in reporters:
+            reporter.publish(event)
+
     target = requests[0].target
     sequence = requests[0].profile == "v5"
     warmup = SEQUENCE_STEPS + 1 if sequence else 0
@@ -243,16 +293,21 @@ def _train_sample_group(
             cpu_budget.reserve(cpu_budget.native_threads, check),
             cpu_budget.native_runtime(),
         ):
+            for reporter in reporters:
+                reporter.stage("training_preparation", "completed")
             with closing(history.iter_training_rows(calendar)) as rows:
                 samples = _collect_samples(
                     rows, calendar, cap, check, target, warmup=warmup, source_identity=history.snapshot_hash,
+                    progress=publish_samples if any(reporter.notify is not None for reporter in reporters) else None,
                 )
             return tuple(_fit_pending(
                 item, samples, calendar[warmup:-1], history.snapshot_hash, model_root, check,
-                cpu_budget.native_threads,
-            ) for item in requests)
+                cpu_budget.native_threads, reporter,
+            ) for item, reporter in zip(requests, reporters, strict=True))
     except (OSError, ValueError, HistorySnapshotReadError, lgb.basic.LightGBMError, np.linalg.LinAlgError) as exc:
         result = _training_failure(history.snapshot_hash, exc)
+        for reporter in reporters:
+            reporter.fail()
         return tuple(TomorrowProbabilityProfileResult(item.target, item.profile, result) for item in requests)
 
 
@@ -302,7 +357,21 @@ def _collect_samples(
     *,
     warmup: int = 0,
     source_identity: str = "",
+    progress: Callable[[TomorrowTrainingProgress], None] | None = None,
 ) -> _Samples:
+    def report(state: TomorrowTrainingProgressState, phase: Literal["warmup", "generation"]) -> None:
+        if progress is not None:
+            sample_progress = TrainingSampleProgress(
+                read_days, len(calendar), processed_rows, warmup_rows, phase, pending,
+            )
+            progress(TomorrowTrainingProgress(
+                "history_conversion", state, read_days, len(calendar), written,
+                Strategy.TOMORROW, sample_progress=sample_progress,
+            ))
+
+    read_days = processed_rows = warmup_rows = 0
+    written = pending = missing_features = 0
+    report("started", "warmup" if warmup else "generation")
     columns = TomorrowFeatureNames("v5" if warmup else "v3")
     features = np.empty((cap, len(columns)), dtype=np.float32 if warmup else np.float64)
     labels: _FloatArray = np.empty(cap, dtype=np.float64)
@@ -313,7 +382,6 @@ def _collect_samples(
     previous: tuple[HistoryTrainingRow, ...] = ()
     rolling: dict[str, deque[PriceVolumePoint]] = {}
     offsets = [0]
-    written = pending = missing_features = 0
     for day_index, day in enumerate(calendar):
         check()
         current: dict[str, HistoryTrainingRow] = {}
@@ -360,8 +428,15 @@ def _collect_samples(
         if warmup:
             AppendTomorrowSequencePoints(rolling, previous, warmup)
         previous = tuple(current.values())
+        if progress is not None:
+            read_days += bool(current)
+            processed_rows += len(current)
+            if day_index < warmup:
+                warmup_rows += len(current)
+            report("running", "warmup" if warmup and day_index <= warmup else "generation")
     if group is not None:
         raise ValueError("tomorrow_history_stream_out_of_range")
+    report("completed", "warmup" if warmup and len(calendar) <= warmup + 1 else "generation")
     return _Samples(
         features[:written], labels[:written], codes[:written], boards[:written], tuple(offsets), pending, missing_features,
     )
@@ -462,24 +537,26 @@ def _fit_head(
 
 def _fit_pending(
     request: _PendingFit, samples: _Samples, signal_dates: tuple[date, ...], snapshot_hash: str,
-    model_root: Path, check: Callable[[], None], threads: int,
+    model_root: Path, check: Callable[[], None], threads: int, progress: _Progress,
 ) -> TomorrowProbabilityProfileResult:
     try:
+        progress.stage("model_fit", "started")
         if isinstance(request.settings.parameters, TcnFittingParameters):
             from trader.training.infra.tcn.network import PreserveTcnRuntime
 
             with PreserveTcnRuntime():
-                result = _train(request, samples, signal_dates, snapshot_hash, model_root, check, threads)
+                result = _train(request, samples, signal_dates, snapshot_hash, model_root, check, threads, progress)
         else:
-            result = _train(request, samples, signal_dates, snapshot_hash, model_root, check, threads)
+            result = _train(request, samples, signal_dates, snapshot_hash, model_root, check, threads, progress)
     except (ImportError, OSError, ValueError, RuntimeError, lgb.basic.LightGBMError, np.linalg.LinAlgError) as exc:
         result = _training_failure(snapshot_hash, exc)
+        progress.fail()
     return TomorrowProbabilityProfileResult(request.target, request.profile, result)
 
 
 def _train(
     request: _PendingFit, samples: _Samples, signal_dates: tuple[date, ...], snapshot_hash: str,
-    model_root: Path, check: Callable[[], None], threads: int,
+    model_root: Path, check: Callable[[], None], threads: int, progress: _Progress,
 ) -> TomorrowProbabilityTrainingResult:
     dates = request.dates
     assessment_begin = len(signal_dates) - dates.assessment
@@ -502,7 +579,8 @@ def _train(
     calibration = samples.rows(calibration_begin, calibration_end)
     assessment = samples.rows(assessment_begin, len(signal_dates))
     fitted = _fit_head(samples, (fitting_begin, fitting_end), (early_begin, early_end), request.settings, check, threads)
-
+    progress.stage("model_fit", "completed")
+    progress.stage("model_calibration", "started")
     calibration_rows, calibration_labels = _observed_rows(samples, calibration)
     _require_labels(calibration_labels)
     calibration_scores = fitted.scores(calibration_rows)
@@ -510,12 +588,15 @@ def _train(
     slope = float(weights[0])
     if not math.isfinite(slope) or slope <= 0:
         raise ValueError("tomorrow_calibration_not_monotone")
+    progress.stage("model_calibration", "completed")
     assessment_labels_all = samples.labels[assessment]
+    progress.stage("model_evaluation", "started", validation_rows=len(assessment_labels_all))
     assessed = np.isfinite(assessment_labels_all)
     assessment_labels = assessment_labels_all[assessed]
     _require_labels(assessment_labels)
     probabilities = _sigmoid(intercept + slope * fitted.scores(samples.features[assessment]))
     hits, seats, unsettled = _seat_hits(probabilities, samples, assessment_begin, len(signal_dates))
+    progress.stage("model_evaluation", "completed", validation_rows=len(assessment_labels_all))
     fitted_dates = tuple(signal_dates[index] for index in (
         *_observed_dates(samples, fitting_begin, fitting_end), *_observed_dates(samples, early_begin, early_end),
     ))
@@ -525,7 +606,9 @@ def _train(
         intercept, slope, fitted.logistic, fitted.tree, fitted.tcn,
     )
     check()
+    progress.stage("artifact_publish", "started")
     identity = PublishTomorrowProbabilityModel(model_root, artifact)
+    progress.stage("artifact_publish", "completed")
     return TomorrowProbabilityTrainingResult(
         snapshot_hash, identity, artifact.algorithm,
         assessment_rows=len(assessment_labels),

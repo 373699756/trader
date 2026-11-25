@@ -175,11 +175,25 @@ class SelectedTrainingAdapter:
             return ()
         train = self.train_tomorrow
         assert train is not None
+        progresses = {
+            profile: CancellableTrainingProgress(progress, request.cancelled)
+            for profile, progress in zip(request.profiles, request.progresses, strict=True)
+        }
+
+        def report(profile: ScoringProfileId, event: TomorrowTrainingProgress) -> None:
+            progresses[profile].publish(event)
+
+        opening = TomorrowTrainingProgress("input_read", "started", 0, 1, strategy=Strategy.TOMORROW)
+        for progress in progresses.values():
+            progress.publish(opening)
         history = OpenTomorrowHistoryInput(request.paths.history, sqlite_policy=self.sqlite_policy)
+        opened = TomorrowTrainingProgress("input_read", "completed", 1, 1, strategy=Strategy.TOMORROW)
+        for progress in progresses.values():
+            progress.publish(opened)
         return train(
             history, request.paths.models, profiles=request.profiles, prediction_targets=self.prediction_targets,
             project_root=request.runtime.project_root, cancelled=request.cancelled,
-            cpu_budget=request.cpu_budget, memory=request.memory_admission,
+            cpu_budget=request.cpu_budget, memory=request.memory_admission, progress=report,
         )
 
     def run_tomorrow_only(self) -> SelectedTrainingRun[SelectedProfileResult]:
