@@ -1158,11 +1158,11 @@ def _build_market_data(
             config_version=settings.config_version,
             wall_clock=now,
         )
+        company_reader = company_facts_reader.SQLiteCompanyEvidenceReader(
+            paths.company, event_policy=strategy.company_scoring.events, sqlite_policy=sqlite_policy,
+        )
         research = PublishedCompanyResearch(
-            company_facts_reader.SQLiteCompanyEvidenceReader(
-                paths.company, event_policy=strategy.company_scoring.events,
-                sqlite_policy=sqlite_policy,
-            ),
+            company_reader,
             wall_clock=now, open_dates=calendar.open_dates, monotonic=time.monotonic,
             reserve_bytes=partial(market_cache.reserve_resident, "security_master_calendar", "company"),
             source_versions=references.versions,
@@ -1170,6 +1170,7 @@ def _build_market_data(
             company_policy=strategy.company_scoring,
             financial_max_age_days=strategy.long_research.financial_max_age_days,
             preload_settings=settings.pipeline.company_preload,
+            financial_scoring_reader=company_reader,
         )
         intraday_loader = IntradayLoader(
             intraday_client,
@@ -1412,7 +1413,8 @@ def ExecuteCompanySync(
         progress.configure_snapshots(
             stopped=stopped,
             read_fields=lambda selected: reader.read_field_counts(
-                codes=selected.codes, as_of=selected.cutoff, cancel_requested=stopped),
+                codes=selected.codes, as_of=selected.cutoff, scoring_as_of=ShanghaiClock(_utc_now).now(),
+                cancel_requested=stopped),
             read_financial=lambda selected: normalized.financial_batch(
                 BuildCompanyFinancialRoundQuery(selected.cutoff), selected.codes, selected.cutoff),
             read_ratio=inputs.ratio_download_progress,
@@ -1424,6 +1426,7 @@ def ExecuteCompanySync(
             official_source=official, io_budget=io_budget,
             document_configuration=configuration, document_policies=policies, wall_clock=ShanghaiClock(_utc_now).now,
             observe_scope=progress.begin_scope, observe=progress.observe_family, activity=progress.activity,
+            observe_financial_scoring=progress.observe_financial_scoring,
             observe_download=lambda event: progress.download(event, journal.executing_step),
             source_ready=lambda: time.monotonic() < source_deadline, admit_observations=admit_observations)
         budget = CompanySyncBudget(configuration.round_step_limit, configuration.round_request_limit,

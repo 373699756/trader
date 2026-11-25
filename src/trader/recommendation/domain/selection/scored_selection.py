@@ -31,6 +31,7 @@ from trader.recommendation.domain.publication.models import (
     ScoredStockEvaluation,
     Strategy,
 )
+from trader.recommendation.domain.publication.score_ledger import ScoreAdjustmentItem
 from trader.recommendation.domain.risk.rules import DeduplicateRiskFacts, DeriveLocalRiskFacts
 from trader.recommendation.domain.selection.ranking import CORE_FIELDS
 from trader.recommendation.domain.scoring.company import (
@@ -754,6 +755,24 @@ def ApplySelectionRisks(
                 original.features.optional_value("growth_score"),
             ),
         )
+        context = original.features.company_context
+        financial_scores = context.d25_financial_scores if context is not None else None
+        if strategy is Strategy.D25 and financial_scores is not None:
+            available_at = financial_scores.available_at
+            if available_at <= original.features.observed_at:
+                observation = financial_scores.source.observation
+                lineage = ScoreAdjustmentItem(
+                    code="supplier_financial_scoring",
+                    kind="review",
+                    label=(f"东方财富财务观测 {observation.financial.report_date.isoformat()} "
+                           f"采用时间 {available_at.isoformat()}"),
+                    level=0,
+                    rule_points=0.0,
+                    applied_points=0.0,
+                    reason="used_for_d25_financial_scores",
+                    evidence_ids=(observation.record_hash,),
+                )
+                adjustments = replace(adjustments, bonuses=(*adjustments.bonuses, lineage))
         facts = DeduplicateRiskFacts((*facts, *adjustments.risks), rules=policy.rules)
         ledger = BuildScoreLedger(
             ScoreLedgerInput(

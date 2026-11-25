@@ -417,6 +417,10 @@ class CompanyRoundProgress:
             if current is not None:
                 self.report_coverage("同步中", current)
 
+    def observe_financial_scoring(self, scope: CompanySyncRoundScope) -> None:
+        if scope == self._scope and (current := self._snapshot(self._read_fields, scope, "正式库")) is not None:
+            self.report_coverage("同步中", current)
+
     def start(self, requested: int) -> None:
         message = ProgressMessage(
             (
@@ -821,8 +825,13 @@ def _coverage_rows(coverage: CompanyFormalCoverage) -> tuple[ProgressRow, ...]:
     )
     pledge_missing = stocks - coverage.pledge_with_value - coverage.pledge_without_event
     unlock_missing = stocks - coverage.unlock_with_event - coverage.unlock_without_event
+    scoring = coverage.financial_scoring_stocks
+    scoring_rows = () if scoring is None else (ProgressRow(
+        "D25财务评分输入", (ProgressField(f"已发布来源观测{_rate(scoring, stocks)}股"),),
+    ),)
     return (
         *financial,
+        *scoring_rows,
         ProgressRow("质押比例", (
             ProgressField(f"已核覆盖{_rate(stocks - pledge_missing, stocks)}股，待核{_rate(pledge_missing, stocks)}，"
                 f"有质押{coverage.pledge_with_value}股，已核无质押{coverage.pledge_without_event}股"),

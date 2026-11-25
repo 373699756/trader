@@ -69,6 +69,7 @@ class CompanySyncRuntime:
         observe_scope: Callable[[CompanySyncRoundScope], None] | None = None,
         observe: Callable[[CompanySyncFamilyResult], None] | None = None,
         observe_download: Callable[[CompanySourceDownloadProgress], None] | None = None,
+        observe_financial_scoring: Callable[[CompanySyncRoundScope], None] | None = None,
         activity: Callable[[CompanySyncFamily], AbstractContextManager[None]] | None = None,
         source_ready: Callable[[], bool] | None = None,
         admit_observations: bool = False,
@@ -90,6 +91,7 @@ class CompanySyncRuntime:
         self._observe_scope = observe_scope
         self._observe = observe
         self._observe_download = observe_download
+        self._observe_financial_scoring = observe_financial_scoring
         self._activity = activity
         self._source_ready = source_ready
         self._admit_observations = admit_observations
@@ -194,6 +196,7 @@ class CompanySyncRuntime:
             return self._stopped("", CompanySyncRoundScope(codes, cutoff), budget, cancel_requested, monotonic)
         requested_scope = CompanySyncRoundScope(codes, cutoff)
         active = self.journal.active()
+        current_codes = frozenset(codes)
         exhausted_same_day = active is not None and cutoff.astimezone(active.scope.cutoff.tzinfo).date() == active.scope.cutoff.date() and (
             self.journal.source_calls(active.round_id) >= active.max_source_calls
         )
@@ -201,6 +204,13 @@ class CompanySyncRuntime:
             if cutoff < active.scope.cutoff:
                 raise ValueError("company_sync_refresh_cutoff_before_active")
             if not exhausted_same_day:
+                # A terminal predecessor can contribute its closed batch before
+                # its round is released for a new network scope.
+                self._publish_financial_scoring(
+                    active.scope,
+                    BuildCompanyFinancialRoundQuery(active.scope.cutoff),
+                    tuple(code for code in active.scope.codes if code in current_codes),
+                )
                 self.journal.finish_refresh(active.round_id)
                 active = None
         elif (active is not None and new_refresh and requested_scope.cutoff.date() > active.scope.cutoff.date()
@@ -213,7 +223,7 @@ class CompanySyncRuntime:
         else:
             scope = requested_scope
         self._execution_scope = scope
-        eligible_codes = tuple(code for code in scope.codes if code in codes)
+        eligible_codes = tuple(code for code in scope.codes if code in current_codes)
         retired_news = tuple(CompanyRetiredNewsProducer(plan) for plan in (() if active is None else active.plans)
             if plan.family is CompanySyncFamily.NEWS)
         population_gaps = tuple(reason for changed, reason in (
@@ -231,6 +241,10 @@ class CompanySyncRuntime:
                     (POSITIVE_TYPES[CompanyPositiveType.OPERATING_CONTRACT],)) if row[0] in eligible_codes)
                 return ReadCompanyFactRows(formal, selected)
         query = financial_query or BuildCompanyFinancialRoundQuery(scope.cutoff)
+        def publish_financial_scoring(selected: CompanySyncRoundScope) -> None:
+            check()
+            self._publish_financial_scoring(selected, query, eligible_codes)
+
         fields = _FieldProducer(self, monotonic, eligible_codes, query)
         announcements = CompanyAnnouncementProducer(self.inputs, self.material, self._official_source, scope,
             sqlite_policy=self._sqlite_policy, extraction_hash=self.facts.extraction_hash, io_budget=self._io_budget,
@@ -239,7 +253,7 @@ class CompanySyncRuntime:
         producers: tuple[CompanySyncProducer, ...] = (
             CompanyFinancialProducer(self.normalized, self._financial_source, query, qualification_gaps=(
                 "latest_financial_population_unverified", "financial_first_disclosure_revision_unverified"),
-                current_codes=eligible_codes, observe_download=self._observe_download),
+                current_codes=eligible_codes, observe_download=self._observe_download, publish_scoring=publish_financial_scoring),
             CompanyRatioProducer(self.inputs, self._ratio_source,
                 StructuredCompanyQuery("pledge", scope.cutoff.date() - timedelta(days=365), scope.cutoff.date()),
                 current_codes=eligible_codes, observe_download=self._observe_download),
@@ -292,13 +306,28 @@ class CompanySyncRuntime:
         try:
             result = RunCompanySyncRound(self.journal, producers, scope, budget, monotonic=monotonic,
                 cancel_requested=cancel_requested, observe=self._observe, activity=self._activity,
-                recover_directory=announcements.recover_directory, source_ready=self._source_ready)
+                recover_directory=announcements.recover_directory, source_ready=self._source_ready,
+                after_resume=publish_financial_scoring if self._wall_clock is not None else None)
         except CompanySyncInterrupted:
             return self._stopped(round_id, scope, budget, cancel_requested, monotonic)
         if population_gaps:
             result = replace(result, families=tuple(replace(item, result=replace(item.result,
                 gaps=item.result.gaps + tuple(gap for gap in population_gaps if gap not in item.result.gaps))) for item in result.families))
         return result
+
+    def _publish_financial_scoring(
+        self,
+        scope: CompanySyncRoundScope,
+        query: StructuredCompanyQuery,
+        eligible_codes: tuple[str, ...],
+    ) -> None:
+        if self._wall_clock is None:
+            return
+        published = self.normalized.publish_financial_scoring(
+            query, scope.codes, scope.cutoff, eligible_codes=eligible_codes, available_at=self._wall_clock(),
+        )
+        if published and self._observe_financial_scoring is not None:
+            self._observe_financial_scoring(scope)
 
     def clean_material(self, cutoff: datetime) -> None:
         """Explicit maintenance; publication never calls this operation."""

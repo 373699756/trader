@@ -17,8 +17,12 @@ from trader.download.domain.company_document_links import CompanyDocumentLinkSna
 from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy, RepurchasePurpose
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_field_results import CompanyFieldName, CompanyFieldSnapshot
-from trader.download.domain.company_source_records import CompanyFinancialField
+from trader.download.domain.company_source_records import CompanyFinancialField, CompanyFinancialScoringObservation
 from trader.download.infra.company_document_link_rows import ReadCompanyDocumentLinks
+from trader.download.infra.company_financial_observations import (
+    CountCompanyFinancialScoringObservations,
+    ReadCompanyFinancialScoringObservations,
+)
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
 from trader.download.infra.company_facts_protocol import (
@@ -114,6 +118,41 @@ class SQLiteCompanyEvidenceReader:
         self.visit(codes, snapshots.append)
         return tuple(snapshots)
 
+    def read_financial_scoring_observations(
+        self,
+        codes: Sequence[str],
+        *,
+        as_of: datetime,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> tuple[CompanyFinancialScoringObservation, ...]:
+        """Read supplier scoring observations from the sealed formal publication."""
+        def check_cancelled() -> None:
+            if cancel_requested is not None and cancel_requested():
+                raise InterruptedError("company_financial_scoring_read_cancelled")
+
+        check_cancelled()
+        if as_of.utcoffset() is None:
+            raise ValueError("company_financial_scoring_cutoff_invalid")
+        if not self.path.exists():
+            return ()
+        requested = tuple(sorted(set(codes)))
+        try:
+            with self._session(cancel_requested=cancel_requested) as connection, SqliteTransaction(connection):
+                if not self._publication_version(connection, check=check_cancelled):
+                    return ()
+                observations: list[CompanyFinancialScoringObservation] = []
+                for offset in range(0, len(requested), 512):
+                    check_cancelled()
+                    observations.extend(ReadCompanyFinancialScoringObservations(
+                        connection, requested[offset : offset + 512], as_of, self._extraction_hash,
+                    ))
+                check_cancelled()
+                return tuple(observations)
+        except sqlite3.Error as exc:
+            if cancel_requested is not None and cancel_requested():
+                raise InterruptedError("company_financial_scoring_read_cancelled") from exc
+            raise RuntimeError("company_financial_scoring_unreadable") from exc
+
     def read_fields(
         self, codes: Sequence[str], *, cancel_requested: Callable[[], bool] | None = None,
     ) -> CompanyFieldSnapshot:
@@ -150,6 +189,7 @@ class SQLiteCompanyEvidenceReader:
         *,
         codes: Sequence[str] = (),
         as_of: datetime | None = None,
+        scoring_as_of: datetime | None = None,
         cancel_requested: Callable[[], bool] | None = None,
     ) -> CompanyFieldOutcomeCounts | None:
         """Count conclusions and pending documents from the same formal snapshot."""
@@ -177,7 +217,9 @@ class SQLiteCompanyEvidenceReader:
                     """).require_one()
                 if total:
                     self._require_current_field_rules(connection)
-                coverage = self._coverage(connection, codes, as_of, check_cancelled) if as_of is not None else None
+                coverage = self._coverage(
+                    connection, codes, as_of, check_cancelled, scoring_as_of=scoring_as_of,
+                ) if as_of is not None else None
                 check_cancelled()
                 return CompanyFieldOutcomeCounts(
                     version,
@@ -196,6 +238,7 @@ class SQLiteCompanyEvidenceReader:
 
     def _coverage(
         self, connection: SqliteConnection, codes: Sequence[str], as_of: datetime, check: Callable[[], None],
+        *, scoring_as_of: datetime | None = None,
     ) -> CompanyFormalCoverage:
         requested = tuple(sorted(set(codes)))
         if as_of.utcoffset() is None or len(requested) > 12_000:
@@ -298,9 +341,13 @@ class SQLiteCompanyEvidenceReader:
         (financial_complete, latest_profit_values, pledge_with_value, pledge_without_event,
          unlock_with_event, unlock_without_event, announcement_complete, announcement_partial,
          verified_risk_stocks, *financial_counts) = totals
+        financial_scoring_stocks = CountCompanyFinancialScoringObservations(
+            connection, requested, scoring_as_of, self._extraction_hash,
+        ) if scoring_as_of is not None else None
         return CompanyFormalCoverage(
             stocks=len(requested),
             financial_complete=financial_complete,
+            financial_scoring_stocks=financial_scoring_stocks,
             latest_profit_values=latest_profit_values,
             pledge_with_value=pledge_with_value,
             pledge_without_event=pledge_without_event,

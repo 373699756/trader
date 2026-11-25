@@ -123,6 +123,18 @@ class CompanyFinancialSourceObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class CompanyFinancialScoringObservation:
+    """A supplier observation with its own first availability for scoring."""
+
+    observation: CompanyFinancialSourceObservation
+    available_at: datetime
+
+    def __post_init__(self) -> None:
+        if self.available_at.utcoffset() is None or self.available_at < self.observation.observed_at:
+            raise ValueError("company_financial_scoring_availability_invalid")
+
+
+@dataclass(frozen=True, slots=True)
 class CompanyFinancialSourcePage:
     page: int
     pages: int
@@ -218,6 +230,7 @@ __all__ = [
     "CompanyFinancialSourceValues",
     "CompanyFinancialSourceRecordHash",
     "CompanyFinancialSourceObservation",
+    "CompanyFinancialScoringObservation",
     "CompanyFinancialSourcePage",
     "CompanyFinancialBatchCoverage",
     "CompanyOfficialDirectoryQuery",

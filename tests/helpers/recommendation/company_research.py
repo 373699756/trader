@@ -9,13 +9,14 @@ from tests.helpers.shared.configuration import RuntimeSettingsFixture
 from trader.infra.settings.models import CompanyPreloadSettings
 from trader.recommendation.domain.scoring.company import CompanyScoringPolicy
 from trader.recommendation.infra.market_data.published_company_research import (
-    CompanyEvidenceReadPort, PublishedCompanyResearch,
+    CompanyEvidenceReadPort, CompanyFinancialScoringReadPort, PublishedCompanyResearch,
 )
 
 
 class _ResearchOptions(TypedDict, total=False):
     reserve_bytes: Callable[[int], bool]
     source_versions: Callable[[], Mapping[str, str]]
+    financial_scoring_reader: CompanyFinancialScoringReadPort
 
 
 class PublishedCompanyResearchFixture(PublishedCompanyResearch):
@@ -32,12 +33,15 @@ class PublishedCompanyResearchFixture(PublishedCompanyResearch):
         source_versions: Callable[[], Mapping[str, str]] | None = None,
         config_version: str = "company",
         financial_max_age_days: int | None = None,
+        financial_scoring_reader: CompanyFinancialScoringReadPort | None = None,
     ) -> None:
         options: _ResearchOptions = {}
         if reserve_bytes is not None:
             options["reserve_bytes"] = reserve_bytes
         if source_versions is not None:
             options["source_versions"] = source_versions
+        if financial_scoring_reader is not None:
+            options["financial_scoring_reader"] = financial_scoring_reader
         super().__init__(
             reader,
             wall_clock=wall_clock,

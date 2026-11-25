@@ -24,7 +24,7 @@ from trader.download.domain.company_events import (
 )
 from trader.download.domain.company_document_links import CompanyDocumentLinkSnapshot
 from trader.download.domain.company_facts import CompanyFacts
-from trader.download.domain.company_evidence import CompanyFinancial
+from trader.download.domain.company_source_records import CompanyFinancialScoringObservation
 from trader.infra.settings.models import CompanyPreloadSettings
 from trader.recommendation.application.runtime.schedule import ShanghaiNow
 from trader.recommendation.domain.evidence.document_reference import CompanyDocumentReference
@@ -34,8 +34,9 @@ from trader.recommendation.domain.market.quality import FieldQualityState, Field
 from trader.recommendation.domain.market.research import (
     CorporateRiskCategory,
     CorporateRiskFact,
-    FinancialReport,
     FinancialReportIsFresh,
+    FinancialScoringObservationIsVisible,
+    ProjectCompanyFinancialReport,
     ResearchObservation,
 )
 from trader.recommendation.domain.scoring.company import BuildCompanyScoringContext, CompanyScoringCalendar, CompanyScoringPolicy
@@ -50,7 +51,7 @@ _SQLITE_INTERNAL_FAILURES = frozenset({
 
 
 def _observe_snapshot_read(
-    stage: Literal["before", "visit", "after"], read: Callable[[], _ReadValue]
+    stage: Literal["before", "visit", "after", "financial_scoring"], read: Callable[[], _ReadValue]
 ) -> _ReadValue:
     try:
         return read()
@@ -158,10 +159,21 @@ class CompanyEvidenceReadPort(Protocol):
     ) -> CompanyDocumentLinkSnapshot: ...
 
 
+class CompanyFinancialScoringReadPort(Protocol):
+    def read_financial_scoring_observations(
+        self,
+        codes: Sequence[str],
+        *,
+        as_of: datetime,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> tuple[CompanyFinancialScoringObservation, ...]: ...
+
+
 class _CompanyInputOptions(TypedDict, total=False):
     reserve_bytes: Callable[[int], bool]
     source_versions: Callable[[], Mapping[str, str]]
     config_version: str
+    financial_scoring_reader: CompanyFinancialScoringReadPort
 
 
 class PublishedCompanyResearch:
@@ -178,6 +190,7 @@ class PublishedCompanyResearch:
         **options: Unpack[_CompanyInputOptions],
     ) -> None:
         self._reader = reader
+        self._financial_scoring_reader = options.get("financial_scoring_reader")
         self._wall_clock = wall_clock
         self._open_dates = open_dates
         self._monotonic = monotonic
@@ -268,22 +281,52 @@ class PublishedCompanyResearch:
         calendar = _observe_snapshot_read("before", lambda: CompanyScoringCalendar(self._open_dates()))
         rows: dict[str, ResearchObservation] = {}
 
+        def preload_stopped() -> bool:
+            return cancelled() or self._monotonic() >= deadline
+
+        scoring = self._read_financial_scoring(requested, observed_at, preload_stopped) if before else {}
+
         def capture(snapshot: CompanyFacts) -> None:
-            if cancelled() or self._monotonic() >= deadline:
+            if preload_stopped():
                 raise InterruptedError("company_preload_stopped")
             if snapshot.published_at <= observed_at:
                 rows[snapshot.code] = _observation(
                     snapshot, observed_at, before, calendar, self._company_policy,
                     financial_max_age_days=self._financial_max_age_days,
+                    financial_scoring_observation=scoring.get(snapshot.code),
                 )
 
         _observe_snapshot_read(
             "visit",
             lambda: self._reader.visit(
-                requested, capture, cancel_requested=lambda: cancelled() or self._monotonic() >= deadline
+                requested, capture, cancel_requested=preload_stopped,
             ),
         )
         return before, rows
+
+    def _read_financial_scoring(
+        self,
+        codes: tuple[str, ...],
+        observed_at: datetime,
+        cancelled: Callable[[], bool],
+    ) -> dict[str, CompanyFinancialScoringObservation]:
+        reader = self._financial_scoring_reader
+        if reader is None:
+            return {}
+        try:
+            observations = _observe_snapshot_read(
+                "financial_scoring",
+                lambda: reader.read_financial_scoring_observations(codes, as_of=observed_at, cancel_requested=cancelled),
+            )
+        except InterruptedError:
+            raise
+        except (OSError, RuntimeError, ValueError, TypeError):
+            # The formal path still checks its own seal and publication identity.
+            return {}
+        return {
+            item.observation.financial.code: item for item in observations
+            if item.available_at <= observed_at
+        }
 
     def _adopt_projection(
         self,
@@ -294,13 +337,6 @@ class PublishedCompanyResearch:
         cancelled: Callable[[], bool],
         deadline: float,
     ) -> None:
-        epoch = _research_epoch(
-            rows,
-            observed_at,
-            publication,
-            self._config_version,
-            self._source_versions() if self._source_versions is not None else {},
-        )
         # Conservative retained-size reservation: fixed observations/lineage plus bounded event strings.
         size_bytes = sum(8192 + _event_reservation(row) for row in rows.values())
         documents: dict[str, list[CompanyDocumentReference]] = {}
@@ -322,6 +358,27 @@ class PublishedCompanyResearch:
                 link.published_at, "extracted" if link.body_checked else "pending",
             ))
             size_bytes += 1024 + 4 * (len(link.evidence_id) + len(link.title) + len(link.url))
+        if cancelled() or self._monotonic() >= deadline:
+            self._last_error = "company_preload_cancelled" if cancelled() else "company_preload_deadline"
+            return
+        received_at = observed_at
+        if any(row.financial_scoring_observation is not None for row in rows.values()):
+            # The durable source receipt can precede a recovered seal. The first
+            # usable cache read has its own time without shifting official risk observations.
+            received_at = max(observed_at, ShanghaiNow(self._wall_clock()))
+            rows = {
+                code: replace(row, financial_scoring_adopted_at=received_at)
+                if row.financial_scoring_observation is not None else row
+                for code, row in rows.items()
+            }
+        epoch = _research_epoch(
+            rows,
+            observed_at,
+            publication,
+            self._config_version,
+            self._source_versions() if self._source_versions is not None else {},
+            received_at=received_at,
+        )
         if cancelled() or self._monotonic() >= deadline:
             self._last_error = "company_preload_cancelled" if cancelled() else "company_preload_deadline"
             return
@@ -466,6 +523,8 @@ def _research_epoch(
     publication: str,
     config_version: str,
     versions: Mapping[str, str],
+    *,
+    received_at: datetime,
 ) -> ResearchEpoch:
     fields: dict[str, Mapping[str, FieldValue]] = {}
     for code, row in rows.items():
@@ -494,7 +553,7 @@ def _research_epoch(
         observed_at.date(),
         0,
         observed_at,
-        observed_at,
+        received_at,
         config_version,
         rows,
         {**versions, "company": publication or "company:unavailable"},
@@ -523,6 +582,9 @@ def _action_ready(item: ResearchObservation) -> bool:
 
 
 def _qualified_financial(item: ResearchObservation, now: datetime, maximum_age_days: int) -> ResearchObservation:
+    source = item.financial_scoring_observation
+    if source is not None and not FinancialScoringObservationIsVisible(item, now):
+        item = replace(item, financial_scoring_observation=None, financial_scoring_adopted_at=None)
     if item.financial is None or FinancialReportIsFresh(item.financial, now, maximum_age_days=maximum_age_days):
         return item
     return replace(
@@ -590,22 +652,12 @@ def _qualified_unlock(item: ResearchObservation, now: datetime, days: int) -> Re
     )
 
 
-def _financial_report(financial: CompanyFinancial | None, now: datetime) -> FinancialReport | None:
-    if financial is None or financial.published_at > now or financial.report_date > now.date():
-        return None
-    return FinancialReport(
-        financial.report_date, ShanghaiNow(financial.published_at), financial.basic_eps,
-        financial.book_value_per_share, financial.revenue_growth_pct, financial.net_profit_growth_pct,
-        financial.core_profit_growth_pct, financial.roe_pct, financial.parent_net_profit, financial.core_net_profit,
-    )
-
-
 def _observation(
     snapshot: CompanyFacts, now: datetime, publication: str, calendar: CompanyScoringCalendar, policy: CompanyScoringPolicy,
-    *, financial_max_age_days: int,
+    *, financial_max_age_days: int, financial_scoring_observation: CompanyFinancialScoringObservation | None = None,
 ) -> ResearchObservation:
-    report = _financial_report(snapshot.financial, now)
-    latest = _financial_report(snapshot.latest_financial, now)
+    report = ProjectCompanyFinancialReport(snapshot.financial, now)
+    latest = ProjectCompanyFinancialReport(snapshot.latest_financial, now)
     history = tuple(item for position, item in enumerate((report, latest)) if item is not None and (not position or item != report))
     fresh = FinancialReportIsFresh(report, now, maximum_age_days=financial_max_age_days)
     categories = {
@@ -661,6 +713,7 @@ def _observation(
         financial=report,
         financial_history=history,
         financial_history_complete=report is not None and fresh and snapshot.financial_state is CompanyDataState.COMPLETE,
+        financial_scoring_observation=financial_scoring_observation,
         announcements_available=snapshot.announcement_state is CompanyDataState.COMPLETE,
         pledge_ratio_pct=snapshot.pledge.ratio_pct
         if snapshot.pledge is not None
@@ -680,4 +733,8 @@ def _observation(
     return _qualified_unlock(observation, now, policy.events.unlock_days)
 
 
-__all__ = ["CompanyEvidenceReadPort", "PublishedCompanyResearch"]
+__all__ = [
+    "CompanyEvidenceReadPort",
+    "CompanyFinancialScoringReadPort",
+    "PublishedCompanyResearch",
+]

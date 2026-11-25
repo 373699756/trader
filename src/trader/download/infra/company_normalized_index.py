@@ -5,6 +5,7 @@ from collections.abc import Iterator, Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
+from sqlite3 import Row
 from zoneinfo import ZoneInfo
 
 from trader.download.infra.company_sync_io import CompanySyncIoBudget
@@ -26,7 +27,10 @@ from trader.download.infra.company_facts_index import (
 )
 from trader.download.infra.company_facts_protocol import DecodeCompanyLabel, EncodeCompanyTime, EVIDENCE_SOURCES, RequireCompanyTime
 from trader.download.infra.company_financial_observations import (
+    COMPANY_FINANCIAL_SCORING_POLICY_PREFIX,
+    CompanyFinancialScoringSourceKey,
     ReadCompanyFinancialObservations,
+    ReadCompanyFinancialScoringScopeObservations,
     ReadRoundCompanyFinancialBatch,
     ReadRoundCompanyFinancialObservations,
     ReadRoundLatestCompanyFinancialObservations,
@@ -281,10 +285,82 @@ class SQLiteCompanyNormalizedIndex:
         """Read normalized rows only; no PDF, source, event extraction or material cleanup."""
         return self._publish_scope(self._scope(query, codes, cutoff), codes, cutoff)
 
+    def publish_financial_scoring(
+        self,
+        query: StructuredCompanyQuery,
+        codes: tuple[str, ...],
+        cutoff: datetime,
+        *,
+        eligible_codes: tuple[str, ...],
+        available_at: datetime,
+    ) -> bool:
+        """Publish exact latest observations from a closed batch for numeric scoring."""
+        financial_scope = self._scope(query, codes, cutoff)
+        eligible = frozenset(eligible_codes)
+        if available_at.utcoffset() is None or available_at < cutoff or not eligible.issubset(codes):
+            raise ValueError("company_financial_scoring_scope_invalid")
+        self._check_cancelled()
+        with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as source, SqliteTransaction(source):
+            watermark = _closed_financial_observation_watermark(source, financial_scope)
+            if watermark is None:
+                return False
+            scope = CanonicalDigest(("financial_scoring", financial_scope, watermark))
+            policy = COMPANY_FINANCIAL_SCORING_POLICY_PREFIX + scope
+            generation = source.run("SELECT generation FROM company_round_generation WHERE scope=?", (scope,)).fetchone()
+            if source.run("SELECT 1 FROM company_round_intent WHERE scope=? AND confirmed_content_hash IS NOT NULL", (scope,)).fetchone() is not None:
+                return False
+            parent = ReadCompanyPublicationIdentity(source)
+            if parent is None:
+                raise ValueError("company_normalization_identity_missing")
+            staged = bool(_financial_scoring_receipts(source, scope))
+            if generation is None:
+                if not staged and not eligible:
+                    return False
+                if not staged and source.run("""
+                    SELECT 1 FROM company_round_generation g LEFT JOIN company_round_intent i ON i.scope=g.scope
+                    WHERE i.confirmed_content_hash IS NULL AND (i.scope IS NOT NULL OR g.normalized_hash=?) LIMIT 1
+                    """, (parent.content_hash,)).fetchone() is not None:
+                    return False
+                observations = tuple(item for item in ReadRoundLatestCompanyFinancialObservations(source, financial_scope)
+                                     if item.financial.code in eligible) if not staged else ()
+        if generation is not None:
+            self._publish_scope(scope, codes, cutoff)
+            return True
+        if not staged:
+            with self._session(self._facts.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as formal:
+                existing = frozenset(tuple(row) for row in formal.run(
+                    "SELECT code,record_hash FROM company_input_receipt WHERE source='eastmoney_financial' "
+                    "AND extraction_hash=? AND outcome='valid' AND body_hash IS NULL AND policy_id GLOB ?",
+                    (self._facts.extraction_hash, COMPANY_FINANCIAL_SCORING_POLICY_PREFIX + "*"),
+                ))
+            receipts = tuple(CompanyInputReceipt(
+                "eastmoney_financial",
+                CompanyFinancialScoringSourceKey(scope, item),
+                item.financial.code,
+                item.record_hash,
+                self._facts.extraction_hash,
+                None,
+                available_at,
+                policy_id=policy,
+            ) for item in observations if (item.financial.code, item.record_hash) not in existing)
+            if not receipts:
+                return False
+            parent = self._normalized.publish(
+                (), {}, parent, cutoff, receipts=receipts, field_results=(),
+            ).identity
+        with self._session(self.path, sqlite_policy=self._sqlite_policy) as source, SqliteTransaction(source, immediate=True):
+            if ReadCompanyPublicationIdentity(source) != parent:
+                raise ValueError("company_normalization_generation_changed")
+            generation_hash = bytes.fromhex(CanonicalDigest((scope, _identity_values(parent))))
+            source.run("INSERT INTO company_round_generation VALUES(?,?,?)", (scope, generation_hash, parent.content_hash))
+        self._publish_scope(scope, codes, cutoff)
+        return True
+
     def _publish_scope(self, scope: str, codes: tuple[str, ...], cutoff: datetime, *, restore_only: bool = False) -> tuple[str, ...]:
         self._check_cancelled()
         with self._session(self.path, sqlite_policy=self._sqlite_policy) as source, SqliteTransaction(source, immediate=True):
-            if not restore_only:
+            scoring = _financial_scoring_receipts(source, scope)
+            if not restore_only and not scoring:
                 _require_current_field_rules(source)
             row = source.run("SELECT generation,normalized_hash FROM company_round_generation WHERE scope=?", (scope,)).fetchone()
             if row is None:
@@ -305,26 +381,38 @@ class SQLiteCompanyNormalizedIndex:
                     raise ValueError("company_normalization_restore_marker_missing")
                 if marker is None and intent is not None and _intent_parent(tuple(intent)) != parent:
                     raise ValueError("company_normalization_parent_changed")
-                facts = ReadCompanyFactRows(source, codes)
-                previous = {item.code: item for item in ReadCompanyFactRows(formal, codes)}
-                changed = tuple(item for item in facts if item != previous.get(item.code))
-                fields = ReadCompanyFieldResults(source, codes)
-                observations = ReadRoundCompanyFinancialObservations(source, scope)
-                financial_keys = {(item.financial.code, item.source_key, item.record_hash)
-                                  for item in observations}
-                receipts = tuple(item for item in _receipts(source) if item.source != "eastmoney_financial"
-                                 or (item.code, item.source_key, item.record_hash) in financial_keys)
-                sources = _sources(source)
-                links = ReadCompanyDocumentLinks(source,codes)
+                if scoring:
+                    observations = ReadCompanyFinancialScoringScopeObservations(source, scope, self._facts.extraction_hash)
+                    expected = {(item.financial.code, item.record_hash, CompanyFinancialScoringSourceKey(scope, item)) for item in observations}
+                    if expected != {(item.code, item.record_hash, item.source_key) for item in scoring} or len(expected) != len(scoring):
+                        raise ValueError("company_financial_scoring_commit_scope_invalid")
+                    changed: tuple[CompanyFacts, ...] = ()
+                    fields: tuple[CompanyFieldConclusion, ...] = ()
+                    links: tuple[CompanyPublishedEvidenceLink, ...] = ()
+                    sources: tuple[tuple[str, str], ...] = ()
+                    receipts = scoring
+                else:
+                    facts = ReadCompanyFactRows(source, codes)
+                    previous = {item.code: item for item in ReadCompanyFactRows(formal, codes)}
+                    changed = tuple(item for item in facts if item != previous.get(item.code))
+                    fields = ReadCompanyFieldResults(source, codes)
+                    observations = ReadRoundCompanyFinancialObservations(source, scope)
+                    financial_keys = {(item.financial.code, item.source_key, item.record_hash) for item in observations}
+                    receipts = tuple(item for item in _receipts(source, include_financial_scoring=False) if item.source != "eastmoney_financial"
+                                     or (item.code, item.source_key, item.record_hash) in financial_keys)
+                    sources = _sources(source)
+                    links = ReadCompanyDocumentLinks(source, codes)
                 recovery_matches = False
                 if marker is not None:
                     try:
                         recovery_matches = (
-                            not changed and fields == ReadCompanyFieldResults(formal, codes)
-                            and (_same_field_rules(source, formal) if restore_only else _has_current_field_rules(formal))
-                            and links == ReadCompanyDocumentLinks(formal,codes)
-                            and set(observations).issubset(ReadCompanyFinancialObservations(formal, codes))
-                            and set(receipts).issubset(_receipts(formal))
+                            not changed and (bool(scoring) or fields == ReadCompanyFieldResults(formal, codes))
+                            and (_same_field_rules(source, formal) if restore_only or scoring else _has_current_field_rules(formal))
+                            and (bool(scoring) or links == ReadCompanyDocumentLinks(formal, codes))
+                            and (observations == ReadCompanyFinancialScoringScopeObservations(formal, scope, parent.extraction_hash)
+                                 if scoring and parent is not None else set(observations).issubset(ReadCompanyFinancialObservations(formal, codes)))
+                            and (receipts == _financial_scoring_receipts(formal, scope)
+                                 if scoring else set(receipts).issubset(_receipts(formal, include_financial_scoring=False)))
                         )
                     except ValueError as exc:
                         raise ValueError("company_normalization_confirmation_changed") from exc
@@ -349,7 +437,8 @@ class SQLiteCompanyNormalizedIndex:
                 raise ValueError("company_normalization_generation_changed")
             publication = self._facts.publish(changed, dict(sources), parent, cutoff, receipts=receipts,
                                               field_results=fields, financial_observations=observations,
-                                              normalization=CompanyNormalizationCommit(scope, generation), field_rules_hash=CompanyFieldProofRulesHash(),
+                                              normalization=CompanyNormalizationCommit(scope, generation),
+                                              field_rules_hash=None if scoring else CompanyFieldProofRulesHash(),
                                               document_links=links)
             with self._session(self._facts.path, sqlite_policy=self._sqlite_policy) as formal, SqliteTransaction(formal):
                 if ReadCompanyPublicationIdentity(formal) != publication.identity:
@@ -450,6 +539,10 @@ class SQLiteCompanyNormalizedIndex:
             if parent is None:
                 raise ValueError("company_normalization_identity_missing")
             generation = connection.run("SELECT generation FROM company_round_generation WHERE scope=?", (scope,)).fetchone()
+            if generation is not None and connection.run(
+                "SELECT 1 FROM company_round_intent WHERE scope=? AND confirmed_content_hash IS NOT NULL", (scope,),
+            ).fetchone() is not None:
+                return ()
             previous = {item.code: item for item in ReadCompanyFactRows(connection, codes)}
             changed = tuple(item for item in facts if item != previous.get(item.code))
             source_pairs = _sources(connection)
@@ -524,9 +617,23 @@ def _sources(connection: SqliteConnection) -> tuple[tuple[str, str], ...]:
     ))
 
 
-def _receipts(connection: SqliteConnection) -> tuple[CompanyInputReceipt, ...]:
-    return tuple(CompanyInputReceipt(row[0], row[1], row[2], row[3], row[4], row[5], RequireCompanyTime(row[6]), row[7], row[8])
-                 for row in connection.run("SELECT * FROM company_input_receipt ORDER BY source,source_key,code,record_hash,extraction_hash"))
+def _decode_receipt(row: Row) -> CompanyInputReceipt:
+    return CompanyInputReceipt(row[0], row[1], row[2], row[3], row[4], row[5], RequireCompanyTime(row[6]), row[7], row[8])
+
+
+def _receipts(connection: SqliteConnection, *, include_financial_scoring: bool = True) -> tuple[CompanyInputReceipt, ...]:
+    predicate = "" if include_financial_scoring else "WHERE source<>'eastmoney_financial' OR source_key NOT GLOB 'scoring:*' "
+    return tuple(_decode_receipt(row) for row in connection.run(
+        "SELECT * FROM company_input_receipt " + predicate + "ORDER BY source,source_key,code,record_hash,extraction_hash",
+    ))
+
+
+def _financial_scoring_receipts(connection: SqliteConnection, scope: str) -> tuple[CompanyInputReceipt, ...]:
+    return tuple(_decode_receipt(row) for row in connection.run(
+        "SELECT * FROM company_input_receipt WHERE source='eastmoney_financial' AND source_key GLOB ? AND policy_id=? "
+        "ORDER BY source_key,code,record_hash,extraction_hash",
+        (f"scoring:{scope}:*", COMPANY_FINANCIAL_SCORING_POLICY_PREFIX + scope),
+    ))
 
 
 def _identity_values(identity: CompanyPublicationIdentity) -> tuple[str, str, datetime]:

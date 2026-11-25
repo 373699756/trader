@@ -519,17 +519,23 @@ def _validate_research_observation(
 ) -> None:
     if any(_SOURCE_ERROR_CODE.fullmatch(reason) is None for reason in observation.source_errors):
         raise ValueError("research source_errors must contain bounded failure codes")
-    _validate_financial_time(observation, observed_at)
+    _validate_financial_time(observation, observed_at, received_at)
     _validate_announcement_times(observation, observed_at)
     _validate_risk_fact_times(observation, observed_at)
     _validate_evidence_times(observation, observed_at, received_at)
 
 
-def _validate_financial_time(observation: ResearchObservation, observed_at: datetime) -> None:
+def _validate_financial_time(observation: ResearchObservation, observed_at: datetime, received_at: datetime) -> None:
     if observation.financial is not None:
         _require_shanghai_time(observation.financial.published_at, "financial published_at")
         if observation.financial.published_at > observed_at:
             raise ValueError("research epoch cannot contain future financial data")
+    scoring = observation.financial_scoring_observation
+    if scoring is not None and scoring.available_at > observed_at:
+        raise ValueError("research epoch cannot contain future financial scoring data")
+    adopted_at = observation.financial_scoring_adopted_at
+    if adopted_at is not None and adopted_at > received_at:
+        raise ValueError("research epoch cannot contain future financial scoring adoption")
 
 
 def _validate_announcement_times(observation: ResearchObservation, observed_at: datetime) -> None:

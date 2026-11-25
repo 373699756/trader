@@ -17,7 +17,7 @@ from trader.download.domain.company_sync import CompanySyncBudget, CompanySyncFa
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
 from trader.download.domain.company_evidence import CompanyFinancial, CompanyInputValidationFailure, DisclosurePage, DisclosurePartition, StructuredCompanyQuery
 from trader.download.domain.company_source_records import (
-    CompanyFinancialMissingField, CompanyFinancialSourceObservation, CompanyFinancialSourcePage,
+    CompanyFinancialMissingField, CompanyFinancialScoringObservation, CompanyFinancialSourceObservation, CompanyFinancialSourcePage,
     CompanyFinancialSourceRecordHash, CompanyFinancialSourceValues,
 )
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
@@ -175,6 +175,77 @@ def test_financial_batch_coverage_counts_latest_observations_separately_from_pag
     assert reader.publication_identity() == before
     next_cutoff = _CUTOFF + timedelta(days=1)
     assert index.financial_batch(BuildCompanyFinancialRoundQuery(next_cutoff), codes, next_cutoff).expected_pages is None
+
+
+def test_financial_scoring_publishes_only_a_closed_visible_report_without_changing_formal_facts(tmp_path):
+    baseline = _baseline(tmp_path / "baseline")
+    index, facts = _index(tmp_path / "candidate", baseline)
+    reader = SQLiteCompanyEvidenceReaderFixture(facts.path)
+    observed_at = _CUTOFF + timedelta(minutes=2)
+    older = _observation(period=date(2026, 6, 30))
+    latest = _observation(eps=None, parent=-2.0)
+    index.accept(_QUERY, _page(older, pages=2, total=2), _CODES, _CUTOFF)
+    index.publish_financial_scoring(_QUERY, _CODES, _CUTOFF, eligible_codes=_CODES, available_at=observed_at)
+    assert reader.read_financial_scoring_observations(_CODES, as_of=observed_at) == ()
+
+    successor = replace(_QUERY, page=2, received_rows=1, expected_rows=2)
+    index.accept(successor, _page(latest, page=2, pages=2, total=2), _CODES, _CUTOFF)
+    index.publish_financial_scoring(_QUERY, _CODES, _CUTOFF, eligible_codes=_CODES, available_at=observed_at)
+    identity = reader.publication_identity()
+    assert reader.read_financial_scoring_observations(_CODES, as_of=_CUTOFF) == ()
+    assert reader.read_financial_scoring_observations(_CODES, as_of=observed_at) == (
+        CompanyFinancialScoringObservation(latest, observed_at),
+    )
+    coverage = reader.read_field_counts(codes=_CODES, as_of=_CUTOFF, scoring_as_of=observed_at)
+    assert coverage is not None and coverage.coverage is not None
+    assert coverage.coverage.financial_scoring_stocks == 1
+    assert reader.read(_CODES) == baseline.facts
+    with SqliteSession(facts.path, SqliteConnectionOptions(read_only=True)) as formal:
+        assert ReadCommittedCompanyFinancialReports(formal, _CODES, observed_at, facts.extraction_hash) == ()
+        assert ReadCompanyFinancialObservations(formal, _CODES) == (latest,)
+
+    later = _CUTOFF + timedelta(days=1)
+    index.accept(_QUERY, _page(_observation(cutoff=later, eps=None, parent=-2.0)), _CODES, later)
+    index.publish_financial_scoring(_QUERY, _CODES, later, eligible_codes=_CODES, available_at=later)
+    assert reader.publication_identity() == identity
+    assert reader.read_financial_scoring_observations(_CODES, as_of=later)[0].available_at == observed_at
+
+    later += timedelta(days=1)
+    index.accept(_QUERY, _page(_observation(cutoff=later, eps=8.0, parent=-3.0)), _CODES, later)
+    index.publish_financial_scoring(_QUERY, _CODES, later, eligible_codes=_CODES, available_at=later)
+    assert reader.read_financial_scoring_observations(_CODES, as_of=later) == ()
+    coverage = reader.read_field_counts(codes=_CODES, as_of=_CUTOFF, scoring_as_of=later)
+    assert coverage is not None and coverage.coverage is not None
+    assert coverage.coverage.financial_scoring_stocks == 0
+    assert reader.read_financial_scoring_observations(_CODES, as_of=observed_at) == (
+        CompanyFinancialScoringObservation(latest, observed_at),
+    )
+
+
+def test_financial_scoring_recovers_original_availability_after_formal_seal_failure(tmp_path, monkeypatch):
+    baseline = _baseline(tmp_path / "baseline")
+    index, facts = _index(tmp_path / "candidate", baseline)
+    reader = SQLiteCompanyEvidenceReaderFixture(facts.path)
+    observation = _observation()
+    available_at = _CUTOFF + timedelta(hours=2)
+    index.accept(_QUERY, _page(observation), _CODES, _CUTOFF)
+
+    def fail_seal():
+        raise OSError("injected formal seal failure")
+
+    with monkeypatch.context() as patches:
+        patches.setattr(facts, "publish_file", fail_seal)
+        with pytest.raises(OSError, match="injected formal seal failure"):
+            index.publish_financial_scoring(_QUERY, _CODES, _CUTOFF, eligible_codes=_CODES, available_at=available_at)
+    assert index.recover_publication_seal()
+    identity = reader.publication_identity()
+    after_restart = available_at + timedelta(hours=1)
+    index.publish_financial_scoring(_QUERY, _CODES, _CUTOFF, eligible_codes=_CODES, available_at=after_restart)
+    assert reader.publication_identity() == identity
+    assert reader.read_financial_scoring_observations(_CODES, as_of=after_restart) == (
+        CompanyFinancialScoringObservation(observation, available_at),
+    )
+    assert reader.read(_CODES) == baseline.facts
 
 
 def test_latest_observation_does_not_fall_back_to_earlier_row_when_newest_was_filtered(tmp_path):

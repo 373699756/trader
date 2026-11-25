@@ -94,6 +94,7 @@ def RunCompanySyncRound(
     activity: Callable[[CompanySyncFamily], AbstractContextManager[None]] | None = None,
     recover_directory: CompanyDirectoryRecovery | None = None,
     source_ready: Callable[[], bool] | None = None,
+    after_resume: Callable[[CompanySyncRoundScope], None] | None = None,
 )->CompanySyncRoundResult:
     """Run bounded steps, retain accepted work and never reissue an unconfirmed request.
 
@@ -112,6 +113,8 @@ def RunCompanySyncRound(
     stopped=False
     pause_reason: CompanySyncPauseReason | None = None
     pending_family = journal.outstanding_family(round_id)
+    if after_resume is not None and pending_family is None and not cancel_requested() and monotonic() < budget.deadline:
+        after_resume(scope)
     ordered_producers = sorted(producers, key=lambda producer: producer.plan.family not in _RECOMMENDATION_FAMILIES)
     progress = tuple(_FamilyProgress(producer) for producer in ordered_producers)
     for item in progress:
@@ -191,13 +194,16 @@ def RunCompanySyncRound(
             advanced=True
             recommendation_advanced = recommendation_advanced or recommendation
             journal.finish(round_id,family,_with_plan_gaps(result,producer.plan))
-            if family is pending_family:
+            finished_resume = family is pending_family
+            if finished_resume:
                 pending_family = None
             current=journal.family(round_id,family)
             if current is not None:
                 item.result=current
                 if observe is not None:
                     observe(current)
+            if finished_resume and after_resume is not None and not cancel_requested() and monotonic() < budget.deadline:
+                after_resume(scope)
             if result.deferred and not reconciled:
                 item.deferred=True
             if cancel_requested():

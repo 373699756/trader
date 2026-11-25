@@ -52,7 +52,7 @@ def ApplyCompanyFinancialAdmission(
     proof: CompanyFinancialAdmission,
     cutoff: datetime,
 ) -> CompanyFacts:
-    """Fill only one verified report without weakening existing scoring coverage."""
+    """Keep the complete scoring report alongside the latest verified report."""
     report = proof.report
     if (cutoff.utcoffset() is None or previous.published_at > cutoff or report.code != previous.code
         or report.published_at > cutoff or proof.revision.checked_through != cutoff):
@@ -70,10 +70,7 @@ def ApplyCompanyFinancialAdmission(
             values.append(old if value is None else value)
         report = CompanyFinancial(report.code, report.report_date, report.published_at, *values)
     other_reports = tuple(item for item in known if item.report_date != report.report_date)
-    admitted = _select_financial_reports(previous, (*other_reports, report), cutoff)
-    if previous.financial_state is CompanyDataState.COMPLETE and admitted.financial_state is not CompanyDataState.COMPLETE:
-        return previous
-    return admitted
+    return _select_financial_reports(previous, (*other_reports, report), cutoff)
 
 
 def _select_financial_reports(

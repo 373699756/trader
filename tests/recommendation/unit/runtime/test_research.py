@@ -7,12 +7,23 @@ import pytest
 
 from trader.download.domain.company_event_extraction import ExtractCompanyEvents
 from trader.download.domain.company_events import CompanyRiskType
+from tests.helpers.download.company.company_startup import _snapshot
 from tests.helpers.download.configuration import CompanyEventPolicyFixture as CompanyEventPolicy
-from trader.download.domain.company_evidence import CompanyDocument, Disclosure
+from tests.helpers.recommendation.configuration import StrategySettingsFixture
+from trader.download.domain.company_evidence import CompanyDocument, CompanyFinancial, Disclosure
+from trader.download.domain.company_facts import CompileCompanyFacts
+from trader.download.domain.company_source_records import (
+    CompanyFinancialMissingField,
+    CompanyFinancialScoringObservation,
+    CompanyFinancialSourceObservation,
+    CompanyFinancialSourceRecordHash,
+)
+from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.market.research import (
     CorporateRiskCategory,
     CorporateRiskFact,
     DeriveCorporateRiskFeatures,
+    DeriveD25FinancialScores,
     DeriveLatestDisclosedReportLoss,
     DeriveLongResearchFeatures,
     DeriveMarketRegime,
@@ -26,6 +37,9 @@ from trader.recommendation.domain.market.research import (
     ResearchComponentsFromObservation,
     ResearchObservation,
 )
+from trader.recommendation.domain.publication.models import BoardStrategyPolicy, Strategy
+from trader.recommendation.domain.scoring.company import CompanyScoringContext
+from trader.recommendation.domain.scoring.scoring import ScoreBoardStrategy
 
 NOW = datetime.fromisoformat("2026-07-16T14:50:00+08:00")
 
@@ -107,6 +121,69 @@ def test_latest_disclosed_report_loss_is_point_in_time_and_requires_both_profit_
     assert DeriveLatestDisclosedReportLoss(ResearchObservation(financial_history=(known, future)), NOW) == 0.0
     assert DeriveLatestDisclosedReportLoss(ResearchObservation(financial=missing), NOW) is None
     assert DeriveLatestDisclosedReportLoss(ResearchObservation(financial=known_loss_with_missing_peer), NOW) == 1.0
+
+
+def test_supplier_financial_observation_scores_only_d25_after_actual_availability(application_feature_factory):
+    disclosed_at = NOW - timedelta(days=2)
+    financial = CompanyFinancial("600001", date(2026, 6, 30), disclosed_at, 1.0, 5.0, -10.0, -22.0, None, 12.0, -3.0, -2.0)
+    record_hash = CompanyFinancialSourceRecordHash(financial, "600001.SH", disclosed_at, None, "CNY")
+    supplier = CompanyFinancialSourceObservation(
+        financial, "600001.SH", disclosed_at, None, NOW - timedelta(hours=2), "CNY", record_hash,
+        (CompanyFinancialMissingField("core_profit_growth_pct"),),
+    )
+    source = CompanyFinancialScoringObservation(supplier, NOW)
+    observation = ResearchObservation(financial_scoring_observation=source)
+    assert DeriveD25FinancialScores(observation, 20.0, _long_policy(), observed_at=NOW - timedelta(seconds=1)) is None
+    preload_at = NOW + timedelta(seconds=1)
+    adopted = replace(observation, loaded_at=preload_at)
+    assert DeriveD25FinancialScores(adopted, 20.0, _long_policy(), observed_at=NOW) is None
+    assert DeriveD25FinancialScores(adopted, 20.0, _long_policy(), observed_at=preload_at) is not None
+    scores = DeriveD25FinancialScores(observation, 20.0, _long_policy(), observed_at=NOW)
+    assert scores is not None and scores.source == source
+    assert scores.growth == 18.0
+    assert scores.quality == 85.0
+    assert scores.value is not None
+    assert DeriveLatestDisclosedReportLoss(observation, NOW) is None
+    assert ResearchComponentsFromObservation(observation, NOW).financial == "unknown"
+    features = DeriveLongResearchFeatures(
+        observation, LongResearchInputs(20, 80, 70, 80), _long_policy(), _feature_component_weights(), observed_at=NOW,
+    )
+    assert features["financial_deterioration"] is None
+    assert features["quality_score"] is None
+
+    verified = FinancialReport(date(2026, 3, 31), NOW - timedelta(days=20), basic_eps=2.0, parent_net_profit=-3.0)
+    confirmed = replace(observation, financial=verified, financial_history=(verified,))
+    assert DeriveD25FinancialScores(confirmed, 20.0, _long_policy(), observed_at=NOW) is None
+    assert DeriveLatestDisclosedReportLoss(confirmed, NOW) == 1.0
+
+    snapshot = application_feature_factory("600001", NOW)
+    missing_fields = ("quality_score", "value_score", "growth_score")
+    original = replace(
+        snapshot,
+        quote=replace(snapshot.quote, board=Board.MAIN),
+        values={**snapshot.values, **dict.fromkeys(missing_fields)},
+        missing_fields=missing_fields,
+    )
+    company = CompanyScoringContext(CompileCompanyFacts(_snapshot(), CompanyEventPolicy()), (), False, scores)
+    supplied = replace(original, company_context=company)
+    settings = StrategySettingsFixture()
+    for strategy in (Strategy.TOMORROW, Strategy.D25):
+        policy = BoardStrategyPolicy(
+            policy_id=f"test:{strategy.value}",
+            version=settings.board_policy_version,
+            board=Board.MAIN,
+            strategy=strategy,
+            local_weights=settings.board_local_strategy_weights[strategy.value][Board.MAIN.value],
+            local_component_weights=settings.local_component_weights[strategy.value],
+        )
+        before, after = (ScoreBoardStrategy(item, policy) for item in (original, supplied))
+        if strategy is Strategy.TOMORROW:
+            assert after == before
+        else:
+            assert after.components["quality_penalty"] < before.components["quality_penalty"]
+            assert after.components["financial_contribution"] > 0.0
+    assert supplied.values == original.values
+    assert supplied.missing_fields == original.missing_fields
 
 
 @pytest.mark.parametrize("age", (550, 551, 900))

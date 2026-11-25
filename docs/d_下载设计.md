@@ -67,7 +67,7 @@ BaoStock补缺取得完整目标窗口后立即逐股打印“获取成功，待
 普通 `sync company` 和 `sync company fill` 按三库显示进度。stderr 显示当前作业、已用时间、距最近来源入库时间和最近调度确认。普通运行最多每5秒打印一次，首次及末页接纳、目录恢复、实际异常及缺口变化立即报告。心跳只读取已生成的内存快照。终态关闭公司观察者。
 
 - **来源库 `company_sources.sqlite3`**。东财财务、质押和解禁分别显示已入库页、来源已确认总页、原始行以及相应阶段。分母未知时显示待确认。巨潮目录按当前市场、日期分区和查询报告已接纳的页及原始行，拆分及父目录并集核对单列。公告正文区分原件下载、复用入库和已分析入库，收尾统计固定总体内已登记、尚未完成分析的单股公告篇数。东财每股最新报告的八项来源有值率和缺值率按已有报告股数计算，并同时显示已有报告的总体覆盖率。没有已取得报告时显示相应状态。
-- **正式库 `company_published.sqlite3`**。在同一正式发布身份和固定总体下，逐项显示财务八项、质押、解禁和公告风险覆盖的完成率与缺口。已核实无质押或无解禁计入覆盖，公告部分覆盖独立列出。减持、回购、合同等已登记字段按各自适用项统计已有值、已核有值、缺值、待补证和已证未披露。无适用项时不计算百分比。字段族核验使用股次、实际变动使用去重股票数。全发布待处理正文使用逐股篇次，区分于来源库已登记公告篇数。仅按同范围始末正式快照报告覆盖净增。
+- **正式库 `company_published.sqlite3`**。在同一正式发布身份和固定总体下，逐项显示财务八项、质押、解禁和公告风险覆盖的完成率与缺口。D25已发布评分来源观测另列股数及固定总体分母。已核实无质押或无解禁计入覆盖，公告部分覆盖独立列出。减持、回购、合同等已登记字段按各自适用项统计已有值、已核有值、缺值、待补证和已证未披露。无适用项时不计算百分比。字段族核验使用股次、实际变动使用去重股票数。全发布待处理正文使用逐股篇次，区分于来源库已登记公告篇数。仅按同范围始末正式快照报告覆盖净增。
 - **请求账本 `company_sync.sqlite3`**。首次读取固定轮次的持久请求数和原上限，预占、响应观察和恢复提交后更新。显示本次新增、轮次累计、未确认请求和已确认步骤。来源步骤中断后终态无法核对时显示未知，并明确标注最近一次账本确认的时点口径。全量同步JSON的accepted_inputs／request_slots_consumed／unknown_attempts及派生observed_attempts沿原合同可为null。
 
 开始、同步途中及收尾的正式字段表辅以发布摘要。同步途中核对间隔至少30秒，只在正式发布身份变化时打印新表。结束时如未在期限内核对，重印本次最后一份正式快照及距核对的时长。没有已核对快照时显示逐字段未核对。来源财务及正文统计同样标出收尾是否重新核对。
@@ -405,7 +405,7 @@ company先ST过滤，再查合格股票的财务、质押、解禁和公告目�
 | `checked_at` | 资料实际检查时点 | 采集 | 来源年龄，不被重新读取刷新 |
 | `published_at` | 本地事实快照发布时间 | 正式发布 | 版本追踪，不替代原披露时间 |
 
-SQL类型、可空性、键／索引、codec、写入者和读取者统一见[第8.6节](#86-company正式事实字段结论与凭据)，本表只维护列的业务意义和使用规则。财务来源codec在`company_structured_source.py`：报告期／原披露分别取REPORT_DATE／NOTICE_DATE，八个值依次取EPSJB、BPS、TOTALOPERATEREVETZ、PARENTNETPROFITTZ、KCFJCXSYJLRTZ、ROEJQ、PARENTNETPROFIT、KCFJCXSYJLR；金额原值经有限数值校验进入类型化观察，没有据字段名增加倍率换算。质押取TRADE_DATE／PLEDGE_RATIO，解禁取FREE_DATE／TOTAL_RATIO。普通有限同步只保存尚未准入的观察，不调用正式财务／比例发布；只有具名隔离研究可显式构造候选。供应商原金额单位、最新总体、修订和逐值正确性仍须真实证据核验，不能用字典补齐代替P36验收。
+SQL类型、可空性、键／索引、codec、写入者和读取者统一见[第8.6节](#86-company正式事实字段结论与凭据)，本表只维护列的业务意义和使用规则。`company_structured_source.py`的财务来源codec用REPORT_DATE／NOTICE_DATE记录供应商报告期和披露日期，八个值依次取EPSJB、BPS、TOTALOPERATEREVETZ、PARENTNETPROFITTZ、KCFJCXSYJLRTZ、ROEJQ、PARENTNETPROFIT、KCFJCXSYJLR。金额原值经有限数值校验进入类型化观察。质押取TRADE_DATE／PLEDGE_RATIO，解禁取FREE_DATE／TOTAL_RATIO。普通有限同步可发布闭合批次的D25财务评分观测。八项正式财务事实及比例覆盖仍按各自凭据准入。供应商原金额单位、最新总体、修订和逐值正确性继续按P36核验。
 
 生产财务页须含证券、报告期、披露日期及八指标全部11列；显式NULL与缺列分别处理，缺列拒绝整页，合法NULL、零及负值保留。观察时点必须带时区，365日下界按上海自然日计算；来源明确给出的披露时刻晚于本轮截止时拒绝，不以归零日期掩盖未来时刻。已接纳记录仍沿原上海披露日投影，不据此补签首次披露或正式修订。
 
@@ -818,7 +818,7 @@ local_only候选的持久路径若已失效，仅从本轮本地选择中排除�
 
 ### 5.15 完整公司轮次与来源准入
 
-普通`sync company`经唯一bootstrap将已准备资格总体和上海时点交给`ExecuteCompanySync`，同一个有限轮次用例推进财务、质押、解禁、公告、年度收入和本地字段六族。源资格缺证按族保留，合法本地处理继续。未准入的财务和比率保存为源观察，已有有效事实及其凭证保持原身份。财务隔离推导在独立研究目录显式选择。首次空目标创建明确UNAVAILABLE投影。
+普通`sync company`经唯一bootstrap将已准备资格总体和上海时点交给`ExecuteCompanySync`，同一个有限轮次用例推进财务、质押、解禁、公告、年度收入和本地字段六族。源资格缺证按族保留，合法本地处理继续。财务页闭合后，从固定批次选取同证券最新一份东财观测，通过现有发布意图、正式事务和封签把该观测及评分专用凭据交付给D25。已闭合的断点可直接完成此本地动作。评分凭据绑定批次、证券、报告期、记录摘要和写入时点，荐股启动采用后才按决策时点可见。同报告期多份冲突观测保持待核。正式财务、质押或解禁仍按对应依据准入。首次空目标创建明确UNAVAILABLE投影。
 
 规范财务输入、其它类型化观察、材料及待发布状态共同使用`company_sources.sqlite3`，正式事实和读侧证据使用`company_published.sqlite3`。`company_sync.sqlite3`独立保存请求消耗、未知尝试和固定轮次。已有结构先只读核对，不兼容即停止并指出范围。正式库先核封签，合法未封签提交只凭精确持久意图和类型化内容一致性恢复。可变来源库通过事务及正式提交凭据校验，只有正式库使用文件发布封签。
 
@@ -1106,7 +1106,7 @@ reference、catalog和market在原owner的完整schema中核对；company正式�
 
 | 当前资料库／表 | 当前owner及恢复语义 |
 | --- | --- |
-| `company_sources.sqlite3` 的正式类型工作表及 `company_normalization_seed`／`company_round_page`／`company_round_member`／`company_round_intent`／`company_round_generation` | 规范输入、原始分页计数、业务键及持久提交意图。未准入财务观察停留在来源库。 |
+| `company_sources.sqlite3` 的正式类型工作表及 `company_normalization_seed`／`company_round_page`／`company_round_member`／`company_round_intent`／`company_round_generation` | 原始分页、观测身份及持久提交意图。闭合批次的D25评分观测由同一发布事务复制关联观测与专用凭据。 |
 | 同库的 `company_source_page`／`company_ratio_observation`／`company_pledge_day` | 分页观察与冻结质押快照日。市场覆盖和总股本分母在独立证据核对后才能生成正式值。 |
 | 同库；company_annual_income_observation／company_source_task／company_recovered_input | 年度观察、实际输入完成回执及原来源／证券／记录／正文hash绑定的精确恢复结果；本地字段输入水位不包含其自身完成回执，不形成循环重刷 |
 | company_sync.sqlite3；company_sync_round／company_sync_code／company_sync_plan／company_sync_local_plan | 固定代码／截止时点、来源计划和不可重置的来源请求限额；本地规则及实际输入变化独立记录，不另开来源预算 |

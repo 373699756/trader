@@ -15,6 +15,7 @@ from trader.download.domain.company_events import (
     CompanyRiskType,
 )
 from trader.download.domain.company_facts import CompanyFacts
+from trader.download.domain.company_source_records import CompanyFinancialScoringObservation
 from trader.recommendation.domain.evidence.review import RiskFact
 from trader.recommendation.domain.publication.score_ledger import ScoreAdjustmentItem, ScoreLedger
 
@@ -66,10 +67,31 @@ class CompanyEventWindow:
 
 
 @dataclass(frozen=True, slots=True)
+class D25FinancialScores:
+    """Scores from one supplied financial observation with its publication receipt."""
+
+    source: CompanyFinancialScoringObservation
+    quality: float | None
+    value: float | None
+    growth: float | None
+    adopted_at: datetime | None = None
+
+    @property
+    def available_at(self) -> datetime:
+        return max(self.source.available_at, self.adopted_at) if self.adopted_at is not None else self.source.available_at
+
+
+@dataclass(frozen=True, slots=True)
 class CompanyScoringContext:
     facts: CompanyFacts
     windows: tuple[CompanyEventWindow, ...]
     coverage_current: bool
+    d25_financial_scores: D25FinancialScores | None = None
+
+    def __post_init__(self) -> None:
+        scores = self.d25_financial_scores
+        if scores is not None and scores.source.observation.financial.code != self.facts.code:
+            raise ValueError("d25_financial_scoring_security_mismatch")
 
 
 @dataclass(frozen=True, slots=True)

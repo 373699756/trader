@@ -3,6 +3,7 @@
 import hashlib
 import time
 from dataclasses import replace
+from datetime import timedelta
 
 import pytest
 
@@ -14,7 +15,11 @@ from tests.helpers.recommendation.publication.freeze_queries import _Clock, _Fre
 from trader.download.domain.company_document_links import CompanyPublishedEvidenceLink
 from trader.download.domain.company_events import CompanyEvidenceLink
 from trader.download.domain.company_facts import CompileCompanyFacts
+from trader.download.domain.company_source_records import CompanyFinancialSourceObservation, CompanyFinancialSourceRecordHash
 from trader.download.infra.company_facts_index import CompanyInputReceipt
+from trader.download.infra.company_financial_observations import (
+    COMPANY_FINANCIAL_SCORING_POLICY_PREFIX, CompanyFinancialScoringSourceKey,
+)
 from trader.http_api.route_services import UnifiedWebServices
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedFreezeEventStream
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import FreezeQuerySources, UnifiedFreezeQueries
@@ -65,7 +70,7 @@ def test_real_formal_links_reach_actual_http_usecase_without_request_io(tmp_path
     def forbidden(*args, **kwargs):
         pytest.fail("company HTTP request attempted external I/O after preload")
 
-    for method in ("visit", "read_document_links", "publication_version", "publication_identity"):
+    for method in ("visit", "read_document_links", "publication_version", "publication_identity", "read_financial_scoring_observations"):
         monkeypatch.setattr(reader, method, forbidden)
     monkeypatch.setattr("trader.download.infra.company_facts_reader.SqliteSession", forbidden)
     monkeypatch.setattr("socket.socket", forbidden)
@@ -113,3 +118,43 @@ def test_link_cache_is_included_in_preload_reservation(tmp_path):
     assert len(reservations) == 1 and reservations[0] > 8192 + 1024
     assert research.status().last_error == "company_preload_capacity"
     assert research.document_links(link.code, (link.link.evidence_id,)) == ()
+
+
+def test_scoring_receipt_is_only_available_after_sealed_adoption(tmp_path):
+    snapshot = _snapshot()
+    financial = snapshot.financials[0]
+    source_identity = f"{snapshot.code}.SH"
+    supplier = CompanyFinancialSourceObservation(
+        financial, source_identity, financial.published_at, None, _AT, "CNY",
+        CompanyFinancialSourceRecordHash(financial, source_identity, financial.published_at, None, "CNY"), (),
+    )
+    receipt_at = _AT + timedelta(seconds=1)
+    adopted_at = receipt_at + timedelta(seconds=1)
+    scope = "a" * 64
+    facts = CompileCompanyFacts(replace(snapshot, financials=(), announcements=()), CompanyEventPolicyFixture())
+    writer = SQLiteCompanyFactsIndexFixture(tmp_path / "company.sqlite3")
+    writer.initialize()
+    receipt = CompanyInputReceipt(
+        "eastmoney_financial", CompanyFinancialScoringSourceKey(scope, supplier), snapshot.code, supplier.record_hash,
+        writer.extraction_hash, None, receipt_at, policy_id=COMPANY_FINANCIAL_SCORING_POLICY_PREFIX + scope,
+    )
+    publication = writer.publish((facts,), {}, None, _AT, receipts=(receipt,), financial_observations=(supplier,))
+    reader = SQLiteCompanyEvidenceReaderFixture(writer.path)
+    assert reader.read_financial_scoring_observations((snapshot.code,), as_of=_AT) == ()
+    startup_times = iter((receipt_at, adopted_at))
+    research = PublishedCompanyResearchFixture(
+        reader, wall_clock=lambda: next(startup_times, adopted_at), open_dates=lambda: _DATES, monotonic=time.monotonic,
+        financial_scoring_reader=reader,
+    )
+    research.initialize((snapshot.code,), cancelled=lambda: False)
+    assert research.loaded_identity == publication.identity.content_hash.hex()
+    before = research.cached((snapshot.code,), include_structured=True, as_of=receipt_at)[snapshot.code]
+    current = research.cached((snapshot.code,), include_structured=True)[snapshot.code]
+    assert before.financial_scoring_observation is None
+    assert current.financial_scoring_observation is not None
+    assert current.financial_scoring_observation.observation == supplier
+    assert current.financial_scoring_observation.available_at == receipt_at
+    assert current.financial_scoring_adopted_at == adopted_at
+    assert current.loaded_at == receipt_at
+    assert current.financial is None and not current.financial_history_complete
+    assert current.financial_history == ()

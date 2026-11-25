@@ -278,7 +278,7 @@ def ApplyBoardPolicy(
     for item in cross_section.features:
         supported = SupportedWeight(
             strategy,
-            item.values,
+            _strategy_scoring_values(item, strategy),
             policy.local_weights,
             phase=cross_section.phase,
         )
@@ -347,6 +347,14 @@ def EnrichBoardFeatures(
 def ScoreBoardStrategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy) -> LocalScoreResult:
     if snapshot.quote.board is not policy.board:
         raise ValueError("board score policy does not match snapshot board")
+    values = _strategy_scoring_values(snapshot, policy.strategy)
+    if values is not snapshot.values:
+        filled = {
+            name for name in ("quality_score", "value_score", "growth_score") if values[name] is not None
+        }
+        snapshot = replace(
+            snapshot, values=values, missing_fields=tuple(name for name in snapshot.missing_fields if name not in filled),
+        )
     if policy.strategy is Strategy.TOMORROW:
         components = {
             "tail_structure": WeightedScore(
@@ -453,6 +461,19 @@ def ScoreBoardStrategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy) -
         },
         base_score=Clamp(result.base_score - penalty),
     )
+
+
+def _strategy_scoring_values(snapshot: FeatureSnapshot, strategy: Strategy) -> Mapping[str, float | None]:
+    context = snapshot.company_context
+    scores = context.d25_financial_scores if context is not None else None
+    if strategy is not Strategy.D25 or scores is None or scores.available_at > snapshot.observed_at:
+        return snapshot.values
+    return {
+        **snapshot.values,
+        "quality_score": scores.quality,
+        "value_score": scores.value,
+        "growth_score": scores.growth,
+    }
 
 
 def _weighted_known(

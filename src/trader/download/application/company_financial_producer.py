@@ -37,6 +37,7 @@ class CompanyFinancialProducer:
         publication_scope: Literal["observations", "isolated_candidate"] = "observations",
         current_codes: tuple[str, ...] | None = None,
         observe_download: Callable[[CompanySourceDownloadProgress], None] | None = None,
+        publish_scoring: Callable[[CompanySyncRoundScope], None] | None = None,
     ) -> None:
         if query.component != "financial" or query.page != 1:
             raise ValueError("company_financial_producer_query_invalid")
@@ -45,6 +46,7 @@ class CompanyFinancialProducer:
         self._index, self._source, self._query, self._publication_scope = index, source, query, publication_scope
         self._current_codes = current_codes
         self._observe_download = observe_download
+        self._publish_scoring = publish_scoring
         self._plan = CompanySyncPhasePlan(CompanySyncFamily.FINANCIAL, CompanyFinancialRequestIdentity(query, publication_scope), qualification_gaps)
 
     @property
@@ -85,6 +87,8 @@ class CompanyFinancialProducer:
                 ))
             return CompanySyncStepResult(False, True, accepted_inputs=len(page.observations), source_calls=1)
         if self._publication_scope == "observations":
+            if self._publish_scoring is not None:
+                self._publish_scoring(scope)
             return CompanySyncStepResult(True, False, pending_count=0)
         try:
             self._index.normalize(self._query, scope.codes, scope.cutoff)

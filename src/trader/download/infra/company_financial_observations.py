@@ -3,16 +3,18 @@
 from collections.abc import Sequence
 from datetime import date, datetime
 from sqlite3 import Row
+from zoneinfo import ZoneInfo
 
 from trader.download.domain.company_evidence import CompanyFinancial, CompanyInputValidationFailure
 from trader.download.domain.company_source_records import (
     CompanyFinancialBatchCoverage,
     CompanyFinancialField,
     CompanyFinancialMissingField,
+    CompanyFinancialScoringObservation,
     CompanyFinancialSourceObservation,
     CompanyFinancialSourceValues,
 )
-from trader.download.infra.company_facts_protocol import EncodeCompanyTime
+from trader.download.infra.company_facts_protocol import EncodeCompanyTime, RequireCompanyTime
 from trader.infra.sqlite_connection import SqliteConnection, SqliteSchema
 
 
@@ -36,6 +38,24 @@ _BATCH_FIELDS: tuple[tuple[CompanyFinancialField, str], ...] = (
     ("parent_net_profit", "parent_profit"),
     ("core_net_profit", "core_profit"),
 )
+
+COMPANY_FINANCIAL_SCORING_POLICY_PREFIX = "supplier_financial_scoring:"
+_SCORING_SCOPE_OFFSET = len(COMPANY_FINANCIAL_SCORING_POLICY_PREFIX) + 1
+_SCORING_RECEIPT_SELECTION = f"""
+    SELECT o.*, r.published_at
+    FROM company_input_receipt r CROSS JOIN company_financial_observation o
+      ON o.code=r.code AND o.report_date=substr(r.source_key,-10) AND o.record_hash=r.record_hash
+      AND r.source_key='scoring:'||substr(r.policy_id,{_SCORING_SCOPE_OFFSET})
+          ||':'||o.security_identity||':'||o.report_date
+    WHERE r.source='eastmoney_financial' AND r.extraction_hash=? AND r.outcome='valid' AND r.body_hash IS NULL
+      AND length(r.policy_id)={len(COMPANY_FINANCIAL_SCORING_POLICY_PREFIX) + 64}
+      AND substr(r.policy_id,{_SCORING_SCOPE_OFFSET}) NOT GLOB '*[^0-9a-f]*'
+"""
+
+
+def CompanyFinancialScoringSourceKey(scope: str, observation: CompanyFinancialSourceObservation) -> str:
+    """Bind a receipt to the scoring batch as well as its source record."""
+    return f"scoring:{scope}:{observation.source_key}"
 
 
 def WriteCompanyFinancialObservations(
@@ -167,6 +187,78 @@ def ReadCommittedCompanyFinancialReports(
     return tuple(next(iter(reports[key])) for key in sorted(reports) if len(reports[key]) == 1)
 
 
+def ReadCompanyFinancialScoringObservations(
+    connection: SqliteConnection,
+    codes: Sequence[str],
+    cutoff: datetime,
+    extraction_hash: bytes,
+) -> tuple[CompanyFinancialScoringObservation, ...]:
+    """Read the latest visible report per issuer without resolving supplier conflicts."""
+    available = EncodeCompanyTime(cutoff)
+    cutoff_day = cutoff.astimezone(ZoneInfo("Asia/Shanghai")).date()
+    selections: dict[str, dict[str, CompanyFinancialScoringObservation]] = {}
+    unique_codes = tuple(sorted(set(codes)))
+    for offset in range(0, len(unique_codes), 512):
+        batch = unique_codes[offset:offset + 512]
+        slots = ",".join("?" for _ in batch)
+        for row in connection.run(
+            _SCORING_RECEIPT_SELECTION + f" AND r.code IN ({slots}) AND r.policy_id GLOB ? AND r.published_at<=? "
+            "ORDER BY o.code,o.report_date DESC,r.published_at,o.record_hash",
+            (extraction_hash, *batch, COMPANY_FINANCIAL_SCORING_POLICY_PREFIX + "*", available),
+        ):
+            observation = _decode(row)
+            report = observation.financial
+            if observation.observed_at > cutoff or report.report_date > cutoff_day:
+                continue
+            reports = selections.setdefault(report.code, {})
+            if reports and next(iter(reports.values())).observation.financial.report_date != report.report_date:
+                continue
+            reports.setdefault(observation.record_hash, CompanyFinancialScoringObservation(observation, RequireCompanyTime(row[17])))
+    return tuple(next(iter(reports.values())) for reports in selections.values() if len(reports) == 1)
+
+
+def ReadCompanyFinancialScoringScopeObservations(
+    connection: SqliteConnection,
+    scope: str,
+    extraction_hash: bytes,
+) -> tuple[CompanyFinancialSourceObservation, ...]:
+    """Read back exactly the financial input rows named by a prepared scope."""
+    return tuple(_decode(row) for row in connection.run(
+        _SCORING_RECEIPT_SELECTION + " AND r.policy_id=? ORDER BY o.code,o.report_date,o.record_hash",
+        (extraction_hash, COMPANY_FINANCIAL_SCORING_POLICY_PREFIX + scope),
+    ))
+
+
+def CountCompanyFinancialScoringObservations(
+    connection: SqliteConnection,
+    codes: Sequence[str],
+    cutoff: datetime,
+    extraction_hash: bytes,
+) -> int:
+    """Count eligible latest rows in a sealed publication without decoding each record."""
+    available = EncodeCompanyTime(cutoff)
+    cutoff_day = cutoff.astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    requested = tuple(sorted(set(codes)))
+    total = 0
+    for offset in range(0, len(requested), 512):
+        batch = requested[offset:offset + 512]
+        slots = ",".join("?" for _ in batch)
+        # The publisher ensures that its receipt is no earlier than the
+        # accepted observation, so the receipt bounds both times.
+        row = connection.run(f"""WITH visible AS (
+            {_SCORING_RECEIPT_SELECTION}
+            AND r.code IN ({slots}) AND r.policy_id GLOB ? AND r.published_at<=? AND o.report_date<=?
+        ), newest AS (
+            SELECT code, MAX(report_date) AS report_date FROM visible GROUP BY code
+        )
+        SELECT COUNT(*) FROM (
+            SELECT v.code FROM visible v JOIN newest n USING (code,report_date)
+            GROUP BY v.code HAVING COUNT(DISTINCT v.record_hash)=1
+        )""", (extraction_hash, *batch, COMPANY_FINANCIAL_SCORING_POLICY_PREFIX + "*", available, cutoff_day)).require_one()
+        total += int(row[0])
+    return total
+
+
 def _decode(row: Row) -> CompanyFinancialSourceObservation:
     financial = CompanyFinancial(
         row[0], date.fromisoformat(row[1]), datetime.fromisoformat(row[2]), *row[3:11],
@@ -179,7 +271,9 @@ def _decode(row: Row) -> CompanyFinancialSourceObservation:
 
 
 __all__ = [
+    "COMPANY_FINANCIAL_SCORING_POLICY_PREFIX", "CompanyFinancialScoringSourceKey",
     "COMPANY_FINANCIAL_OBSERVATIONS_SCHEMA", "WriteCompanyFinancialObservations", "ReadCompanyFinancialObservations",
     "ReadRoundCompanyFinancialObservations", "ReadRoundLatestCompanyFinancialObservations", "ReadRoundCompanyFinancialBatch",
-    "ReadCommittedCompanyFinancialReports",
+    "ReadCommittedCompanyFinancialReports", "ReadCompanyFinancialScoringObservations", "ReadCompanyFinancialScoringScopeObservations",
+    "CountCompanyFinancialScoringObservations",
 ]

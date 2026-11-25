@@ -107,6 +107,26 @@ def test_accept_before_ack_crash_reconciles_old_step_before_authorizing_next_pag
     assert result.families[0].source_calls == 2
 
 
+def test_closed_financial_publication_runs_after_acknowledging_pending_fields(tmp_path):
+    journal, producers, budget, physical, calls, transport = _resources(tmp_path)
+    round_id = journal.begin(_SCOPE, tuple(producer.plan for producer in producers), max_source_calls=budget.max_source_calls)
+    fields = next(producer for producer in producers if producer.plan.family is CompanySyncFamily.FIELDS)
+    journal.start(round_id, fields.plan.family, fields.state(_SCOPE))
+
+    def publish(scope):
+        assert scope == _SCOPE and journal.outstanding_family(round_id) is None
+        assert journal.family(round_id, fields.plan.family).result.processed_scope_complete
+        assert calls == ["fields"]
+        calls.append("financial_scoring")
+
+    with transport:
+        RunCompanySyncRound(
+            journal, producers, _SCOPE, replace(budget, max_steps=1),
+            monotonic=lambda: 0, cancel_requested=lambda: False, after_resume=publish,
+        )
+    assert calls == ["fields", "financial_scoring"] and physical == []
+
+
 def test_progress_observes_only_durable_step_results_without_extra_requests(tmp_path):
     journal, producers, budget, physical, _, transport = _resources(tmp_path)
     observations = []

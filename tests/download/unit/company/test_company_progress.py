@@ -85,6 +85,7 @@ def test_company_progress_projects_formal_and_event_gaps_during_same_round(pause
             ("repurchase_purpose", CompanyEventFieldCoverage(0, 1, 1, 1, 2, missing_values=2)),
         ),
         reduction_field_counts=(),
+        financial_scoring_stocks=2,
     )
     counts = CompanyFieldOutcomeCounts("b" * 64, 2, 1, 1, 1, 3, 0, coverage)
     progress.start(4)
@@ -110,6 +111,7 @@ def test_company_progress_projects_formal_and_event_gaps_during_same_round(pause
         assert ("以下为00:00:30前已核对的正式快照" in header) is (paused and phase == "本轮收尾")
         rows = {row.label.removeprefix("正式库·"): " | ".join(field.text for field in row.fields) for row in message.rows}
         assert ("正式缺2/4（50.00%）" if index == 0 else "正式缺1/4（25.00%）") in rows["EPS"]
+        assert "已发布来源观测2/4（50.00%）股" in rows["D25财务评分输入"]
         assert "已核无质押1股" in rows["质押比例"] and "部分覆盖1/4（25.00%）" in rows["公告风险覆盖"]
         assert "无适用项" in rows["减持事件字段"]
         assert "缺值2/5（40.00%）" in rows["其他公告字段"] and "待补证2/5（40.00%）" in rows["其他公告字段"]

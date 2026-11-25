@@ -63,6 +63,7 @@ class CompanyFormalCoverage:
     financial_fields: tuple[tuple[CompanyFinancialField, int], ...]
     other_field_counts: tuple[tuple[CompanyFieldName, CompanyEventFieldCoverage], ...]
     reduction_field_counts: tuple[tuple[CompanyFieldName, CompanyEventFieldCoverage], ...]
+    financial_scoring_stocks: int | None = None
 
     @property
     def other_fields(self) -> CompanyEventFieldCoverage:

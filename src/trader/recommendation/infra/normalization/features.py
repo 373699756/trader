@@ -35,6 +35,7 @@ from trader.recommendation.domain.market.models import (
 from trader.recommendation.domain.market.news import DeriveNewsSignals, NewsSignalPolicy
 from trader.recommendation.domain.market.research import (
     DeriveCorporateRiskFeatures,
+    DeriveD25FinancialScores,
     DeriveLatestDisclosedReportLoss,
     DeriveLongResearchFeatures,
     DeriveMarketRegime,
@@ -356,6 +357,13 @@ class FeatureBuilder:
                     }
                 )
             )
+            company_context = observation.company_context
+            if company_context is not None:
+                financial_scores = DeriveD25FinancialScores(
+                    observation, quote.price, self._long_research_policy, observed_at=observed_at,
+                )
+                if financial_scores is not None:
+                    company_context = replace(company_context, d25_financial_scores=financial_scores)
             snapshots.append(
                 FeatureSnapshot(
                     quote=quote,
@@ -381,7 +389,7 @@ class FeatureBuilder:
                         {"history_price_basis": "history_price_basis_unavailable"}
                         if quote.code in basis_failures else {}
                     ),
-                    company_context=research_observation.company_context if research_observation else None,
+                    company_context=company_context,
                     preview_context=options.get("preview_context"),
                 )
             )

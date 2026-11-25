@@ -11,10 +11,12 @@ from types import MappingProxyType
 from typing import Literal
 from zoneinfo import ZoneInfo
 
+from trader.download.domain.company_evidence import CompanyFinancial
 from trader.download.domain.company_events import CompanyRiskType
+from trader.download.domain.company_source_records import CompanyFinancialScoringObservation
 from trader.recommendation.domain.market.factors import Clamp, WeightedScore
 from trader.recommendation.domain.market.models import Evidence
-from trader.recommendation.domain.scoring.company import CompanyScoringContext, IsCompanyRiskEffective
+from trader.recommendation.domain.scoring.company import CompanyScoringContext, D25FinancialScores, IsCompanyRiskEffective
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -133,6 +135,23 @@ class FinancialReport:
             raise ValueError("financial report publication time must be timezone-aware")
 
 
+def ProjectCompanyFinancialReport(financial: CompanyFinancial | None, observed_at: datetime) -> FinancialReport | None:
+    if financial is None or financial.published_at > observed_at or financial.report_date > observed_at.date():
+        return None
+    return FinancialReport(
+        report_date=financial.report_date,
+        published_at=financial.published_at.astimezone(_SHANGHAI),
+        basic_eps=financial.basic_eps,
+        book_value_per_share=financial.book_value_per_share,
+        revenue_growth_pct=financial.revenue_growth_pct,
+        net_profit_growth_pct=financial.net_profit_growth_pct,
+        core_profit_growth_pct=financial.core_profit_growth_pct,
+        roe_pct=financial.roe_pct,
+        parent_net_profit=financial.parent_net_profit,
+        core_net_profit=financial.core_net_profit,
+    )
+
+
 @dataclass(frozen=True)
 class ResearchAnnouncement:
     title: str
@@ -223,12 +242,20 @@ class ResearchObservation:
     loaded_at: datetime | None = None
     unlock_window_start: date | None = None
     unlock_window_end: date | None = None
+    financial_scoring_observation: CompanyFinancialScoringObservation | None = None
+    financial_scoring_adopted_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.snapshot_at is not None and self.snapshot_at.utcoffset() is None:
             raise ValueError("research snapshot time must be timezone-aware")
         if self.loaded_at is not None and self.loaded_at.utcoffset() is None:
             raise ValueError("research load time must be timezone-aware")
+        if self.financial_scoring_adopted_at is not None and (
+            self.financial_scoring_adopted_at.utcoffset() is None
+            or self.financial_scoring_observation is None
+            or self.financial_scoring_adopted_at < self.financial_scoring_observation.available_at
+        ):
+            raise ValueError("financial_scoring_adoption_invalid")
         if self.announcements and not self.announcements_available:
             raise ValueError("announcement rows require an available announcement source")
         if self.financial is not None and self.financial_history and self.financial not in self.financial_history:
@@ -318,6 +345,38 @@ def DeriveLongResearchFeatures(
         "financial_deterioration": _financial_deterioration(financial, policy),
         **event_features,
     }
+
+
+def DeriveD25FinancialScores(
+    observation: ResearchObservation,
+    price: float | None,
+    policy: LongResearchPolicy,
+    *,
+    observed_at: datetime,
+) -> D25FinancialScores | None:
+    """Use one visible supplier report only when a fresh formal report is absent."""
+    if FinancialReportIsFresh(observation.financial, observed_at, maximum_age_days=policy.financial_max_age_days):
+        return None
+    source = observation.financial_scoring_observation
+    if source is None or not FinancialScoringObservationIsVisible(observation, observed_at):
+        return None
+    report = ProjectCompanyFinancialReport(source.observation.financial, observed_at)
+    if not FinancialReportIsFresh(report, observed_at, maximum_age_days=policy.financial_max_age_days):
+        return None
+    quality = _quality_score(report, policy)
+    value = _valuation_score(report, price, policy)
+    growth = _growth_score(report, policy)
+    if quality is None and value is None and growth is None:
+        return None
+    adopted_at = observation.financial_scoring_adopted_at or observation.loaded_at
+    return D25FinancialScores(source, quality, value, growth, adopted_at)
+
+
+def FinancialScoringObservationIsVisible(observation: ResearchObservation, observed_at: datetime) -> bool:
+    """Adoption after a sealed read cannot backdate a scoring decision."""
+    source = observation.financial_scoring_observation
+    loaded_at = observation.financial_scoring_adopted_at or observation.loaded_at
+    return source is not None and source.available_at <= observed_at and (loaded_at is None or loaded_at <= observed_at)
 
 
 def FinancialReportIsFresh(
@@ -573,12 +632,15 @@ __all__ = [
     "MarketRegimePolicy",
     "FinancialReport",
     "FinancialReportIsFresh",
+    "FinancialScoringObservationIsVisible",
     "LongResearchPolicy",
     "LongResearchInputs",
     "ResearchAnnouncement",
     "ResearchObservation",
     "DeriveCorporateRiskFeatures",
+    "DeriveD25FinancialScores",
     "DeriveLatestDisclosedReportLoss",
     "DeriveMarketRegime",
     "DeriveLongResearchFeatures",
+    "ProjectCompanyFinancialReport",
 ]

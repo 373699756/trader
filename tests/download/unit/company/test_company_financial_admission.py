@@ -100,12 +100,10 @@ def test_latest_release_can_fill_partial_without_degrading_previous_complete_sco
     )
     prior = CompileCompanyFacts(evidence, CompanyEventPolicyFixture())
     assert prior.financial_state is CompanyDataState.COMPLETE
-    assert ApplyCompanyFinancialAdmission(prior, proof, _CUTOFF) is prior
-
-    prior = replace(prior, financial_state=CompanyDataState.PARTIAL)
     admitted = ApplyCompanyFinancialAdmission(prior, proof, _CUTOFF)
     assert admitted.financial == old
     assert admitted.latest_financial == proof.report
+    assert admitted.latest_financial.parent_net_profit == -170.0
     assert admitted.financial_state is CompanyDataState.PARTIAL
     assert admitted.risk_events == prior.risk_events
     assert ApplyCompanyFinancialAdmission(admitted, proof, _CUTOFF) is admitted
