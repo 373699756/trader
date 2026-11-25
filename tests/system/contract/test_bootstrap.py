@@ -344,7 +344,7 @@ def test_build_system_passes_project_training_root_for_v3(tmp_path, monkeypatch)
 
     observed: list[Path] = []
     config_path = _config_with_strategy_profile(tmp_path, "v3")
-    v3_profile = LoadD25UtilityProfile("v3", training_root=tmp_path / "data" / "training" / "models")
+    v3_profile = LoadD25UtilityProfile("v3", training_root=tmp_path / "data/train")
 
     def load(profile: str, *, training_root: Path | None = None):
         assert profile == "v3"
@@ -355,7 +355,7 @@ def test_build_system_passes_project_training_root_for_v3(tmp_path, monkeypatch)
 
     BuildSystem(config_path)
 
-    assert observed == [tmp_path / "data" / "training" / "models"]
+    assert observed == [tmp_path / "data/train"]
 
 
 def test_published_reference_initialization_updates_quote_merge() -> None:

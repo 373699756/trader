@@ -15,6 +15,8 @@ import pytest
 
 from trader.infra.serialization.canonical import ContentHash
 from trader.download.domain.baostock_daily import BaoStockCalendar
+from trader.recommendation.domain.publication.models import Strategy
+from trader.training.infra.d25.model_document import ReadD25ModelDocument
 from trader.training.infra.engine import InspectSelectedProfile, ProfileTrainingRequest, RunProfileTraining
 from trader.training.entrypoints.profile_training import ProjectProfileTrainingResult
 from trader.training.infra.model_bundles.bundle_codec import DecodeHeadBundle, LoadHeadBundle
@@ -72,7 +74,9 @@ def test_final_weights_end_at_each_heads_latest_mature_day_and_reuse(trained):
     projected = ProjectProfileTrainingResult(profile.profile_id, result)
     for contract, head, public in zip(profile.heads, result.heads, projected["heads"], strict=True):
         path = training.train_root / profile.output_directory / head.strategy.value
-        model = json.loads((path / "model.json").read_text())
+        model_file = path / "model.json"
+        model = (ReadD25ModelDocument(model_file).utility if head.strategy is Strategy.D25
+                 else json.loads(model_file.read_text()))
         metadata = json.loads((path / "metadata.json").read_text())
         evidence = metadata["final_fit"]
         report = metadata["validation_report"]
@@ -214,7 +218,9 @@ def test_legacy_research_refit_schema_is_rejected_and_cannot_reuse_as_recent(tra
     # Serialization fixture only: no production writer may create the retired schema.
     for contract, head in zip(profile.heads, result.heads, strict=True):
         path = training.train_root / profile.output_directory / head.strategy.value
-        model = json.loads((path / "model.json").read_text())
+        model_file = path / "model.json"
+        model = (ReadD25ModelDocument(model_file).utility if head.strategy is Strategy.D25
+                 else json.loads(model_file.read_text()))
         metadata = json.loads((path / "metadata.json").read_text())
         metadata["schema_version"] = f"{profile.profile_id}_head_refit_metadata"
         evidence = metadata["final_fit"]

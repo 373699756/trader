@@ -65,7 +65,7 @@ def ResolveTrainingLocations(
     """Project configured paths and explicit CLI overrides into the training plan."""
     return TrainingLocations(
         history_root or paths.history,
-        training_root / "models" if training_root else paths.models,
+        training_root or paths.models,
         training_root / "samples" if training_root else paths.samples,
         training_root / "maintenance.sqlite3" if training_root else paths.training_maintenance,
     )

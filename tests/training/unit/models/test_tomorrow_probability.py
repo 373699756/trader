@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
@@ -6,22 +7,21 @@ from types import SimpleNamespace
 import pytest
 
 from tests.helpers.training.training_resources import TrainingResourceSettingsFixture
-
 from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingRow
 from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.outcomes.tomorrow_target import TomorrowCloseGain
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 from trader.recommendation.infra.settings.loading import LoadPredictionTargets
-from trader.training.infra.tomorrow.artifact import (
-    LoadTomorrowProbabilityModel, PublishTomorrowProbabilityModel, TomorrowFeatureNames,
-)
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.memory_admission import TrainingMemoryBudget
-from trader.training.infra.tomorrow.training import (
-    TrainTomorrowProbability, _collect_samples, _label,
+from trader.training.infra.tomorrow.artifact import (
+    LoadTomorrowProbabilityModel,
+    PublishTomorrowProbabilityModel,
+    TomorrowFeatureNames,
 )
 from trader.training.infra.tomorrow.settings import LoadTomorrowFitSettings
+from trader.training.infra.tomorrow.training import TrainTomorrowProbability, _collect_samples, _label
 
 _ROOT = Path(__file__).resolve().parents[4]
 _TARGET = PredictionTarget(Strategy.TOMORROW, 500)
@@ -108,6 +108,12 @@ def test_four_independent_algorithms_fit_and_reload_with_only_two_reads(tmp_path
     assert tuple(head.result.algorithm for head in fitted) == ("lambdarank", "lightgbm_binary", "l2_logistic", "tcn_bce"), fitted
     assert len({head.result.model_identity for head in fitted}) == 4
     for head in fitted:
+        head_root = tmp_path / head.profile / "tomorrow"
+        assert {path.name for path in head_root.iterdir()} == {"model.json", "metadata.json"}
+        metadata = json.loads((head_root / "metadata.json").read_text(encoding="utf-8"))
+        assert metadata["profile"] == head.profile
+        assert metadata["target"] == _TARGET.identity
+        assert metadata["identity"] == head.result.model_identity
         assert head.result.ready
         assert head.result.assessment_seats == 6 * 20
         assert head.result.assessment_brier is not None and 0 <= head.result.assessment_brier <= 1
@@ -154,17 +160,25 @@ def test_four_independent_algorithms_fit_and_reload_with_only_two_reads(tmp_path
     assert tree_model is not None
     changed = PublishTomorrowProbabilityModel(tmp_path, replace(tree_model.artifact, target=_HIGHER_TARGET))
     assert changed != tree_model.identity
+    assert LoadTomorrowProbabilityModel(tmp_path, "v2", _TARGET, project_root=_ROOT) is None
     with pytest.raises(ValueError, match="tomorrow_probability_artifact_tree_invalid"):
         PublishTomorrowProbabilityModel(tmp_path, replace(tree_model.artifact, lightgbm="invalid tree"))
-    restored = LoadTomorrowProbabilityModel(tmp_path, "v2", _TARGET, project_root=_ROOT)
-    assert restored is not None and restored.identity == tree_model.identity
+    preserved = LoadTomorrowProbabilityModel(tmp_path, "v2", _HIGHER_TARGET, project_root=_ROOT)
+    assert preserved is not None and preserved.identity == changed
     fitting = LoadTomorrowFitSettings(_ROOT, "v2")
     monkeypatch.setattr(
         "trader.training.infra.tomorrow.artifact.LoadTomorrowFitSettings",
         lambda *_args: replace(fitting, fit_dates=fitting.fit_dates - 1),
     )
     with pytest.raises(ValueError, match="tomorrow_probability_training_contract_mismatch"):
-        LoadTomorrowProbabilityModel(tmp_path, "v2", _TARGET, project_root=_ROOT)
+        LoadTomorrowProbabilityModel(tmp_path, "v2", _HIGHER_TARGET, project_root=_ROOT)
+
+    metadata_path = tmp_path / "v2" / "tomorrow" / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["history_snapshot_hash"] = "b" * 64
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    with pytest.raises(ValueError, match="tomorrow_probability_artifact_contract_mismatch"):
+        LoadTomorrowProbabilityModel(tmp_path, "v2", _HIGHER_TARGET, project_root=_ROOT)
 
 
 def test_sequence_ends_on_the_previous_trading_day() -> None:

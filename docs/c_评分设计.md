@@ -53,7 +53,7 @@ ST状态同时保留来源、检查时间和发布身份。仅凭unknown或未�
 
 下表中其余资料在第2层ST及其他静态资格通过后才预加载，并在首轮采集前完成；不是第1层先把所有股票资料读完。
 
-证券和ST取自 `data/metadata/company_st.sqlite3`。日历按已发布参考及历史身份读取，行业采用已发布当前分类，训练每轮固定同一份最新有效映射。历史来自 `data/history/catalog.sqlite3` 与年度 `prices_<year>.sqlite3`，公司资料来自 `data/company/company_published.sqlite3`。模型来自 `data/training/models/<档位>/<策略>/model.json` 和 `metadata.json`。配置来自 `config/runtime.json` 及b第7章列出的各业务JSON文件。上述路径以 `data_dir=data` 举例。
+证券和ST取自 `data/metadata/company_st.sqlite3`。日历按已发布参考及历史身份读取，行业采用已发布当前分类，训练每轮固定同一份最新有效映射。历史来自 `data/history/catalog.sqlite3` 与年度 `prices_<year>.sqlite3`，公司资料来自 `data/company/company_published.sqlite3`。模型来自 `data/train/<档位>/<策略>/model.json` 和 `metadata.json`。配置来自 `config/runtime.json` 及b第7章列出的各业务JSON文件。上述路径以 `data_dir=data` 举例。
 
 | 加载内容 | 来源 | 保留什么 | 不做什么 |
 | --- | --- | --- | --- |
@@ -313,7 +313,7 @@ Tomorrow 工件按档位和目标加载，D25 按档加载收益工件和与之�
 
 ### 7.1 模型输入明细
 
-来源：原始量价在 `data/history/prices_<year>.sqlite3`，发布和日历身份在 `catalog.sqlite3`；训练行业由 `data/metadata/industry.sqlite3` 的最新有效当前发布固定，所有历史样本共用本轮映射；实时锚点来自本轮腾讯/新浪报价。字段定义和顺序由 `config/features.json` 与各档特征合同约束，窗口及模型参数来自 `config/training.json`；已发布模型列合同保存在 `data/training/models/<档位>/<策略>/metadata.json`。下表为模型输入计算字段，不能按名称直接查询某张表。
+来源：原始量价在 `data/history/prices_<year>.sqlite3`，发布和日历身份在 `catalog.sqlite3`；训练行业由 `data/metadata/industry.sqlite3` 的最新有效当前发布固定，所有历史样本共用本轮映射；实时锚点来自本轮腾讯/新浪报价。字段定义和顺序由 `config/features.json` 与各档特征合同约束，窗口及模型参数来自 `config/training.json`；已发布模型列合同保存在 `data/train/<档位>/<策略>/metadata.json`。下表为模型输入计算字段，不能按名称直接查询某张表。
 
 | 字段族 | 定义和来源 | 使用档位 |
 | --- | --- | --- |
@@ -356,7 +356,7 @@ V2/V3/V5的残差计算总体先按当日特征可建性确定，不能提前按
 
 V5 的全部序列坐标用 `t=0..59`、以下6个通道明确表示，共360项，不抄360行相同解释。`t=0` 是61日窗口第二天，`t=59` 是信号日前最近完整日，顺序由旧到新。
 
-来源：下面6个通道由 `data/history/prices_<year>.sqlite3` 中已发布的qfq价格和模型合同量额计算；训练时写入 `data/training/samples/` 下V5样本库，在线从已预加载历史生成。60步、列序及单位由V5特征合同和 `config/training.json` 约束，不来自实时分钟数据库。
+来源：下面6个通道由 `data/history/prices_<year>.sqlite3` 中已发布的qfq价格和模型合同量额计算；训练时写入 `data/train/samples/` 下V5样本库，在线从已预加载历史生成。60步、列序及单位由V5特征合同和 `config/training.json` 约束，不来自实时分钟数据库。
 
 | 字段模式 | 每一步含义 | 来源与单位 |
 | --- | --- | --- |

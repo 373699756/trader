@@ -117,9 +117,9 @@ def test_runtime_config_disk_is_optional_and_uses_actual_config(tmp_path, monkey
     assert output.err.count("[存储配置需修改]") == 1
     assert "config/runtime.json" in output.err
     assert '"disk_medium": "hdd"' in output.err
-    assert "data/training/samples/v5" in output.err
+    assert "data/train/samples/v5" in output.err
     assert "ssd" in output.err and "重新启动" in output.err
-    assert len(locations) == 22
+    assert len(locations) == 23
     assert not settings.data_paths.root.exists()
     raw["disk_medium"] = "ssd"
     path.write_text(json.dumps(raw))

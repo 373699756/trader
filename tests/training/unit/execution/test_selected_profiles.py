@@ -79,9 +79,9 @@ def test_selected_train_delivers_four_independent_tomorrow_and_d25_heads(tmp_pat
         return object()
 
     monkeypatch.setattr("trader.training.infra.d25.v1.training.FitV1D25Probability", fit_v1)
-    monkeypatch.setattr("trader.training.infra.d25.v1.training.PublishD25Probability", lambda *_args: None)
+    monkeypatch.setattr("trader.training.infra.d25.v1.training.StageD25Probability", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("trader.training.infra.engine.FitIndustryD25Probability", fit_industry)
-    monkeypatch.setattr("trader.training.infra.engine.PublishD25Probability", lambda *_args: None)
+    monkeypatch.setattr("trader.training.infra.engine.StageD25Probability", lambda *_args: None)
     targets = LoadPredictionTargets(request.runtime.strategy_config_path)
     targets = replace(targets, v1=replace(targets.v1, tomorrow=PredictionTarget(Strategy.TOMORROW, 600)))
     with ThreadPoolExecutor(max_workers=4) as executor:

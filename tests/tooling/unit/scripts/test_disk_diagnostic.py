@@ -39,7 +39,7 @@ def test_disk_profile_routes_extra_paths_and_preserves_actionable_details(tmp_pa
     assert len(commands) == 1
     assert commands[0].argv[-2:] == ("--path", str(tmp_path))
     summary = {
-        "locations": [{"path": "data/training/samples", "kind": "unknown"}],
+        "locations": [{"path": "data/train/samples", "kind": "unknown"}],
         "configuration_file": "config/custom-runtime.json",
         "configuration_field": "disk_medium",
         "configuration_example": {"disk_medium": "hdd"},

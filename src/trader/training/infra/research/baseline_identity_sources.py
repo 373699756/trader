@@ -13,11 +13,12 @@ from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.training.application.baseline_identity_audit import BaselineIdentityEvidence
 from trader.training.domain.evaluation.baseline_identity import BaselineIdentityClaim, SourceHash
 from trader.training.domain.evaluation.tomorrow_historical import TOMORROW_HISTORICAL_SPEC
-from trader.training.infra.tomorrow.artifact import LoadTomorrowProbabilityModel, TomorrowProbabilityModelPath
+from trader.training.infra.model_bundles.profile_publication import ProfilePublicationBusyError
 from trader.training.infra.research.tomorrow_historical_evidence import (
     TomorrowHistoricalEvidenceConflictError,
     TomorrowHistoricalEvidenceIndex,
 )
+from trader.training.infra.tomorrow.artifact import LoadTomorrowProbabilityModel, TomorrowProbabilityModelPath
 
 
 @dataclass(frozen=True)
@@ -116,12 +117,12 @@ def _tomorrow_model_claim(
     runtime: RuntimeSettings, profile: ScoringProfileId, target: PredictionTarget,
 ) -> BaselineIdentityClaim:
     models = runtime.data_paths.models
-    source = str(TomorrowProbabilityModelPath(models, profile, target))
+    source = str(TomorrowProbabilityModelPath(models, profile))
     identity = SourceHash(source)
     actual: str | None = None
     try:
         model = LoadTomorrowProbabilityModel(models, profile, target, project_root=runtime.project_root)
-    except (OSError, ValueError):
+    except (OSError, ProfilePublicationBusyError, ValueError):
         actual = "artifact_conflict"
     else:
         if model is not None:

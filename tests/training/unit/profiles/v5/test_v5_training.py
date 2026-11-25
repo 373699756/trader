@@ -5,6 +5,7 @@ from tests.helpers.training.training_resources import TrainingSampleSettingsFixt
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 
 import math
+from shutil import copytree
 
 from dataclasses import replace
 
@@ -24,7 +25,20 @@ from trader.recommendation.application.ports.loaded_profile import ModelInput
 from trader.recommendation.domain.market.v5.features import CalculatePriceVolumeSequence, PriceVolumePoint
 
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 
+from trader.training.infra.d25.artifact import (
+    D25ProbabilityArtifact, D25ProbabilityBinding, HasD25Probability, StageD25Probability,
+)
+from trader.training.infra.d25.calibration import D25ProbabilityCalibrationError
+from trader.training.infra.d25.contracts import StandardD25Profile
+from trader.training.infra.d25.model_document import ReadD25ModelDocument
+from trader.training.infra.d25.v5.probability import D25TcnModel
+from trader.training.infra.engine import ProfileTrainingRequest, RunProfileTraining
+from trader.training.infra.model_bundles.bundle_codec import TrainedTcnModelSnapshot
+from trader.training.infra.model_bundles.profile_publication import (
+    InspectPublishedProfileBundles, PublishStrategyModelDirectory,
+)
 from trader.training.infra.research.close_return.scoring import LoadDiagnosticScoringProfile
 
 
@@ -81,6 +95,70 @@ def test_missing_future_label_reports_exact_partition_without_discarding_other_h
     assert coverage.sample_rows > coverage.target_rows > 0
     assert d25.training_rows == 0
     assert not tuple((tmp_path / "models").rglob("model.json"))
+
+
+@pytest.mark.skipif(find_spec("torch") is None, reason="V5 optional CPU dependency")
+def test_v5_d25_calibration_failure_writes_utility_and_keeps_existing_calibrated_model(tmp_path, monkeypatch):
+    history = _history(tmp_path / "history")
+    monkeypatch.setattr(
+        "trader.training.infra.engine.SQLiteHistoryTrainingInputSnapshot.open",
+        lambda _p, *, industry_snapshot, sqlite_policy: history,
+    )
+
+    def reject_calibration(*_args):
+        raise D25ProbabilityCalibrationError("d25_probability_calibration_not_monotone")
+
+    monkeypatch.setattr("trader.training.infra.engine.FitIndustryD25Probability", reject_calibration)
+    train_root = tmp_path / "train"
+    contract = StandardD25Profile("v5")
+    target = PredictionTarget(Strategy.D25, 100)
+    settings = replace(
+        LoadProfileTrainingSettings(ROOT, "v5"),
+        fitting=TcnFittingParametersFixture(
+            minimum_industry_training_rows=10, epochs=1, early_stopping_rounds=1,
+            hidden_channels=8, compute_dtype="float32",
+        ),
+    )
+    request = ProfileTrainingRequest(
+        history.history_root, train_root, contract, contract.heads, settings,
+        sample_root=tmp_path / "samples", sample_settings=TrainingSampleSettingsFixture(),
+        industry_snapshot=history.snapshot.industry_snapshot, d25_target=target, compute_threads=1,
+    )
+    result = RunProfileTraining(request, sqlite_policy=SqlitePolicyFixture())
+    assert result.status == "blocked"
+    assert result.heads[0].diagnostic.causes[-1].code == "d25_probability_calibration_not_monotone"
+    assert {path.relative_to(train_root).as_posix() for path in train_root.rglob("*.json")} == {
+        "v5/d25/model.json", "v5/d25/metadata.json",
+    }
+    profile_root = train_root / "v5"
+    directory = profile_root / "d25"
+    assert ReadD25ModelDocument(directory / "model.json").probability is None
+    utility, = InspectPublishedProfileBundles(profile_root, contract)
+    assert utility.model.training_rows > 0
+    binding = D25ProbabilityBinding(target, utility.model_hash, utility.training_input_hash, utility.metadata_hash)
+    features = contract.heads[0].feature_manifest.names
+    assert not HasD25Probability(profile_root, "v5", features, binding)
+
+    industry, fixture_weights = utility.model.industries[0]
+    assert isinstance(fixture_weights, TrainedTcnModelSnapshot)
+    plan = utility.model.diagnostic_plan
+    assert plan is not None
+    staged = copytree(directory, tmp_path / "staged")
+    StageD25Probability(staged, D25ProbabilityArtifact(
+        "v5", binding, features, plan.fitting_dates, plan.calibration_dates, (0.0, 1.0),
+        ((industry, D25TcnModel(
+            fixture_weights.transformer_means, fixture_weights.transformer_scales,
+            fixture_weights.dropout, fixture_weights.weights, fixture_weights.architecture,
+        )),),
+    ))
+    PublishStrategyModelDirectory(profile_root, Strategy.D25, staged)
+    assert HasD25Probability(profile_root, "v5", features, binding)
+    previous = {path.name: path.read_bytes() for path in directory.iterdir()}
+    changed = replace(settings, fitting=replace(settings.fitting, minimum_industry_training_rows=11))
+    repeated = RunProfileTraining(replace(request, settings=changed), sqlite_policy=SqlitePolicyFixture())
+    assert repeated.status == "blocked"
+    assert repeated.heads[0].diagnostic.causes[-1].code == "d25_probability_calibration_not_monotone"
+    assert {path.name: path.read_bytes() for path in directory.iterdir()} == previous
 
 
 @pytest.mark.skipif(find_spec("torch") is None, reason="V5 optional CPU dependency")

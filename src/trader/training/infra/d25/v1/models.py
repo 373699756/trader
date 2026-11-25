@@ -46,9 +46,13 @@ from trader.training.domain.v1.learned_rank import (
 )
 from trader.training.domain.final_fit import FinalFitDatePlan
 from trader.training.domain.training_dates import MAX_TRAINING_SESSIONS
+from trader.training.infra.d25.model_document import (
+    D25ModelDocument, EncodeD25ModelDocument, ReadD25ModelDocument,
+)
 from trader.training.infra.model_bundles.bundle_codec import ModelBundleContractError, ModelBundleIntegrityError
 from trader.training.infra.model_bundles.profile_publication import (
-    InspectProfileWorkspace, ProfilePublicationLock, RecoverProfilePublication, RequireProfilePublicationReady,
+    InspectProfileWorkspace, ProfilePublicationLock, PublishStrategyModelDirectory, RecoverProfilePublication,
+    RequireProfilePublicationReady,
 )
 from trader.training.infra.model_bundles.composition import SingleHeadCombiner
 from trader.training.infra.learned_rank_settings import ParseV1TrainingSettings
@@ -192,7 +196,9 @@ class LearnedRankPredictor:
         )
 
 
-def PublishLearnedRankPair(model_root: Path, pair: LearnedRankFinalPair) -> None:
+def PublishLearnedRankPair(
+    model_root: Path, pair: LearnedRankFinalPair, *, stage_d25: Callable[[Path], str] | None = None,
+) -> None:
     """Publish the selected final-refit heads as one locked profile directory."""
     if not isinstance(pair, LearnedRankFinalPair):
         raise ValueError("V1 publication requires a complete final-refit pair")
@@ -201,7 +207,8 @@ def PublishLearnedRankPair(model_root: Path, pair: LearnedRankFinalPair) -> None
     model_root.mkdir(parents=True, exist_ok=True)
     profile_root = model_root / "v1"
     strategies = tuple(head.strategy for head in pair.heads)
-    RecoverLearnedRankPublication(model_root, strategies=strategies)
+    if strategies != (Strategy.D25,):
+        RecoverLearnedRankPublication(model_root, strategies=strategies)
     if profile_root.is_symlink() or (profile_root.exists() and not profile_root.is_dir()):
         raise ValueError("V1 model directory is invalid")
     staging = Path(tempfile.mkdtemp(prefix=".v1.publication.", dir=model_root))
@@ -270,12 +277,25 @@ def PublishLearnedRankPair(model_root: Path, pair: LearnedRankFinalPair) -> None
                 for document in (model, metadata)
             ):
                 raise ValueError("V1 model document exceeds its size limit")
-            AtomicWriteJson(directory / "model.json", model)
+            model_document = (
+                EncodeD25ModelDocument(D25ModelDocument(model)) if head.strategy is Strategy.D25 else model
+            )
+            AtomicWriteJson(directory / "model.json", model_document)
             AtomicWriteJson(directory / "metadata.json", metadata)
+            if head.strategy is Strategy.D25 and stage_d25 is not None:
+                stage_d25(directory)
             _fsync_directory(directory)
         _fsync_directory(staging)
         if _read_pair_directory(staging, strategies) != pair:
             raise ValueError("learned-rank staged pair differs")
+        if strategies == (Strategy.D25,):
+            PublishStrategyModelDirectory(
+                profile_root,
+                Strategy.D25,
+                staging / Strategy.D25.value,
+                validate=_read_d25_directory,
+            )
+            return
         with ProfilePublicationLock(profile_root):
             RequireProfilePublicationReady(profile_root)
             if profile_root.is_symlink() or (profile_root.exists() and not profile_root.is_dir()):
@@ -439,10 +459,10 @@ def _require_head_directories(profile_root: Path, strategies: tuple[Strategy, ..
         raise ValueError("V1 model strategy contract is invalid")
     head_names = {path.name for path in profile_root.iterdir()}
     expected_heads = {strategy.value for strategy in strategies}
-    if head_names < expected_heads:
-        raise FileNotFoundError("V1 model requires both heads")
-    if head_names != expected_heads:
+    if head_names - {strategy.value for strategy in _STRATEGIES}:
         raise ValueError("V1 model directory has unexpected entries")
+    if not expected_heads <= head_names:
+        raise FileNotFoundError("V1 model requires the selected heads")
 
 
 def _read_pair_directory(profile_root: Path, strategies: tuple[Strategy, ...] = _STRATEGIES) -> LearnedRankFinalPair:
@@ -451,9 +471,16 @@ def _read_pair_directory(profile_root: Path, strategies: tuple[Strategy, ...] = 
     if not profile_root.is_dir() or profile_root.is_symlink():
         raise ValueError("V1 model directory is invalid")
     _require_head_directories(profile_root, strategies)
+    return _read_heads(tuple((strategy, profile_root / strategy.value) for strategy in strategies))
+
+
+def _read_d25_directory(directory: Path) -> LearnedRankFinalPair:
+    return _read_heads(((Strategy.D25, directory),))
+
+
+def _read_heads(paths: tuple[tuple[Strategy, Path], ...]) -> LearnedRankFinalPair:
     documents: list[tuple[Mapping[str, object], Mapping[str, object]]] = []
-    for strategy in strategies:
-        directory = profile_root / strategy.value
+    for strategy, directory in paths:
         if directory.is_symlink() or not directory.is_dir():
             raise ValueError("V1 head directory is invalid")
         file_names = {path.name for path in directory.iterdir()}
@@ -462,13 +489,15 @@ def _read_pair_directory(profile_root: Path, strategies: tuple[Strategy, ...] = 
             raise FileNotFoundError("V1 head files are missing")
         if file_names != expected_files:
             raise ValueError("V1 head directory has unexpected entries")
-        paths = (directory / "model.json", directory / "metadata.json")
-        if any(
-            path.is_symlink() or not path.is_file() or path.stat().st_size > _MAXIMUM_MODEL_DOCUMENT_BYTES
-            for path in paths
-        ):
-            raise ValueError("learned-rank head path or size is invalid")
-        model, metadata = (_object(json.loads(path.read_text(encoding="utf-8"))) for path in paths)
+        model_path = directory / "model.json"
+        model = (
+            ReadD25ModelDocument(model_path).utility
+            if strategy is Strategy.D25 else
+            _object(json.loads(ReadRegularFile(model_path, maximum_bytes=_MAXIMUM_MODEL_DOCUMENT_BYTES)))
+        )
+        metadata = _object(json.loads(ReadRegularFile(
+            directory / "metadata.json", maximum_bytes=_MAXIMUM_MODEL_DOCUMENT_BYTES,
+        )))
         _verify_document(model, _MODEL_DOCUMENT_FIELDS, "V1 model")
         _verify_document(metadata, _METADATA_DOCUMENT_FIELDS, "V1 metadata")
         if metadata["model_hash"] != model["content_hash"]:

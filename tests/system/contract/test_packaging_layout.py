@@ -114,13 +114,13 @@ def test_hidden_metadata_container_is_not_discovered_as_an_empty_distribution() 
 def test_project_whitelists_only_portable_model_heads() -> None:
     project = Path(__file__).parents[3]
     cases = {
-        "data/training/models/v2/tomorrow/model.json": False,
-        "data/training/models/v2/d25/metadata.json": False,
-        "data/training/models/v3/tomorrow/model.json": False,
-        "data/training/models/v3/d25/metadata.json": False,
-        "data/training/models/v3/d25/active-bundle.json": True,
-        "data/training/models/v2/active-profile.json": True,
-        "data/training/samples/v2/complete.json": True,
+        "data/train/v2/tomorrow/model.json": False,
+        "data/train/v2/d25/metadata.json": False,
+        "data/train/v3/tomorrow/model.json": False,
+        "data/train/v3/d25/metadata.json": False,
+        "data/train/v3/d25/active-bundle.json": True,
+        "data/train/v2/active-profile.json": True,
+        "data/train/samples/v2/complete.json": True,
         "data/recommendation/v3/freeze.sqlite3": True,
         "data/history/catalog.sqlite3": True,
         "data/metadata/industry.sqlite3": True,

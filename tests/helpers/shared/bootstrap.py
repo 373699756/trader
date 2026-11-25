@@ -23,7 +23,7 @@ def _config(tmp_path: Path) -> Path:
     reference_dir = tmp_path / "data/metadata"
     reference_dir.mkdir(parents=True, exist_ok=True)
     for profile in (V2_D25_PROFILE, V3_D25_PROFILE):
-        _publish_profile(tmp_path / "data" / "training" / "models", profile)
+        _publish_profile(tmp_path / "data/train", profile)
     path = config_dir / "runtime.json"
     path.write_text(json.dumps(runtime), encoding="utf-8")
     return path

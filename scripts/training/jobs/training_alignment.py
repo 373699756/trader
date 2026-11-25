@@ -668,7 +668,7 @@ def _prepare_sample_reuse(
         "fitter_restored": engine.FitIndustryModels is original_fit,
         "fit_entry_counts": calls,
         "unexpected_workspaces": unexpected_workspaces,
-        "model_files_created": sum(1 for _ in (work / "models").rglob("*.json")),
+        "model_files_created": sum(1 for profile in profiles for _ in (work / profile).glob("*/*.json")),
         "exit_code": code,
         "seconds": time.monotonic() - started,
         "resources": measurement.result,
@@ -737,13 +737,13 @@ def _train_once(
     }
     if code != 0 or not TrainingSuccessfulReceipt(results, execution, profiles):
         return result
-    artifacts, event_values = _load_artifact_evidence(runtime, work / "models", profiles, d25_only=d25_only)
+    artifacts, event_values = _load_artifact_evidence(runtime, work, profiles, d25_only=d25_only)
     result["artifacts"] = artifacts
     result["reloaded_heads"] = len(artifacts)
     if TrainingArtifactEvidence(result, profiles, d25_only=d25_only) is not None:
         result["complete"] = True
         result["numeric_fingerprints"] = _numeric_fingerprints(
-            work / "models", profiles, event_values, d25_only=d25_only,
+            work, profiles, event_values, d25_only=d25_only,
         )
     return result
 
@@ -874,6 +874,8 @@ def _numeric_fingerprints(
     model_root: Path, profiles: tuple[ScoringProfileId, ...],
     event_values: dict[tuple[ScoringProfileId, str], object], *, d25_only: bool = False,
 ) -> tuple[dict[str, object], ...]:
+    from trader.training.infra.d25.model_document import ReadD25ModelDocument
+
     fingerprints: list[dict[str, object]] = []
     metric_fields = (
         "prediction_metrics",
@@ -887,17 +889,14 @@ def _numeric_fingerprints(
     )
     for profile in profiles:
         directory = model_root / profile / "d25"
-        documents = []
-        for name in ("model.json", "metadata.json"):
-            path = directory / name
-            if path.stat().st_size > 32 * 1024**2:
-                raise ValueError("training_alignment_model_document_too_large")
-            value: object = json.loads(path.read_text(encoding="utf-8"))
-            documents.append(_fingerprint_model_object(value))
-        model, metadata = documents
+        path = directory / "metadata.json"
+        if path.stat().st_size > 32 * 1024**2:
+            raise ValueError("training_alignment_model_document_too_large")
+        metadata = _fingerprint_model_object(json.loads(path.read_text(encoding="utf-8")))
         training = metadata.get("training_input") if profile == "v1" else metadata
         if not isinstance(training, dict) or "final_fit" not in training:
             raise ValueError("training_alignment_current_final_publication_required")
+        model = dict(ReadD25ModelDocument(directory / "model.json").utility)
         report = metadata["validation_report"]
         if not isinstance(report, dict):
             raise ValueError("training_alignment_validation_report_invalid")

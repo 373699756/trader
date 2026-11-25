@@ -267,19 +267,20 @@ def test_model_numeric_fingerprints_include_components_and_metrics_but_not_ident
         },
     }
     event_values = {("v1", "d25"): {"weights": [0.1, 0.2]}}
-    (root / "model.json").write_text(json.dumps(model))
+    document = {"utility": model, "probability": None}
+    (root / "model.json").write_text(json.dumps(document))
     (root / "metadata.json").write_text(json.dumps(metadata))
     first = _numeric_fingerprints(tmp_path, ("v1",), event_values, d25_only=True)
     model["content_hash"] = metadata["content_hash"] = "new-source"
-    (root / "model.json").write_text(json.dumps(model))
+    (root / "model.json").write_text(json.dumps(document))
     (root / "metadata.json").write_text(json.dumps(metadata))
     assert _numeric_fingerprints(tmp_path, ("v1",), event_values, d25_only=True) == first
     model["components"]["ridge_coefficients"][0] = 0.3
-    (root / "model.json").write_text(json.dumps(model))
+    (root / "model.json").write_text(json.dumps(document))
     assert _numeric_fingerprints(tmp_path, ("v1",), event_values, d25_only=True) != first
     model["components"]["ridge_coefficients"][0] = 0.1
     metadata["validation_report"]["validation"]["mean_absolute_error"] = 0.02
-    (root / "model.json").write_text(json.dumps(model))
+    (root / "model.json").write_text(json.dumps(document))
     (root / "metadata.json").write_text(json.dumps(metadata))
     assert _numeric_fingerprints(tmp_path, ("v1",), event_values, d25_only=True) != first
 

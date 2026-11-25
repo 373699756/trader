@@ -31,6 +31,7 @@ from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra.model_bundles.bundle_codec import DecodeHeadBundle, DecodeHeadPublicationIdentity
 from trader.training.infra.model_bundles.bundle_snapshot import InspectPublishedHeadBundle
 from trader.training.infra.d25.contracts import StandardD25Profile
+from trader.training.infra.d25.model_document import D25ModelDocument, EncodeD25ModelDocument
 from trader.training.infra.research.close_return.v2_contracts import V2_TRAINING_PROFILE
 from trader.training.infra.research.close_return.v5_contracts import V5_TRAINING_PROFILE
 from trader.training.infra.model_evaluation import PREDICTION_EVALUATION_CONTRACT
@@ -65,22 +66,22 @@ def test_unexpected_runtime_error_is_not_reclassified_as_missing_models(tmp_path
         LoadDiagnosticScoringProfile("v3", training_root=tmp_path)
 
 
-def test_d25_only_publication_requires_exact_current_head_scope(tmp_path):
-    legacy = tmp_path / "paired"
-    _publish_profile(legacy, V3_TRAINING_PROFILE)
+def test_d25_only_publication_preserves_tomorrow_and_reads_only_d25(tmp_path):
+    _publish_profile(tmp_path, V3_TRAINING_PROFILE)
     contract = StandardD25Profile("v3")
-    root = tmp_path / "models" / "v3"
-    staged = legacy / "staging-v3-d25"
+    root = tmp_path / "v3"
+    staged = tmp_path / "staging-v3-d25"
+    tomorrow = root / "tomorrow"
+    before = {path.name: path.read_bytes() for path in tomorrow.iterdir()}
 
     bundles = PublishProfileBundles(root, contract, ((Strategy.D25, staged),))
     assert len(bundles) == 1 and bundles[0].model.strategy is Strategy.D25
-    assert {entry.name for entry in root.iterdir()} == {"d25"}
+    assert {entry.name for entry in root.iterdir()} == {"d25", "tomorrow"}
+    assert {path.name: path.read_bytes() for path in tomorrow.iterdir()} == before
     assert InspectPublishedProfileBundles(root, contract) == bundles
     assert tuple(item.strategy for item in ReadPublishedProfileIdentities(
         root, contract, cancel_requested=lambda: False,
     )) == (Strategy.D25,)
-    with pytest.raises(ValueError, match="retired or foreign"):
-        InspectPublishedProfileBundles(legacy / "v3", contract)
 
 
 def _legacy_refit_documents(contract):
@@ -161,6 +162,8 @@ def test_installed_old_pair_cannot_load_observe_recover_or_reuse(tmp_path, legac
         recent = legacy_schema == "mixed" and contract.maturity_sessions == 1
         builder = _documents if recent else _legacy_refit_documents if legacy_schema == "91d" else _diagnostic_documents
         model, metadata = builder(contract)
+        if contract.strategy is Strategy.D25:
+            model = EncodeD25ModelDocument(D25ModelDocument(model))
         directory = root / contract.strategy.value
         directory.mkdir(parents=True)
         (directory / "model.json").write_text(json.dumps(model), encoding="utf-8")
@@ -202,6 +205,8 @@ def test_publisher_rejects_old_staged_models_before_any_directory_write(tmp_path
         else:
             with pytest.raises(ValueError, match="metadata fields"):
                 DecodeHeadBundle(model, metadata, contract.strategy, V3_TRAINING_PROFILE)
+        if contract.strategy is Strategy.D25:
+            model = EncodeD25ModelDocument(D25ModelDocument(model))
         path = tmp_path / "staged" / contract.strategy.value
         path.mkdir(parents=True)
         for name, document in (("model.json", model), ("metadata.json", metadata)):

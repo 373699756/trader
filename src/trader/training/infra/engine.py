@@ -66,7 +66,9 @@ from trader.training.infra.history.history_training_input import (
 )
 from trader.training.infra.implementation_identity import LaneTrainingImplementationIdentity, TrainingImplementationIdentity
 from trader.training.infra.execution_options import TrainingExecutionOptions
-from trader.training.infra.d25.artifact import D25ProbabilityBinding, HasD25Probability, PublishD25Probability
+from trader.training.infra.d25.artifact import D25ProbabilityBinding, HasD25Probability, StageD25Probability
+from trader.training.infra.d25.calibration import D25ProbabilityCalibrationError
+from trader.training.infra.d25.model_document import D25ModelDocument, EncodeD25ModelDocument
 from trader.training.infra.d25.training import D25IndustryFitRequest, FitIndustryD25Probability
 from trader.training.infra.fitting_resources import ReserveTrainingFittingResources, TrainingFittingReservation
 from trader.training.infra.model_bundles.bundle_snapshot import (
@@ -528,18 +530,28 @@ class _ProfileFittingAdapter:
                             raise InterruptedError("d25_probability_training_cancelled")
                         _publish(request.progress, TomorrowTrainingProgress("model_fit", "running", 0, 1))
 
-                    artifact = FitIndustryD25Probability(
-                        self.samples,
-                        D25IndustryFitRequest(
-                            request.profile.profile_id, contract, self.plan.split, request.settings.fitting,
-                            tuple(item.industry for item in refitted), self.reservation.compute_threads,
-                            D25ProbabilityBinding(
-                                request.d25_target, result.model_hash, snapshot.training_input_hash, utility_metadata_hash,
-                            ),
-                        ), checkpoint,
+                    probability_request = D25IndustryFitRequest(
+                        request.profile.profile_id,
+                        contract,
+                        self.plan.split,
+                        request.settings.fitting,
+                        tuple(item.industry for item in refitted),
+                        self.reservation.compute_threads,
+                        D25ProbabilityBinding(
+                            request.d25_target, result.model_hash, snapshot.training_input_hash, utility_metadata_hash,
+                        ),
                     )
+                    try:
+                        artifact = FitIndustryD25Probability(self.samples, probability_request, checkpoint)
+                    except D25ProbabilityCalibrationError:
+                        if request.profile.profile_id == "v5" and not _has_d25_probability(
+                            request.train_root, request.profile, contract, request.d25_target,
+                        ):
+                            checkpoint()
+                            self.publish_pair()
+                        raise
                     checkpoint()
-                    PublishD25Probability(request.train_root, artifact)
+                    StageD25Probability(staging, artifact)
             return PreparedTrainingHead(result, staging is not None)
 
     def publish_pair(self) -> None:
@@ -743,7 +755,10 @@ def _fit_and_prepare_head(
         metadata_hash = ContentHash(metadata)
         metadata["content_hash"] = metadata_hash
         staging = MakeBundleStagingDirectory(request.train_root)
-        _write_json(staging / "model.json", model)
+        model_document = (
+            EncodeD25ModelDocument(D25ModelDocument(model)) if contract.strategy is Strategy.D25 else model
+        )
+        _write_json(staging / "model.json", model_document)
         _write_json(staging / "metadata.json", metadata)
         result = HeadTrainingResult(
             contract.strategy,
@@ -937,8 +952,28 @@ def _read_profile_source(
     )
 
 
+def _has_d25_probability(
+    profile_root: Path, profile: TrainedProfileContract, contract: TrainedHeadContract, target: PredictionTarget,
+) -> bool:
+    try:
+        bundles = InspectPublishedProfileBundles(profile_root, profile)
+    except (OSError, ValueError):
+        return False
+    return any(
+        bundle.strategy is Strategy.D25
+        and HasD25Probability(
+            profile_root,
+            profile.profile_id,
+            contract.feature_manifest.names,
+            D25ProbabilityBinding(target, bundle.model_hash, bundle.training_input_hash, bundle.metadata_hash),
+        )
+        for bundle in bundles
+    )
+
+
 def _reuse_profile(history: _TrainingInputSnapshot, request: ProfileTrainingRequest) -> TrainingRunResult | None:
-    RecoverProfileBundles(request.train_root, request.profile)
+    if request.d25_target is None and len(request.profile.heads) > 1:
+        RecoverProfileBundles(request.train_root, request.profile)
     try:
         bundles = InspectPublishedProfileBundles(request.train_root, request.profile)
     except (OSError, ValueError, RuntimeError):

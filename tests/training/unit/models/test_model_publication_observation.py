@@ -300,7 +300,8 @@ def test_v1_current_nested_diagnostics_load_but_retired_top_level_never_loads_or
     # Keep legitimate nested diagnostic payloads intact while retiring only the envelope.
     for strategy in ("tomorrow", "d25"):
         directory = tmp_path / "v1" / strategy
-        model = json.loads((directory / "model.json").read_text(encoding="utf-8"))
+        document = json.loads((directory / "model.json").read_text(encoding="utf-8"))
+        model = document["utility"] if strategy == "d25" else document
         metadata = json.loads((directory / "metadata.json").read_text(encoding="utf-8"))
         model["schema_version"] = "learned_rank_head_model"
         model.pop("content_hash")
@@ -308,7 +309,7 @@ def test_v1_current_nested_diagnostics_load_but_retired_top_level_never_loads_or
         metadata.update(schema_version="learned_rank_head_metadata", model_hash=model["content_hash"])
         metadata.pop("content_hash")
         metadata["content_hash"] = ContentHash(metadata)
-        (directory / "model.json").write_text(json.dumps(model), encoding="utf-8")
+        (directory / "model.json").write_text(json.dumps(document), encoding="utf-8")
         (directory / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     for read in (
         lambda: v1_models.ReadLearnedRankPair(tmp_path),

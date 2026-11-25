@@ -1,3 +1,5 @@
+import json
+import shutil
 from collections.abc import Iterator
 from contextlib import closing
 from dataclasses import replace
@@ -25,9 +27,9 @@ from trader.training.infra.d25.artifact import (
     D25ProbabilityBinding,
     HasD25Probability,
     LoadD25ScoringProfile,
-    PublishD25Probability,
-    _path,
+    StageD25Probability,
 )
+from trader.training.infra.d25.model_document import D25ModelDocument, EncodeD25ModelDocument
 from trader.training.infra.d25.training import (
     D25IndustryFitRequest,
     FitIndustryD25Probability,
@@ -40,6 +42,7 @@ from trader.training.infra.d25.v1.samples import LearnedRankCandidate, LearnedRa
 from trader.training.infra.d25.v1.models import LoadV1ScoringProfile
 from trader.training.infra.d25.v1.training import RunV1Training
 from trader.training.infra.history.aligned_training_rows import AlignTrainingRows
+from trader.training.infra.model_bundles.profile_publication import PublishStrategyModelDirectory
 from trader.training.infra.sample_index import SQLiteTrainingSampleIndex, TrainingSampleBatch
 
 _TARGET = PredictionTarget(Strategy.D25, 100)
@@ -125,6 +128,9 @@ def test_v1_production_fit_builds_d25_probabilities_from_raw_history_rows(tmp_pa
         strategies=(Strategy.D25,), d25_target=target,
     )
     assert result.status == "engineering_ready", (result.failure_reasons, result.diagnostic)
+    assert {path.relative_to(model_root).as_posix() for path in model_root.rglob("*.json")} == {
+        "v1/d25/model.json", "v1/d25/metadata.json",
+    }
     utility = LoadV1ScoringProfile(model_root, strategies=(Strategy.D25,))
     loaded = LoadD25ScoringProfile(model_root, utility, target)
     assert loaded.heads[Strategy.D25].predictor.model_hash != utility.heads[Strategy.D25].predictor.model_hash
@@ -162,14 +168,17 @@ def test_v1_binary_lambdarank_uses_mature_close_labels_and_reloads(tmp_path: Pat
     assert model.calibration[1] > 0
     assert model.fitting_dates[-1] < model.calibration_dates[0]
     profile = model_root / "v1"
-    identity = PublishD25Probability(profile, model)
-    assert PublishD25Probability(profile, model) == identity
-    assert HasD25Probability(profile, "v1", model.features, model.binding)
+    staged = tmp_path / "staged"
+    shutil.copytree(profile / "d25", staged)
+    identity = StageD25Probability(staged, model)
+    assert StageD25Probability(staged, model) == identity
+    assert not HasD25Probability(profile, "v1", model.features, model.binding)
     with pytest.raises(ValueError, match="publication_identity_conflict"):
-        PublishD25Probability(profile, replace(model, calibration=(0.1, model.calibration[1])))
-    # A staged event bound to an unselected utility document cannot switch the active model.
-    staged_binding = replace(binding, utility_metadata_hash="f" * 64)
-    PublishD25Probability(profile, replace(model, binding=staged_binding, calibration=(0.1, model.calibration[1])))
+        StageD25Probability(staged, replace(model, calibration=(0.1, model.calibration[1])))
+    with pytest.raises(ValueError, match="utility_hash_mismatch"):
+        StageD25Probability(staged, replace(model, binding=replace(binding, utility_hash="f" * 64)))
+    PublishStrategyModelDirectory(profile, Strategy.D25, staged)
+    assert HasD25Probability(profile, "v1", model.features, model.binding)
     loaded = LoadD25ScoringProfile(model_root, utility, _TARGET)
     current = loaded.heads[Strategy.D25].predictor
     previous = utility.heads[Strategy.D25].predictor
@@ -189,9 +198,9 @@ def test_v1_binary_lambdarank_uses_mature_close_labels_and_reloads(tmp_path: Pat
     assert tuple(item.rank_raw for item in predictions) == pytest.approx(ranks)
     assert tuple(item.predicted_excess_return for item in predictions) == tuple(item.predicted_excess_return for item in old)
     assert current.model_hash != previous.model_hash
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(ValueError, match="artifact_contract_mismatch"):
         LoadD25ScoringProfile(model_root, utility, _OTHER)
-    _path(profile, binding).write_text('malformed', encoding='utf-8')
+    (profile / "d25" / "model.json").write_text("malformed", encoding="utf-8")
     with pytest.raises(ValueError):
         LoadD25ScoringProfile(model_root, utility, _TARGET)
 
@@ -233,8 +242,12 @@ def test_d25_industry_models_fit_the_new_event_with_separate_utility_identity(
     else:
         artifact = FitIndustryD25Probability(samples, request, lambda: None)
     profile_root = tmp_path / "models" / profile_id
+    directory = profile_root / "d25"
+    directory.mkdir(parents=True)
+    document = EncodeD25ModelDocument(D25ModelDocument({"content_hash": artifact.binding.utility_hash}))
+    (directory / "model.json").write_text(json.dumps(document), encoding="utf-8")
     assert artifact.calibration[1] > 0
-    assert len(PublishD25Probability(profile_root, artifact)) == 64
+    assert len(StageD25Probability(directory, artifact)) == 64
     assert HasD25Probability(profile_root, profile_id, artifact.features, artifact.binding)
     assert not HasD25Probability(profile_root, profile_id, artifact.features, replace(artifact.binding, utility_hash="f" * 64))
 

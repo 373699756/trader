@@ -9,16 +9,15 @@ from datetime import date
 from pathlib import Path
 import numpy as np
 
-from trader.infra.regular_file import ReadRegularFile
-from trader.infra.atomic_files.json import SyncDirectory
 from trader.infra.serialization.canonical import ContentHash
-from trader.infra.serialization.sealing import PublishImmutable
+from trader.infra.serialization.sealing import ReplaceFile
 from trader.recommendation.application.ports.loaded_profile import LoadedScoringProfile, ModelInput, ModelPrediction
 from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ParseScoringProfile, ScoringProfileId
 from trader.recommendation.domain.scoring.residualization import ExposureContract
 from trader.training.infra.d25.artifact_values import D25ArtifactObject, D25ArtifactVector
+from trader.training.infra.d25.model_document import EncodeD25ModelDocument, ReadD25ModelDocument
 from trader.training.infra.d25.tree import D25TreeModel
 from trader.training.infra.d25.v1.model import ALGORITHM as V1_ALGORITHM
 from trader.training.infra.d25.v1.model import DecodeD25Ranker, LoadD25RankerScorer
@@ -30,6 +29,7 @@ from trader.training.infra.d25.v5.probability import ALGORITHM as V5_ALGORITHM
 from trader.training.infra.d25.v5.probability import D25TcnModel, DecodeD25Tcn, EncodeD25Tcn, LoadD25TcnScorer
 from trader.training.infra.implementation_identity import LaneTrainingImplementationIdentity
 from trader.training.infra.model_bundles.predictor import TrainedHeadPredictor
+from trader.training.infra.model_bundles.profile_publication import ProfilePublicationLock
 from trader.training.infra.d25.v1.models import LearnedRankPredictor
 from trader.training.infra.tcn.manifest import SEQUENCE_FEATURE_IDS
 
@@ -134,15 +134,8 @@ class _D25Predictor:
         return tuple(combined)
 
 
-def _path(profile_root: Path, binding: D25ProbabilityBinding) -> Path:
-    profile = ParseScoringProfile(profile_root.name)
-    fingerprint = ContentHash((binding, LaneTrainingImplementationIdentity(Strategy.D25, profile)))
-    return profile_root.parent / "d25-targets" / profile_root.name / f"{fingerprint}.json"
-
-
-def PublishD25Probability(profile_root: Path, artifact: D25ProbabilityArtifact) -> str:
-    if profile_root.name != artifact.profile:
-        raise ValueError("d25_probability_profile_path_mismatch")
+def StageD25Probability(model_directory: Path, artifact: D25ProbabilityArtifact) -> str:
+    """Attach the calibrated model before publishing the enclosing D25 directory."""
     binding = artifact.binding
     document = {
         "profile": artifact.profile,
@@ -162,15 +155,18 @@ def PublishD25Probability(profile_root: Path, artifact: D25ProbabilityArtifact) 
     rendered = json.dumps({"identity": identity, "artifact": document}, allow_nan=False, separators=(",", ":"))
     if len(rendered.encode()) > _MAX_BYTES:
         raise ValueError("d25_probability_artifact_too_large")
-    path = _path(profile_root, binding)
-    _decode(rendered, artifact.profile, artifact.features, binding)
-    if not PublishImmutable(path, rendered):
-        _, existing = _read(profile_root, artifact.profile, artifact.features, binding)
+    probability = D25ArtifactObject(json.loads(rendered), {"identity", "artifact"})
+    _decode(probability, artifact.profile, artifact.features, binding)
+    path = model_directory / "model.json"
+    staged = ReadD25ModelDocument(path)
+    _require_bound_utility(staged.utility, artifact.profile, binding)
+    if staged.probability is not None:
+        _, existing = _decode(staged.probability, artifact.profile, artifact.features, binding)
         if existing != identity:
             raise ValueError("d25_probability_publication_identity_conflict")
-    SyncDirectory(path.parent)
-    SyncDirectory(path.parent.parent)
-    SyncDirectory(path.parent.parent.parent)
+    else:
+        model = EncodeD25ModelDocument(replace(staged, probability=probability))
+        ReplaceFile(path, json.dumps(model, allow_nan=False, separators=(",", ":")))
     return identity
 
 
@@ -248,17 +244,33 @@ def _model_document(model: D25Model) -> dict[str, object]:
 def _read(
     profile_root: Path, profile: ScoringProfileId, features: tuple[str, ...], binding: D25ProbabilityBinding,
 ) -> tuple[D25ProbabilityArtifact, str]:
-    if profile_root.name != profile:
+    if ParseScoringProfile(profile_root.name) != profile:
         raise ValueError("d25_probability_profile_path_mismatch")
-    return _decode(
-        ReadRegularFile(_path(profile_root, binding), maximum_bytes=_MAX_BYTES), profile, features, binding,
-    )
+    if not profile_root.exists():
+        raise FileNotFoundError(profile_root)
+    with ProfilePublicationLock(profile_root):
+        directory = profile_root / Strategy.D25.value
+        if profile_root.is_symlink() or not profile_root.is_dir() or directory.is_symlink():
+            raise ValueError("d25_probability_directory_invalid")
+        model = ReadD25ModelDocument(directory / "model.json")
+        _require_bound_utility(model.utility, profile, binding)
+        if model.probability is None:
+            raise FileNotFoundError("d25_probability_artifact_missing")
+        return _decode(model.probability, profile, features, binding)
+
+
+def _require_bound_utility(
+    utility: Mapping[str, object], profile: ScoringProfileId, binding: D25ProbabilityBinding,
+) -> None:
+    key = "head_content_hash" if profile == "v1" else "content_hash"
+    if utility.get(key) != binding.utility_hash:
+        raise ValueError("d25_probability_utility_hash_mismatch")
 
 
 def _decode(
-    encoded: str | bytes, profile: ScoringProfileId, features: tuple[str, ...], binding: D25ProbabilityBinding,
+    encoded: object, profile: ScoringProfileId, features: tuple[str, ...], binding: D25ProbabilityBinding,
 ) -> tuple[D25ProbabilityArtifact, str]:
-    package = D25ArtifactObject(json.loads(encoded), {"identity", "artifact"})
+    package = D25ArtifactObject(encoded, {"identity", "artifact"})
     identity = package["identity"]
     doc = D25ArtifactObject(package["artifact"], _KEYS)
     if (

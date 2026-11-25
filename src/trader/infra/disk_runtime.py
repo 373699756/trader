@@ -35,7 +35,6 @@ def InspectDataDisk(
         ("reference", paths.reference),
         ("company", paths.company),
         ("company_sources", paths.company_sources),
-        ("models.tomorrow", paths.models / "tomorrow.json"),
         ("recommendation.tomorrow", paths.root / "recommendation/tomorrow"),
         ("research.tomorrow", paths.root / "research/tomorrow"),
     ]

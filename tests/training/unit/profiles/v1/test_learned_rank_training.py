@@ -413,7 +413,8 @@ def test_old_diagnostic_pair_is_rejected_and_cannot_reuse_as_final(tmp_path, reu
     shutil.copytree(root, model_root)
     for head in old.heads:
         directory = model_root / "v1" / head.strategy.value
-        model = json.loads((directory / "model.json").read_text(encoding="utf-8"))
+        document = json.loads((directory / "model.json").read_text(encoding="utf-8"))
+        model = document["utility"] if head.strategy is Strategy.D25 else document
         metadata = json.loads((directory / "metadata.json").read_text(encoding="utf-8"))
         values = CanonicalValue(head)
         model["schema_version"] = "learned_rank_head_model"
@@ -433,7 +434,7 @@ def test_old_diagnostic_pair_is_rejected_and_cannot_reuse_as_final(tmp_path, reu
                        "point_in_time_parity", "feature_anchor", "label_anchor"}
         }
         metadata["content_hash"] = ContentHash({key: value for key, value in metadata.items() if key != "content_hash"})
-        (directory / "model.json").write_text(json.dumps(model), encoding="utf-8")
+        (directory / "model.json").write_text(json.dumps(document), encoding="utf-8")
         (directory / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     with pytest.raises(ValueError, match="identity"):
         ReadLearnedRankPair(model_root)
@@ -552,7 +553,8 @@ def test_final_pair_rejects_resigned_false_provenance(tmp_path, reusable_pair, c
     for head in pair.heads:
         path = model_root / "v1" / head.strategy.value
         metadata = json.loads((path / "metadata.json").read_text(encoding="utf-8"))
-        model = json.loads((path / "model.json").read_text(encoding="utf-8"))
+        document = json.loads((path / "model.json").read_text(encoding="utf-8"))
+        model = document["utility"] if head.strategy is Strategy.D25 else document
         report, training = metadata["validation_report"], metadata["training_input"]
         if changed == "diagnostic":
             report["diagnostic_head"]["ridge_intercept"] += 0.1
@@ -575,7 +577,7 @@ def test_final_pair_rejects_resigned_false_provenance(tmp_path, reusable_pair, c
         model["content_hash"] = ContentHash({key: value for key, value in model.items() if key != "content_hash"})
         metadata["model_hash"] = model["content_hash"]
         metadata["content_hash"] = ContentHash({key: value for key, value in metadata.items() if key != "content_hash"})
-        (path / "model.json").write_text(json.dumps(model), encoding="utf-8")
+        (path / "model.json").write_text(json.dumps(document), encoding="utf-8")
         (path / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     reason = {
         "diagnostic": "diagnostic or calibration provenance",
@@ -801,10 +803,10 @@ def test_individual_missing_targets_and_prelisting_rows_do_not_require_each_stoc
 def test_missing_d25_partition_fails_before_either_head_fit_and_reports_coverage(tmp_path, monkeypatch):
     original = LearnedRankSampleIndex.add_day
 
-    def missing_second_day(index, pending, *, include_t1=True):
+    def missing_second_day(index, pending, *, include_t1=True, d25_target=None):
         for candidate in pending.candidates.values():
             candidate.future[1] = None
-        return original(index, pending, include_t1=include_t1)
+        return original(index, pending, include_t1=include_t1, d25_target=d25_target)
 
     monkeypatch.setattr(LearnedRankSampleIndex, "add_day", missing_second_day)
     monkeypatch.setattr(
@@ -868,7 +870,8 @@ def test_real_lightgbm_ridge_pair_trains_reloads_and_refuses_partial_or_tampered
     before = {path.relative_to(profile_root): path.read_bytes() for path in paths}
     for strategy in (Strategy.TOMORROW, Strategy.D25):
         metadata = json.loads((profile_root / strategy.value / "metadata.json").read_text(encoding="utf-8"))
-        model = json.loads((profile_root / strategy.value / "model.json").read_text(encoding="utf-8"))
+        document = json.loads((profile_root / strategy.value / "model.json").read_text(encoding="utf-8"))
+        model = document["utility"] if strategy is Strategy.D25 else document
         assert metadata["profile_id"] == "v1" and metadata["strategy_head"] == strategy.value
         assert metadata["model_id"] == "learned_rank"
         assert metadata["validation_report"]["production_authority"] is False

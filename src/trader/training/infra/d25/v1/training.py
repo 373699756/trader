@@ -7,6 +7,7 @@ import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, closing, contextmanager, nullcontext
 from dataclasses import dataclass, field
+from functools import partial
 from importlib.metadata import version
 from pathlib import Path
 
@@ -38,7 +39,9 @@ from trader.training.domain.v1.training_plan import (
 )
 from trader.training.domain.training_date_coverage import TrainingDateCoverage
 from trader.training.infra.execution_options import BASELINE_EXECUTION_OPTIONS, TrainingExecutionOptions
-from trader.training.infra.d25.artifact import D25ProbabilityBinding, HasD25Probability, PublishD25Probability
+from trader.training.infra.d25.artifact import (
+    D25ProbabilityArtifact, D25ProbabilityBinding, HasD25Probability, StageD25Probability,
+)
 from trader.training.infra.d25.v1.probability import FitV1D25Probability
 from trader.training.infra.fitting_resources import ReserveTrainingFittingResources
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
@@ -121,7 +124,8 @@ class _LearnedRankInspection:
         CheckV1Cancellation(self.cancel_requested)
 
     def read_pair(self) -> LearnedRankFinalPair | None:
-        RecoverLearnedRankPublication(self.model_root, strategies=self.source.strategies)
+        if self.source.strategies != (Strategy.D25,):
+            RecoverLearnedRankPublication(self.model_root, strategies=self.source.strategies)
         try:
             pair = ReadLearnedRankPair(self.model_root, strategies=self.source.strategies)
         except InterruptedError:
@@ -188,10 +192,16 @@ class LearnedRankTrainingAdapter:
             )
 
 
+@dataclass
+class _LearnedRankFittedModels:
+    d25_probability: D25ProbabilityArtifact | None = None
+
+
 @dataclass(frozen=True)
 class _PinnedLearnedRankSession(_LearnedRankInspection):
     adapter: LearnedRankTrainingAdapter
     input_source: LearnedRankInputPort
+    fitted_models: _LearnedRankFittedModels = field(default_factory=_LearnedRankFittedModels, init=False)
 
     @property
     def progress(self) -> TomorrowTrainingProgressPort | None:
@@ -209,7 +219,13 @@ class _PinnedLearnedRankSession(_LearnedRankInspection):
             yield _LearnedRankSamples(self, directory)
 
     def publish_pair(self, pair: LearnedRankFinalPair) -> None:
-        PublishLearnedRankPair(self.model_root, pair)
+        probability = self.fitted_models.d25_probability
+        if probability is None:
+            PublishLearnedRankPair(self.model_root, pair)
+        else:
+            PublishLearnedRankPair(
+                self.model_root, pair, stage_d25=partial(StageD25Probability, artifact=probability),
+            )
 
 
 @dataclass(frozen=True)
@@ -263,7 +279,12 @@ class _LearnedRankSamples:
             ) as reservation,
         ):
             yield _LearnedRankFitter(
-                index, self.directory, adapter, reservation.compute_threads, self.session.source.training_input_hash,
+                index,
+                self.directory,
+                adapter,
+                reservation.compute_threads,
+                self.session.source.training_input_hash,
+                self.session.fitted_models,
             )
 
 
@@ -274,6 +295,7 @@ class _LearnedRankFitter:
     adapter: LearnedRankTrainingAdapter
     compute_threads: int
     training_input_hash: str
+    fitted_models: _LearnedRankFittedModels
 
     def fit_diagnostic(self, strategy: Strategy, split: LearnedRankDateSplit) -> LearnedRankHead:
         requests = tuple(
@@ -311,7 +333,7 @@ class _LearnedRankFitter:
                 compute_threads=self.compute_threads, cancel_requested=self.adapter.cancel_requested,
             )
             CheckV1Cancellation(self.adapter.cancel_requested)
-            PublishD25Probability(self.adapter.model_root / "v1", artifact)
+            self.fitted_models.d25_probability = artifact
         return final
 
 

@@ -6,6 +6,7 @@ import json
 import math
 from dataclasses import asdict, dataclass
 from datetime import date
+from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -14,12 +15,15 @@ import numpy as np
 
 from trader.infra.regular_file import ReadRegularFile
 from trader.infra.serialization.canonical import ContentHash
-from trader.infra.serialization.sealing import ReplaceFile
-from trader.recommendation.domain.market.tomorrow_probability import TOMORROW_FEATURE_NAMES, TOMORROW_SEQUENCE_FEATURE_NAMES
+from trader.recommendation.domain.market.tomorrow_probability import (
+    TOMORROW_FEATURE_NAMES,
+    TOMORROW_SEQUENCE_FEATURE_NAMES,
+)
 from trader.recommendation.domain.market.v5.features import SEQUENCE_CONTRACT
-from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
+from trader.recommendation.domain.outcomes.prediction_target import ParsePredictionTargetIdentity, PredictionTarget
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.training.infra.model_bundles.profile_publication import ProfilePublicationLock, PublishStrategyModelFiles
 from trader.training.infra.tcn.settings import TCN_NETWORK_CONTRACT
 from trader.training.infra.tcn.tensors import DecodeTcnNetwork
 from trader.training.infra.tomorrow.settings import LoadTomorrowFitSettings, TomorrowAlgorithm
@@ -33,10 +37,12 @@ if TYPE_CHECKING:
     from trader.training.infra.tcn.network import TcnNetwork
 
 _MAX_MODEL_BYTES = 16 * 1024 * 1024
-_ARTIFACT_KEYS = {
+_MAX_METADATA_BYTES = 1024 * 1024
+_METADATA_FIELDS = (
     "profile", "algorithm", "target", "features", "history_snapshot_hash", "training_contract_hash",
-    "fitting_dates", "calibration_dates", "logistic", "lightgbm", "tcn", "calibration",
-}
+    "fitting_dates", "calibration_dates",
+)
+_MODEL_FIELDS = ("logistic", "lightgbm", "tcn", "calibration")
 
 
 def TomorrowFeatureNames(profile: ScoringProfileId) -> tuple[str, ...]:
@@ -145,48 +151,56 @@ def _document(artifact: TomorrowProbabilityArtifact) -> dict[str, object]:
     }
 
 
-def TomorrowProbabilityModelPath(model_root: Path, profile: ScoringProfileId, target: PredictionTarget) -> Path:
-    if target.strategy is not Strategy.TOMORROW:
-        raise ValueError("tomorrow_probability_target_invalid")
-    return model_root / "tomorrow-targets" / profile / f"{target.threshold_bps}.json"
+def TomorrowProbabilityModelPath(model_root: Path, profile: ScoringProfileId) -> Path:
+    return model_root / profile / Strategy.TOMORROW.value / "model.json"
 
 
 def PublishTomorrowProbabilityModel(model_root: Path, artifact: TomorrowProbabilityArtifact) -> str:
     document = _document(artifact)
     identity = ContentHash(document)
-    text = json.dumps({"identity": identity, "artifact": document}, ensure_ascii=True, allow_nan=False)
-    if len(text) > _MAX_MODEL_BYTES:
+    model_text = json.dumps({key: document[key] for key in _MODEL_FIELDS}, ensure_ascii=True, allow_nan=False)
+    metadata = {"identity": identity, **{key: document[key] for key in _METADATA_FIELDS}}
+    metadata_text = json.dumps(metadata, ensure_ascii=True, allow_nan=False)
+    if len(model_text) > _MAX_MODEL_BYTES or len(metadata_text) > _MAX_METADATA_BYTES:
         raise ValueError("tomorrow_probability_artifact_too_large")
     if artifact.lightgbm is not None:
         _load_tree(artifact.lightgbm, artifact.profile)
     if artifact.tcn is not None:
-        _decode_tcn(json.loads(text)["artifact"]["tcn"])
-    ReplaceFile(TomorrowProbabilityModelPath(model_root, artifact.profile, artifact.target), text)
+        _decode_tcn(json.loads(model_text)["tcn"])
+    PublishStrategyModelFiles(model_root / artifact.profile, Strategy.TOMORROW, model_text, metadata_text)
     return identity
 
 
 def LoadTomorrowProbabilityModel(
     model_root: Path, profile: ScoringProfileId, target: PredictionTarget, *, project_root: Path,
 ) -> LoadedTomorrowProbabilityModel | None:
-    path = TomorrowProbabilityModelPath(model_root, profile, target)
-    try:
-        encoded = ReadRegularFile(path, maximum_bytes=_MAX_MODEL_BYTES)
-    except FileNotFoundError:
+    if target.strategy is not Strategy.TOMORROW:
+        raise ValueError("tomorrow_probability_target_invalid")
+    pair = _read_pair(model_root, profile)
+    if pair is None:
         return None
-    package: object = json.loads(encoded)
-    if not isinstance(package, dict) or set(package) != {"identity", "artifact"}:
+    model: object = json.loads(pair[0])
+    metadata: object = json.loads(pair[1])
+    if not isinstance(model, dict) or set(model) != set(_MODEL_FIELDS):
         raise ValueError("tomorrow_probability_artifact_invalid")
-    source: object = package["artifact"]
-    identity: object = package["identity"]
-    if not isinstance(source, dict) or set(source) != _ARTIFACT_KEYS or not isinstance(identity, str):
+    if not isinstance(metadata, dict) or set(metadata) != {"identity", *_METADATA_FIELDS}:
         raise ValueError("tomorrow_probability_artifact_invalid")
+    identity: object = metadata["identity"]
+    if not isinstance(identity, str):
+        raise ValueError("tomorrow_probability_artifact_invalid")
+    source = {**model, **{key: metadata[key] for key in _METADATA_FIELDS}}
+    target_identity: object = source["target"]
+    published_target = ParsePredictionTargetIdentity(target_identity) if isinstance(target_identity, str) else None
     if (
         ContentHash(source) != identity
         or source["profile"] != profile or source["algorithm"] != TomorrowAlgorithm(profile)
-        or source["target"] != target.identity
         or source["features"] != list(TomorrowFeatureNames(profile))
+        or published_target is None or published_target.strategy is not Strategy.TOMORROW
+        or published_target.identity != target_identity
     ):
         raise ValueError("tomorrow_probability_artifact_contract_mismatch")
+    if target != published_target:
+        return None
     training_identity = LoadTomorrowFitSettings(project_root, profile).identity
     if training_identity != source["training_contract_hash"]:
         raise ValueError("tomorrow_probability_training_contract_mismatch")
@@ -212,6 +226,25 @@ def LoadTomorrowProbabilityModel(
         identity, artifact, None if tree is None else _load_tree(tree, profile),
         None if artifact.tcn is None else LoadTomorrowNetwork(artifact.tcn),
     )
+
+
+def _read_pair(model_root: Path, profile: ScoringProfileId) -> tuple[bytes, bytes] | None:
+    profile_root = model_root / profile
+    if not profile_root.exists() and not profile_root.is_symlink():
+        return None
+    model_path = TomorrowProbabilityModelPath(model_root, profile)
+    head_root = model_path.parent
+    with ProfilePublicationLock(profile_root):
+        if profile_root.is_symlink() or head_root.is_symlink():
+            raise ValueError("tomorrow_probability_artifact_invalid")
+        try:
+            if {path.name for path in islice(head_root.iterdir(), 3)} - {"model.json", "metadata.json"}:
+                raise ValueError("tomorrow_probability_artifact_invalid")
+            model = ReadRegularFile(model_path, maximum_bytes=_MAX_MODEL_BYTES)
+            metadata = ReadRegularFile(head_root / "metadata.json", maximum_bytes=_MAX_METADATA_BYTES)
+        except FileNotFoundError:
+            return None
+    return model, metadata
 
 
 def _load_tree(tree: str, profile: ScoringProfileId) -> lgb.Booster:

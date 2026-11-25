@@ -23,7 +23,7 @@ _D25 = (
     "recommendation/domain/market/history_alignment.py", "training/infra/history/aligned_training_rows.py",
     "training/infra/history/history_training_input.py", "training/infra/d25/artifact.py",
     "training/infra/d25/artifact_values.py",
-    "training/infra/d25/calibration.py", "training/infra/d25/labels.py",
+    "training/infra/d25/calibration.py", "training/infra/d25/labels.py", "training/infra/d25/model_document.py",
 )
 _D25_STANDARD = (
     "recommendation/domain/market/feature_contracts.py", "recommendation/domain/scoring/residualization.py",

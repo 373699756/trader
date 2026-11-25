@@ -72,7 +72,7 @@ def test_empty_clone_keeps_web_readable_and_models_inactive(tmp_path, monkeypatc
 
 def test_missing_profile_does_not_disable_a_complete_other_profile(tmp_path, monkeypatch, caplog):
     config = _empty_config(tmp_path)
-    _publish_profile(tmp_path / "data/training/models", V3_D25_PROFILE)
+    _publish_profile(tmp_path / "data/train", V3_D25_PROFILE)
     seen = []
 
     def load_target(model_root, profile, target):
@@ -149,7 +149,7 @@ def test_partial_or_corrupt_profile_keeps_web_readable_with_classified_model_fai
     monkeypatch.setattr("trader.bootstrap._utc_now", lambda: now)
     config = _empty_config(tmp_path)
     contract = V3_D25_PROFILE.heads[0]
-    _write_bundle(tmp_path / "data/training/models/v3" / contract.directory_name, contract)
+    _write_bundle(tmp_path / "data/train/v3" / contract.directory_name, contract)
     system = BuildSystem(config, scoring_profile="v3")
     scoring = system.app.test_client().get("/api/status").get_json()["scoring_profile"]
     assert all(head["is_enable"] is False for head in scoring["heads"].values())
@@ -159,9 +159,9 @@ def test_partial_or_corrupt_profile_keeps_web_readable_with_classified_model_fai
     route = f"/api/freezes/tomorrow/history?date={original.trade_date.isoformat()}"
     before = system.app.test_client().get(route).get_json()
 
-    _publish_profile(tmp_path / "data/training/models", V3_D25_PROFILE)
+    _publish_profile(tmp_path / "data/train", V3_D25_PROFILE)
     metadata = (
-        InspectPublishedProfileBundles(tmp_path / "data/training/models/v3", V3_D25_PROFILE)[0].model_path.parent
+        InspectPublishedProfileBundles(tmp_path / "data/train/v3", V3_D25_PROFILE)[0].model_path.parent
         / "metadata.json"
     )
     metadata.write_text("{}", encoding="utf-8")

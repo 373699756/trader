@@ -7,6 +7,7 @@ import numpy as np
 from trader.download.domain.baostock_daily import BaoStockCalendar
 from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.publication.models import Strategy
+from trader.training.infra.d25.model_document import D25ModelDocument, EncodeD25ModelDocument
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract, TrainedProfileContract
 from trader.training.infra.model_bundles.profile_publication import PublishProfileBundles
 from trader.training.infra.model_evaluation import PREDICTION_EVALUATION_CONTRACT
@@ -283,6 +284,8 @@ def _write_bundle(
 ) -> None:
     staging.mkdir(parents=True, exist_ok=True)
     model, metadata = _documents(contract, profile, industry=industry)
+    if contract.strategy is Strategy.D25:
+        model = EncodeD25ModelDocument(D25ModelDocument(model))
     (staging / "model.json").write_text(json.dumps(model), encoding="utf-8")
     (staging / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
 

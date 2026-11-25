@@ -6,7 +6,7 @@
 
 ## 1. 输入固定，双头独立
 
-正常 `train` 固定一个已发布历史，分别训练所选档位的独立 Tomorrow 模型，发布到 `models/tomorrow-targets/<档位>/<基点>.json`。Tomorrow 使用下一交易日收盘涨幅达到本档阈值的二元标签。V1 用全市场按日分组 LambdaRank，V2 用浅层 LightGBM 二分类，V3 用 L2 Logistic，V5 用信号日量价及过去 60 步量价序列训练 10 轮 TCN 二分类。工件核对档位、阈值、历史、有效训练设置和实现摘要。D25 对每档的同一信号日比较 D+2 至 D+5 四期累计涨跌幅均值与本档阈值。D25 继续使用全市场 LambdaRank、行业 LightGBM 二分类、行业 L2 Logistic、行业 TCN 二分类，独立收益预测继续供成本准入。
+正常 `train` 固定一个已发布历史，分别训练所选档位和策略，在 `data/train/<档位>/<策略>/` 写入 `model.json` 与 `metadata.json`。Tomorrow 使用下一交易日收盘涨幅达到本档阈值的二元标签。V1 用全市场按日分组 LambdaRank，V2 用浅层 LightGBM 二分类，V3 用 L2 Logistic，V5 用信号日量价及过去 60 步量价序列训练 10 轮 TCN 二分类。工件核对档位、阈值、历史、有效训练设置和实现摘要。D25 对每档的同一信号日比较 D+2 至 D+5 四期累计涨跌幅均值与本档阈值。D25 继续使用全市场 LambdaRank、行业 LightGBM 二分类、行业 L2 Logistic、行业 TCN 二分类，独立收益预测继续供成本准入。
 
 训练样本另存可空二元列 `target_d25_hit`。四期达到成熟条件后才产出 0 或 1。原逐期净超额字段仍供独立收益训练和诊断。概率校准使用最终固定权重和独立成熟日期。D25 达标工件绑定阈值、收益工件、特征、训练输入和校准日期，工件不匹配时该档显式未就绪。
 
@@ -95,7 +95,7 @@ Tomorrow在打开历史、准备模型、构建样本、拟合、校准、验证
 
 ### 3.2 样本数据库
 
-数据库：V2/V3/V5在 `data/training/samples/<profile>/` 保存 `samples.sqlite3` 和 `complete.json`；V1在同一样本根的 `v1` 子目录下创建临时作业目录，退出时清理，当前没有跨作业封存样本复用。常规字段在 `samples`，分区和统计分别在下表列出的 `sample_*` 表，V5序列块在 `sample_sequence_blocks`。这些值由第3.1节的历史输入生成，列定义/顺序受特征合同约束，构建窗口来自 `config/training.json`。
+数据库：V2/V3/V5在 `data/train/samples/<profile>/` 保存 `samples.sqlite3` 和 `complete.json`；V1在同一样本根的 `v1` 子目录下创建临时作业目录，退出时清理，当前没有跨作业封存样本复用。常规字段在 `samples`，分区和统计分别在下表列出的 `sample_*` 表，V5序列块在 `sample_sequence_blocks`。这些值由第3.1节的历史输入生成，列定义/顺序受特征合同约束，构建窗口来自 `config/training.json`。
 
 | 表/字段 | 用途 | 正确性检查 |
 | --- | --- | --- |
@@ -242,7 +242,7 @@ V1独立诊断日期切分由 `BuildLearnedRankDateSplit` 拥有：拟合、早�
 
 ### 3.7 训练到期和提醒表
 
-数据库是独立的 `data/training/maintenance.sqlite3`，唯一owner是 `training/infra/history/training_maintenance_index.py::TrainingMaintenanceIndex`。组合根经`DataPaths.training_maintenance`显式注入，指定外部训练目录时使用该目录的`maintenance.sqlite3`；`history_training_due.py`和训练提醒流程写入，启动维护状态及提醒状态只读消费。历史catalog和年库仍只归download，训练维护不写入、不重封、不跟随历史重排复制。三个业务表都是 `WITHOUT ROWID`，没有额外二级索引；提醒表与领取表的 `due_id`外键指向 `training_due`。
+数据库是独立的 `data/train/maintenance.sqlite3`，唯一owner是 `training/infra/history/training_maintenance_index.py::TrainingMaintenanceIndex`。组合根经`DataPaths.training_maintenance`显式注入，指定外部训练目录时使用该目录的`maintenance.sqlite3`；`history_training_due.py`和训练提醒流程写入，启动维护状态及提醒状态只读消费。历史catalog和年库仍只归download，训练维护不写入、不重封、不跟随历史重排复制。三个业务表都是 `WITHOUT ROWID`，没有额外二级索引；提醒表与领取表的 `due_id`外键指向 `training_due`。
 
 日期仍用整数日，时刻用UTC纪元微秒并在程序边界解为上海时区；不能按文本或毫秒猜测。
 
@@ -518,13 +518,13 @@ V2/V3/V5到期判断与真实拟合共用`BuildTrainingContractHash`，组合根
 
 当前已有同档双头行业共享读取、4096行批读、较大矩阵临时映射、V5重叠序列块和统计小表；实际命中、数值一致性及退出释放须按各自消费者验证，完整负载性能沿第9章取证。V1/V5模型、样本和决策身份独立，不借别档补工件。
 
-每档先写候选双头和报告，再检查完整工件组、输入/配置/特征身份和工程资格，通过才切换。取消、单头失败、校准拒绝或落盘失败均保留上一有效模型；复用不刷新拟合日期，不把复用标成新训练。
+每个档位、策略先生成两份候选文件，再核对输入、配置、特征和工件身份，持发布锁成组切换。一个策略失败时同档另一策略按原身份保留。D25 V5 若已完成收益拟合，达标概率校准失败且当前目标没有有效成套模型，可以保存收益权重及元数据。达标概率仍报告未就绪。复用保留原拟合日期。
 
-标准生产发布入口只接受含可重建近期诊断计划的双头工件，在目录写入前和复制后分别核验；该门只证明用途和工程一致性，不代表收益质量通过。
+D25 生产发布入口要求可重建的近期诊断计划，在写入前和复制后分别核验。该门核对用途和工程一致性，收益质量由独立评价验证。
 
-当前工件要求是只接受当前实际结构，不维护旧格式兼容、升级或迁移路径，也不增加自定义格式版本控制。当前结构在发布中断后恢复上一完整双头组，仍按[第7.3节](#73-双头模型目录发布的中断恢复)处理；目录发布恢复与旧格式兼容是两件事。历史研究及冻结记录保持原身份，不因本规则改写、升级或删除；下载库不兼容的人工删除重下规则也不扩大到模型和冻结记录。
+正常训练与服务只识别当前路径及两文件结构。重新训练生成当前工件。历史研究及冻结记录按原身份保留，独立研究目录的同格式发布恢复见[第7.3节](#73-双头模型目录发布的中断恢复)。
 
-生产reader与writer统一只接受当前最终工件：V2/V3/V5的`DecodeHeadBundle`及metadata观察、V1的pair读取和metadata观察均严格核对当前完整字段、档位／头、模型与特征摘要及最终拟合计划，不再使用额外格式标记。目录恢复、训练复用、服务加载及诊断消费者均经同一读取边界；旧普通／旧refit及V1旧诊断顶层明确拒绝，不进入生产评分。当前final内部的近期诊断载荷仍按其业务用途校验，用于校准转移和评价追溯，不作为另一种顶层工件兼容。没有自动迁移、删除或重新训练；实现与验证状态只记g。
+D25训练复用、服务加载及诊断读取当前最终工件。V2/V3/V5通过 `DecodeHeadBundle` 核对收益模型及元数据，V1通过独立收益模型读取入口核对。两处均校验档位、策略、特征摘要和最终拟合计划。最终工件内部的近期诊断载荷用于校准转移和评价追溯。
 
 当前V2/V3/V5最终metadata的`final_fit`保存完整源日历及其绑定、最终实际拟合日期/行业行数、近期诊断模型完整载荷及摘要、近期计划完整分区/摘要、校准转移政策和`final_model_unseen_validation_passed=false`。`validation_report.model_hash`始终指向实际受评价的诊断模型，顶层`model_hash`指向最终模型；读取时同时校验两者，不能用最终模型摘要替代诊断摘要。近期诊断的holdout为0并明确不适用，不称研究封存。V1当前独立model／metadata保存完整近期诊断头与最终计划，不设置人工格式身份。前台进度分别报告`model_fit`和`final_model_refit`；命令回执分别列源截止、标签成熟截止、最终拟合首尾/N、诊断拟合首尾、校准首尾和独立评价首尾。
 
@@ -545,13 +545,13 @@ V2/V3/V5到期判断与真实拟合共用`BuildTrainingContractHash`，组合根
 
 普通复用比较身份、布局、split、大小、修改戳及库内合同；首次封存做fsync和全文件摘要，显式 `audit()`再次逐字节读。不能将“普通复用不重算摘要”写成“从不校验内容”，也不能把未封存库当可用缓存。
 
-模型路径固定为 `data/training/models/<profile>/{tomorrow,d25}/{model.json,metadata.json}`。V2/V3/V5由 `engine.py`准备、`PublishProfileBundles`切换；V1由 `PublishLearnedRankPair`切换。每档双头共用本次作业身份但保持独立模型和目标；单头候选不能单独替换正式目录。读取路径分别为 `LoadHeadBundle/InspectPublishedProfileBundles` 与 `ReadLearnedRankPair`，推荐在启动时通过 `profile_factory.LoadScoringProfile`采用。
+模型路径固定为 `data/train/<档位>/<策略>/{model.json,metadata.json}`。Tomorrow 将拟合权重及校准写入 `model.json`，将档位、目标、训练来源及联合摘要写入 `metadata.json`。D25 将收益模型与可用的达标概率模型写入 `model.json`，将训练、验证及收益模型摘要写入 `metadata.json`。达标概率绑定同组收益模型与目标。发布锁以档位为作用域，只切换当前策略目录。服务按档位和策略加载同一套文件。
 
 推荐后台观察V2/V3/V5发布身份时，共用组合根注入的`model_publication_metadata`有界内存缓存（容量和有效期见`cache.json`）。首次及文件变化后仍完整校验metadata；命中必须保持同一档位合同、设备／inode／大小／mtime／ctime，并在原发布锁内复核目录、固定文件和取消状态。缓存只保存不可变身份与合同，不保存模型载荷，不持久化；观察失败不替换已加载预测器，也不把metadata身份观察当作模型完整性验收。所有档位固定历史输入先完成预载，再进行训练到期维护，避免维护阻塞后续档位首次评分。
 
 启动维护沿同一预载器接收取消信号，在档位检查、策略处理、旧行业身份及到期身份计算之间核验；取消后不再进入下一段工作，也不发布半份维护状态，未完成初始化仍可重试。显式refresh保留原行为。取消不改已加载模型、固定历史输入或既有正式冻结；退出仍沿共享30秒期限等待当前有界读返回，不把未完成线程冒充已回收。
 
-V2/V3/V5的 `metadata.json`顶层白名单如下，JSON字段类型及非空要求由 `model_bundles/bundle_codec.py`校验；除表内明确说明外均必需。
+D25 V2/V3/V5的 `metadata.json`顶层白名单如下。JSON字段类型及非空要求由 `model_bundles/bundle_codec.py` 校验，除表内明确说明外均必需。
 
 | 字段 | 类型/中文含义 | 来源和消费者 |
 | --- | --- | --- |
@@ -566,8 +566,8 @@ V2/V3/V5的 `metadata.json`顶层白名单如下，JSON字段类型及非空要�
 | `training_input` | object，训练输入凭证 | 见下表，不能混入另一历史或头 |
 | `validation_report` | object，工程评价报告 | 切分/目标/模型身份及实际覆盖、预测诊断；收益资格独立 |
 | `industry_sample_counts` | object，行业→计数 | 每行业 `training_rows/validation_rows`，与报告预测覆盖交叉核对 |
-| `model_hash` | string，SHA-256 | 与model文档content_hash一致 |
-| 当前最终工件 `final_fit` | object，最终成熟日拟合及诊断凭证 | 当前写入保存近期诊断凭证；旧refit读取分支仍待清理，要求与实际差距见第7章 |
+| `model_hash` | string，SHA-256 | 与收益模型的 `content_hash` 一致 |
+| `final_fit` | object，最终成熟日拟合及诊断凭证 | 保存近期诊断凭证 |
 | V5 `training_configuration` | object，fit_dates/parameters/content_hash | 完整TCN参数及架构摘要，非V5不能带此字段 |
 | `content_hash` | string，SHA-256 | metadata自身规范化内容摘要 |
 
@@ -582,7 +582,7 @@ V2/V3/V5的 `metadata.json`顶层白名单如下，JSON字段类型及非空要�
 | `industry_policy` | 固定`latest_snapshot`，本轮最新行业映射用于全部历史日期 |
 | `industry_content_hash` | 所选代码映射及缺口的语义摘要，不含刷新时间及原件回执 |
 | `industry_snapshot` | 完整所选members／gaps、原生中文名称、引用、真实发布时间、刷新期限、来源、分类及publication_hash／content_hash；由训练codec白名单封存与校验 |
-| `training_run_hash` | 同档本次作业身份，双头一致 |
+| `training_run_hash` | 该档位本次训练作业身份 |
 | `label_cutoff` | 标签截止，早于source_cutoff |
 | `source_identity_hash` | 已发布历史源身份 |
 | `calendar_hash` | 训练用 `BaoStockCalendar` 的内容摘要，由工件中的完整日期序列重建；历史发布日历及其来源仍由 `training_input_hash` 指向的原快照绑定，不混用两种摘要 |
@@ -600,9 +600,9 @@ V2/V3/V5的 `metadata.json`顶层白名单如下，JSON字段类型及非空要�
 | `production_authority` | bool，固定false，工程文件不能授权收益或自动生产切换 |
 | `content_hash` | 输入文档自身摘要 |
 
-`model.json`由 `industries`及自身 `content_hash`组成。每行业必须有逐列 `transformer_means/transformer_scales`与 `calibration_intercept/calibration_slope`，标准差尺度>0、向量维数匹配；V2另有 `lightgbm_model/lightgbm_best_iteration`，V3另有 `ridge_intercept/ridge_coefficients`，V5另有 `tcn_network`。TCN网络记录contract、architecture、hidden_channels、compute_dtype、dropout及具名权重的shape/values；不能只取一个能加载的权重文件就当完整工件。
+V2/V3/V5的 `model.json` 中，`utility` 包含 `industries` 及自身 `content_hash`。每行业必须有逐列 `transformer_means/transformer_scales` 与 `calibration_intercept/calibration_slope`，标准差尺度为正，向量维数匹配。V2另有 `lightgbm_model/lightgbm_best_iteration`，V3另有 `ridge_intercept/ridge_coefficients`，V5另有 `tcn_network`。TCN网络记录contract、architecture、hidden_channels、compute_dtype、dropout及具名权重的shape/values。`probability` 保存与当前收益模型绑定的达标概率模型及其摘要。V5按本节的部分发布规则保存时，该字段为空。
 
-V1的两个文件使用独立白名单：model包含 `profile_id/strategy_head/pair_content_hash/head_content_hash/components/content_hash`；metadata除共同身份外还含 `model_id/score_scale/model_hash/contract_hash/feature_ids/algorithm/training_input/validation_report`。其中pair摘要保证双头同组、head摘要保证各头独立；components保存排序器、独立收益门、标准化和校准等具名分量。V1输入记录完整settings、训练/价格源/日历身份、`latest_snapshot`策略、行业语义摘要、完整所选行业映射及发布凭据、资料截止、分区及头输入证据；报告明确 `feature_anchor=previous_completed_session` 与 `label_anchor=signal_close_proxy`。字段细节以 `d25/v1/models.py`与domain类型为准，不能用通用metadata解码器猜测。
+V1 D25的 `model.json` 同样包含 `utility` 与 `probability`。`utility` 使用独立白名单 `profile_id/strategy_head/pair_content_hash/head_content_hash/components/content_hash`。`metadata.json` 除共同身份外还包含 `model_id/score_scale/model_hash/contract_hash/feature_ids/algorithm/training_input/validation_report`。`components` 保存排序器、独立收益门、标准化和校准等具名分量。V1输入记录完整settings、训练/价格源/日历身份、`latest_snapshot`策略、行业语义摘要、完整所选行业映射及发布凭据、资料截止、分区及头输入证据。报告明确 `feature_anchor=previous_completed_session` 与 `label_anchor=signal_close_proxy`。字段细节由 `d25/v1/models.py` 与domain类型定义。
 
 评价报告的逐项预测指标由 `model_bundles/evaluation_codec.py`维护，研究准入归c第15章；本节不复制第二份指标公式。报告必须保留工程结构、预测诊断和 `daily_close_proxy_not_point_in_time`的收益缺口；人工生产授权不改写这些证据。
 
@@ -610,7 +610,7 @@ V1的两个文件使用独立白名单：model包含 `profile_id/strategy_head/p
 
 临时对象仍由 `training/infra/sample_cache.py`负责，调用者在整个使用与恢复期间持有该档训练锁。正常完成或取消先退出样本连接、映射和资源上下文，再清理临时目录；进程硬退出由操作系统释放连接、映射和锁，下次显式训练在取得同一锁后恢复遗留对象，不依赖旧进程执行清理。
 
-V1临时样本位于 `data/training/samples/v1/.temporary-training/training-<32位十六进制标识>/`，仅识别 `samples.sqlite3`及其journal、`matrices/0`至`matrices/7`下的 `features.bin/targets.bin`。空命名空间和部分创建的上述对象也可恢复；重启后重新建样本，不把临时样本升级为可复用封存缓存。清理前先核对全部受管工作目录，发现未知文件、目录或符号链接就拒绝清理并保留全部现场；旧版或用户自有文件不能仅因位于v1目录被删除。
+V1临时样本位于 `data/train/samples/v1/.temporary-training/training-<32位十六进制标识>/`，仅识别 `samples.sqlite3`及其journal、`matrices/0`至`matrices/7`下的 `features.bin/targets.bin`。空命名空间和部分创建的上述对象也可恢复；重启后重新建样本，不把临时样本升级为可复用封存缓存。清理前先核对全部受管工作目录，发现未知文件、目录或符号链接就拒绝清理并保留全部现场；旧版或用户自有文件不能仅因位于v1目录被删除。
 
 共用样本index的拟合矩阵由`sample_index.py`创建，恢复仍由`TrainingSampleCache`负责。`sample-fit-<8位标识>`只包含`training/early_stopping/calibration`各自的`-features.bin/-labels.bin`，`sample-shared-<8位标识>`只包含`common-features.bin/common-labels.bin`；标识仅小写字母、数字及下划线。空目录或固定文件的部分创建可恢复，名称不符合、未知文件、子目录或符号链接均拒绝清理。目录名只有前缀相似不能证明归属。
 
@@ -622,11 +622,11 @@ V5大行业的 `tcn-batches-*`目录仅包含只读拟合缓存 `training/early_
 
 ### 7.3 双头模型目录发布的中断恢复
 
-显式训练在持有该档训练锁时，于复用检查之前恢复中断的目录发布；直接模型发布也执行同一恢复检查。恢复操作另持有该档发布锁，唯一实现位于`model_bundles/profile_publication.py`，V1使用自己的双头decoder，V2/V3/V5使用各自训练合同。推荐、HTTP/Web及普通模型加载保持只读，不通过加载触发恢复。
+本节适用于显式双头收益研究的独立工作目录。独立研究可在持有档位训练锁和发布锁时核对同一格式的上一组。正常训练按当前策略分别发布，服务加载保持只读。
 
-正式档位目录缺失时，只接受唯一的`.<profile>.previous.<32位小写十六进制标识>`。先核对受管路径、两头固定文件和实际模型内容及同组身份，再将旧目录整体移回；不把`.<profile>.publication.*`中的候选提升为正式模型。正常训练中的`.bundle-staging.<8位受管标识>`可以随旧目录保留，但只允许普通目录和固定模型文件；未知条目、符号链接、多份旧目录、半套旧头或模型损坏均保留现场并明确失败，不选择某个目录猜测恢复。
+研究档位目录缺失时，只接受唯一的`.<profile>.previous.<32位小写十六进制标识>`。先核对受管路径、两头固定文件和实际模型内容及同组身份，再将上一组目录整体移回。研究训练的`.bundle-staging.<8位受管标识>`可以随上一组目录保留，只允许普通目录和固定模型文件。发现未知条目、符号链接、多份旧目录、半套旧头或模型损坏时保留现场并明确失败。
 
-首次安装若只留下空目录或合法暂存工作目录，恢复该工作目录后仍无可复用模型，训练按原规则重新构建。新目录已经完成移入时保留该新组及其身份，不回滚到旧组；恢复流程不自动清理硬退出留下的其它候选或旧目录。这里的“旧组”指一次目录切换前的上一完整组，不授予旧格式兼容资格；现有decoder的历史分支差距见[第7章](#7-缓存复用检查与工件发布)。恢复后，配置、源资料、训练实现和日期分区仍须通过原复用合同；身份不匹配时正常重新拟合，不改写旧模型身份或收益资格。进程硬退出回归与SSD/HDD性能实测分别记录在g，不能互相替代。
+首次安装若只留下空目录或合法暂存工作目录，恢复该工作目录后按原规则重新构建。新目录已经完成移入时沿用新组及其身份。配置、源资料、训练实现和日期分区须通过原复用合同，身份不匹配时重新拟合。进程硬退出回归与SSD/HDD性能实测分别记录在g。
 
 上一组清理失败或硬退出留下`.<profile>.previous.*`时，现有正式组仍可只读加载和按原合同复用；下一次发布必须在最终持锁切换之前拒绝未解决的旧目录，保留正式组及全部现场，不再制造第二份旧目录而使后续恢复无法唯一判定。该检查同时适用于V1与V2/V3/V5，不自动删除残留，也不改写已发布模型身份。
 
