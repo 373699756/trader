@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from trader.download.application.company_round_progress import CompanyRequestProgress
 from trader.download.application.progress_message import (
     ProgressField, ProgressLevel, ProgressMessage, ProgressRow, ProgressState, ProgressTask,
 )
@@ -18,6 +19,7 @@ from trader.download.domain.company_evidence import (
 )
 from trader.download.domain.company_sync import (
     CompanySyncFamily,
+    CompanySyncFamilyResult,
     CompanySyncPauseReason,
     CompanySyncRoundResult,
     CompanySyncStepResult,
@@ -112,6 +114,58 @@ def ExplainCompanyRoundReason(code: str) -> str | None:
 def ExplainCompanySyncPause(reason: CompanySyncPauseReason | None) -> str:
     """Describe the exact guard that prevented further work, when recorded."""
     return _PAUSE_EXPLANATIONS[reason] if reason is not None else "本轮暂停原因未核对"
+
+
+def BuildCompanyRoundFinishMessage(
+    result: CompanySyncRoundResult,
+    task: ProgressTask,
+    *,
+    elapsed_seconds: float | None,
+    time_limit_seconds: float | None,
+    confirmed_steps: int,
+    step_limit: int | None,
+    ledger: CompanyRequestProgress | None,
+    request_current: bool,
+) -> ProgressMessage:
+    """Render the observed stop reason and the distinct invocation and round limits."""
+    state: ProgressState
+    if result.paused:
+        reason = "收到取消请求" if result.cancelled else ExplainCompanySyncPause(result.pause_reason)
+        checkpoint = "已有断点保留" if result.round_id else "本轮断点未核对"
+        summary = ProgressField(f"{reason}，{checkpoint}", ProgressLevel.WARNING)
+        state = "取消" if result.cancelled else "暂停"
+    elif result.business_complete:
+        summary, state = ProgressField("本轮处理完成"), "完成"
+    elif result.processing_complete:
+        summary, state = ProgressField("本次调度结束，正式资料仍待补证"), "待补证"
+    else:
+        summary, state = ProgressField("本次调度结束，仍有工作待继续"), "待继续"
+    usage: list[ProgressField] = []
+    if elapsed_seconds is not None and time_limit_seconds is not None:
+        usage.append(ProgressField(f"本次公司作业用时{elapsed_seconds:.2f}秒，单次时限{time_limit_seconds:g}秒"))
+    if elapsed_seconds is not None and step_limit is not None:
+        usage.append(ProgressField(f"本次确认调度{confirmed_steps}/{step_limit}步"))
+        occupancy = "已占用" if request_current else "最近确认占用"
+        request_usage = (f"固定轮次请求额度{occupancy}{ledger.used}/{ledger.limit}次" if ledger is not None
+                         else "固定轮次请求额度未核对")
+        usage.append(ProgressField(request_usage))
+    return ProgressMessage((summary, *usage), task=task, state=state, finished=True)
+
+
+def ProjectCompanyRoundFamilyStatus(family: CompanySyncFamilyResult, result: CompanySyncRoundResult) -> ProgressState:
+    """Project a family outcome without promoting progress to business completeness."""
+    step = family.result
+    if step.failure == "source_attempt_unconfirmed":
+        return "阻塞"
+    if step.failure:
+        return "失败"
+    if step.business_complete:
+        return "完成"
+    if result.cancelled and step.can_continue:
+        return "取消"
+    if "source_budget_exhausted" in step.gaps or (result.budget_exhausted and step.can_continue):
+        return "暂停"
+    return "待继续" if step.can_continue or (step.pending_count is None and not step.gaps) else "待补证"
 
 
 def FormatCompanySyncSummary(result: SyncResult, state: ProgressState) -> str:
@@ -599,8 +653,10 @@ def _state(value: CompanyDataState | None) -> str:
 
 
 __all__ = [
+    "BuildCompanyRoundFinishMessage",
     "CompanyResultFeedback",
     "ExplainCompanyRoundReason",
     "ExplainCompanySyncPause",
     "FormatCompanySyncSummary",
+    "ProjectCompanyRoundFamilyStatus",
 ]

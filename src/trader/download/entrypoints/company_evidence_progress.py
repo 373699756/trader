@@ -51,7 +51,7 @@ from trader.download.domain.company_sync import (
 )
 from trader.download.domain.download_failure import DownloadFailureObservation, DownloadValidationFailure
 from trader.download.entrypoints.company_result_feedback import (
-    CompanyResultFeedback, ExplainCompanyRoundReason, ExplainCompanySyncPause,
+    BuildCompanyRoundFinishMessage, CompanyResultFeedback, ExplainCompanyRoundReason, ProjectCompanyRoundFamilyStatus,
 )
 
 
@@ -232,7 +232,7 @@ class CompanyRoundProgress:
         self._running: tuple[CompanySyncFamily, float] | None = None
         self._last_message: ProgressMessage | None = None
         self._last_feedback = float("-inf")
-        self._started = False
+        self._started_at: float | None = None
         self._finished = False
         self._requests: CompanyRequestProgress | None = None
         self._starting_requests = 0
@@ -430,9 +430,9 @@ class CompanyRoundProgress:
             state="开始",
         )
         with self._lock:
-            self._started = True
+            self._started_at = self._monotonic()
             self._last_message = message
-            self._last_feedback = self._monotonic()
+            self._last_feedback = self._started_at
         self._report.register_observer("company", self._heartbeat, task_key="prepare")
         self._report(message)
 
@@ -555,7 +555,9 @@ class CompanyRoundProgress:
         fields: CompanyFieldOutcomeCounts | None = None,
         previous: CompanyFieldOutcomeCounts | None = None,
         time_limit_seconds: float | None = None,
+        step_limit: int | None = None,
     ) -> None:
+        stopped_at = self._monotonic()
         financial_fresh = False
         pending = ""
         if self._scope == result.scope:
@@ -567,9 +569,11 @@ class CompanyRoundProgress:
             if self._running is not None:
                 raise ValueError("company_sync_progress_activity_unfinished")
             self._finished = True
+            started_at = self._started_at
+            confirmed_steps = sum(item.acknowledged for item in self._families.values())
             financial_batch = self._financial_batch
             requests = self._request_fields()
-            checkpoint_confirmed = self._requests is not None or bool(result.round_id)
+            ledger = self._requests if self._requests is not None and self._requests.round_id == result.round_id else None
             source = self._source_fields()
             directory = self._latest_directory
             source_rows = tuple(
@@ -577,22 +581,24 @@ class CompanyRoundProgress:
                 for page in self._pages.values()
             )
         self._report.finish_owner("company")
-        if result.paused:
-            reason = "收到取消请求" if result.cancelled else ExplainCompanySyncPause(result.pause_reason)
-            if time_limit_seconds is not None and result.pause_reason == "deadline":
-                reason = f"已到公司轮次时限 {time_limit_seconds:g}秒"
-            checkpoint = "已有断点保留" if checkpoint_confirmed else "本轮断点未核对"
-            self._report(ProgressMessage(
-                (ProgressField(f"{reason}，{checkpoint}", ProgressLevel.WARNING),),
-                task=_COMPANY_ROUND_TASK, state="取消" if result.cancelled else "暂停", finished=True,
+        request_current = tuple(family.family for family in result.families) == result.scope.families and all(
+            family.source_calls is not None and family.unknown_attempts is not None for family in result.families
+        )
+        if result.paused or (started_at is not None and time_limit_seconds is not None):
+            self._report(BuildCompanyRoundFinishMessage(
+                result,
+                _COMPANY_ROUND_TASK,
+                elapsed_seconds=stopped_at - started_at if started_at is not None else None,
+                time_limit_seconds=time_limit_seconds,
+                confirmed_steps=confirmed_steps,
+                step_limit=step_limit,
+                ledger=ledger,
+                request_current=request_current,
             ))
         published = fields if fields is not None and fields.publication_hash == result.publication_hash else None
         coverage = published.coverage if published is not None else None
         former = previous.coverage if previous is not None else None
-        if self._started:
-            request_current = tuple(family.family for family in result.families) == result.scope.families and all(
-                family.source_calls is not None and family.unknown_attempts is not None for family in result.families
-            )
+        if started_at is not None:
             if not request_current:
                 requests = (ProgressField("终态累计待核，以下为最近账本确认", ProgressLevel.WARNING), *requests)
             self._report(ProgressMessage(
@@ -614,7 +620,7 @@ class CompanyRoundProgress:
                 task=ProgressTask("company", "financial_values", "来源库·东财财报字段"),
                 rows=_financial_batch_rows(batch), finished=True, heartbeat=False, compact=True, stage_width=52,
             ))
-        elif self._started:
+        elif started_at is not None:
             self._report(ProgressMessage(
                 (ProgressField("财报字段统计未核对", ProgressLevel.WARNING),),
                 task=_COMPANY_SOURCE_TASK, finished=True, heartbeat=False, compact=True,
@@ -630,11 +636,11 @@ class CompanyRoundProgress:
             self._report(ProgressMessage(
                 details,
                 task=ProgressTask("company", family.family.value, f"{database}·{_FAMILY_NAMES[family.family]}"),
-                state=_family_status(family, result),
+                state=ProjectCompanyRoundFamilyStatus(family, result),
                 finished=True,
                 stage_elapsed_seconds=timing.seconds if timing.seconds is not None else "not_run",
             ))
-        if self._started or coverage is not None or self._last_coverage is not None:
+        if started_at is not None or coverage is not None or self._last_coverage is not None:
             self.report_coverage("本轮收尾", published, former if coverage is not None else None)
 
     def _request_fields(self) -> tuple[ProgressField, ...]:
@@ -685,21 +691,6 @@ class CompanyRoundProgress:
             operation = _operation_text(timing.operation) if timing.operation is not None else _FAMILY_NAMES[family]
             current = ProgressField(f"当前执行 {operation} 已用 {ProgressDuration(now - started_at)}")
             return replace(message, fields=(current, *details, *message.fields), state="处理中", immediate=False)
-
-
-def _family_status(family: CompanySyncFamilyResult, result: CompanySyncRoundResult) -> ProgressState:
-    step = family.result
-    if step.failure == "source_attempt_unconfirmed":
-        return "阻塞"
-    if step.failure:
-        return "失败"
-    if step.business_complete:
-        return "完成"
-    if result.cancelled and step.can_continue:
-        return "取消"
-    if "source_budget_exhausted" in step.gaps or (result.budget_exhausted and step.can_continue):
-        return "暂停"
-    return "待继续" if step.can_continue or (step.pending_count is None and not step.gaps) else "待补证"
 
 
 def _invocation_fields(timing: _CompanyFamilyRun, family: CompanySyncFamily) -> tuple[ProgressField, ...]:
@@ -882,7 +873,7 @@ def _financial_batch_rows(coverage: CompanyFinancialBatchCoverage) -> tuple[Prog
     observed = coverage.latest_observed_stocks
     if observed == 0:
         return (ProgressRow("来源库·东财财报字段", (ProgressField("无已取得报告，字段有值率待核"),)),)
-    return tuple(
+    rows = tuple(
         ProgressRow(
             f"来源库·{_FINANCIAL_OBSERVATION_LABELS[field]}",
             (ProgressField(f"已取得报告{_rate(observed, coverage.population)}股，"
@@ -890,6 +881,17 @@ def _financial_batch_rows(coverage: CompanyFinancialBatchCoverage) -> tuple[Prog
         )
         for field, count in coverage.missing_fields
     )
+    report_scope = "已入库各股最新报告" if coverage.pages_complete else "已入库页暂计各股最新报告"
+    update_dates = ProgressRow("来源库·东财供应商日期", (
+        ProgressField(
+            f"{report_scope}{observed}股，更新日与披露日同日{_rate(coverage.supplier_updates_same_day, observed)}，"
+            f"晚于{_rate(coverage.supplier_updates_later, observed)}，"
+            f"早于{_rate(coverage.supplier_updates_earlier, observed)}，"
+            f"更新日缺失{_rate(coverage.supplier_updates_missing, observed)}"
+        ),
+        ProgressField("供应商日期元数据，发行人首次披露时间及修订链仍待核"),
+    ))
+    return (*rows, update_dates)
 
 
 def _formal_coverage_summary(

@@ -172,6 +172,10 @@ class CompanyFinancialBatchCoverage:
     latest_complete_stocks: int
     latest_profit_pair_stocks: int
     missing_fields: tuple[tuple[CompanyFinancialField, int], ...]
+    supplier_updates_same_day: int
+    supplier_updates_later: int
+    supplier_updates_earlier: int
+    supplier_updates_missing: int
 
     @property
     def pages_complete(self) -> bool:

@@ -142,7 +142,7 @@ def ReadRoundCompanyFinancialBatch(
 
     present = ", ".join(f"COUNT(o.{column})" for _, column in _BATCH_FIELDS)
     all_present = " AND ".join(f"o.{column} IS NOT NULL" for _, column in _BATCH_FIELDS)
-    observed, matched, complete, profit_pair, *counts = connection.run(
+    observed, matched, complete, profit_pair, same_day, later, earlier, missing_update, *counts = connection.run(
         f"""WITH latest AS (
             SELECT code, MAX(report_date) AS report_date FROM company_round_member
             WHERE scope=? AND record_hash IS NOT NULL GROUP BY code
@@ -150,6 +150,10 @@ def ReadRoundCompanyFinancialBatch(
         SELECT COUNT(*), COUNT(o.code),
             COUNT(CASE WHEN {all_present} THEN 1 END),
             COUNT(CASE WHEN o.parent_profit IS NOT NULL AND o.core_profit IS NOT NULL THEN 1 END),
+            COUNT(CASE WHEN substr(o.updated_at,1,10)=substr(o.notice_at,1,10) THEN 1 END),
+            COUNT(CASE WHEN substr(o.updated_at,1,10)>substr(o.notice_at,1,10) THEN 1 END),
+            COUNT(CASE WHEN substr(o.updated_at,1,10)<substr(o.notice_at,1,10) THEN 1 END),
+            COUNT(CASE WHEN o.updated_at IS NULL THEN 1 END),
             {present}
         FROM latest l JOIN company_round_member m ON m.scope=? AND m.code=l.code AND m.report_date=l.report_date
         LEFT JOIN company_financial_observation o ON o.code=m.code AND o.report_date=m.report_date AND o.record_hash=m.record_hash""",
@@ -168,6 +172,10 @@ def ReadRoundCompanyFinancialBatch(
         latest_complete_stocks=complete,
         latest_profit_pair_stocks=profit_pair,
         missing_fields=tuple((field, observed - count) for (field, _), count in zip(_BATCH_FIELDS, counts, strict=True)),
+        supplier_updates_same_day=same_day,
+        supplier_updates_later=later,
+        supplier_updates_earlier=earlier,
+        supplier_updates_missing=missing_update,
     )
 
 

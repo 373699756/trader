@@ -1325,7 +1325,7 @@ def ExecuteCompanySync(
         deadline_reached = not cancelled and time.monotonic() >= deadline
         result = CompanySyncRoundResult("", CompanySyncRoundScope(codes, cutoff), (), cancelled, not cancelled, "",
             pause_reason="deadline" if deadline_reached else None)
-        progress.finish(result, time_limit_seconds=configuration.round_timeout_seconds)
+        progress.finish(result, time_limit_seconds=configuration.round_timeout_seconds, step_limit=configuration.round_step_limit)
         return result
 
     def stopped() -> bool:
@@ -1421,5 +1421,5 @@ def ExecuteCompanySync(
             result = runtime.run(codes, cutoff, budget, cancel_requested=cancel_requested, monotonic=time.monotonic)
         except CompanySyncInterrupted:
             return paused()
-        progress.finish(result, time_limit_seconds=configuration.round_timeout_seconds)
+        progress.finish(result, time_limit_seconds=configuration.round_timeout_seconds, step_limit=configuration.round_step_limit)
         return result

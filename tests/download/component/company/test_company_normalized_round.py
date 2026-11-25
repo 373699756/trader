@@ -72,12 +72,14 @@ def _index(tmp_path, baseline=None, clean=None):
     return index, facts
 
 
-def _observation(*, code="600001", at=_NOTICE, cutoff=_CUTOFF, period=date(2026, 9, 30), eps=2.0, parent=100.0):
+def _observation(*, code="600001", at=_NOTICE, cutoff=_CUTOFF, period=date(2026, 9, 30), eps=2.0, parent=100.0,
+                 update_delay=timedelta(0)):
     financial = CompanyFinancial(code, period, at, eps, 5, 1, 3, 4, 5, parent, 90)
     source_key = code + ".SH"
+    updated = at + update_delay if update_delay is not None else None
     return CompanyFinancialSourceObservation(
-        financial, source_key, at, at, cutoff, "CNY",
-        CompanyFinancialSourceRecordHash(financial, source_key, at, at, "CNY"),
+        financial, source_key, at, updated, cutoff, "CNY",
+        CompanyFinancialSourceRecordHash(financial, source_key, at, updated, "CNY"),
         tuple(CompanyFinancialMissingField(field) for field, value in CompanyFinancialSourceValues(financial) if value is None),
     )
 
@@ -136,42 +138,51 @@ def test_financial_batch_coverage_counts_latest_observations_separately_from_pag
     index, facts = _index(tmp_path, _baseline(tmp_path / "baseline"))
     reader = SQLiteCompanyEvidenceReaderFixture(facts.path)
     before = reader.publication_identity()
-    codes = ("600001", "600002", "600003")
+    codes = ("600001", "600002", "600003", "600005", "600006")
     query = BuildCompanyFinancialRoundQuery(_CUTOFF)
     index.accept(
         query,
         _page(
             _observation(period=date(2026, 6, 30)),
-            _observation(code="600002", parent=0.0),
-            _observation(code="600004"),
+            _observation(code="600002", parent=0.0, update_delay=timedelta(days=-1)),
+            _observation(code="600003", update_delay=None),
+            _observation(code="600004", update_delay=timedelta(days=1)),
+            _observation(code="600005", update_delay=timedelta(hours=3)),
             pages=2,
-            total=4,
+            total=6,
         ),
         codes,
         _CUTOFF,
     )
     partial = index.financial_batch(query, codes, _CUTOFF)
-    assert (partial.accepted_pages, partial.expected_pages, partial.accepted_raw_rows) == (1, 2, 3)
+    assert (partial.accepted_pages, partial.expected_pages, partial.accepted_raw_rows) == (1, 2, 5)
     assert not partial.pages_complete
-    assert partial.latest_complete_stocks == 2
+    assert partial.latest_complete_stocks == 4
+    assert (partial.supplier_updates_same_day, partial.supplier_updates_later,
+            partial.supplier_updates_earlier, partial.supplier_updates_missing) == (2, 0, 1, 1)
     assert index.financial_observation_watermark(query, codes, _CUTOFF) is None
     assert index.latest_financial_observations(query, codes, _CUTOFF) == ()
 
     successor = index.cursor(query, codes, _CUTOFF)
     assert successor is not None
     index.accept(
-        successor, _page(_observation(eps=None, parent=-2.0), page=2, pages=2, total=4), codes, _CUTOFF,
+        successor, _page(_observation(eps=None, parent=-2.0, update_delay=timedelta(days=1)), page=2, pages=2, total=6),
+        codes, _CUTOFF,
     )
     complete = index.financial_batch(query, codes, _CUTOFF)
-    assert complete.pages_complete and complete.accepted_raw_rows == 4
-    assert (complete.population, complete.latest_observed_stocks, complete.latest_complete_stocks) == (3, 2, 1)
-    assert complete.latest_profit_pair_stocks == 2
+    assert complete.pages_complete and complete.accepted_raw_rows == 6
+    assert (complete.population, complete.latest_observed_stocks, complete.latest_complete_stocks) == (5, 4, 3)
+    assert complete.latest_profit_pair_stocks == 4
+    assert (complete.supplier_updates_same_day, complete.supplier_updates_later,
+            complete.supplier_updates_earlier, complete.supplier_updates_missing) == (1, 1, 1, 1)
     assert tuple((name, count) for name, count in complete.missing_fields if count) == (("basic_eps", 1),)
     closed = index.financial_observation_watermark(query, codes, _CUTOFF)
     assert closed is not None
     assert index.financial_observation_watermark(successor, codes, _CUTOFF) == closed
     latest = index.latest_financial_observations(query, codes, _CUTOFF)
-    assert tuple((item.financial.code, item.financial.parent_net_profit) for item in latest) == (("600001", -2.0), ("600002", 0.0))
+    assert tuple((item.financial.code, item.financial.parent_net_profit) for item in latest) == (
+        ("600001", -2.0), ("600002", 0.0), ("600003", 100.0), ("600005", 100.0),
+    )
     assert reader.publication_identity() == before
     next_cutoff = _CUTOFF + timedelta(days=1)
     assert index.financial_batch(BuildCompanyFinancialRoundQuery(next_cutoff), codes, next_cutoff).expected_pages is None

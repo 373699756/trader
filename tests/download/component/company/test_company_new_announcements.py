@@ -27,8 +27,8 @@ from trader.infra.sqlite_connection import SqliteSession
 from trader.recommendation.domain.scoring.company import IsCompanyRiskEffective
 
 
-def _material(runtime, text, *, key="investigation", title="关于收到中国证券监督管理委员会立案告知书的公告", code="600001", days=1):
-    item = Disclosure("cninfo", key, (code,), title, _SCOPE.cutoff - timedelta(days=days),
+def _material(runtime, text, *, key="investigation", title="关于收到中国证券监督管理委员会立案告知书的公告", code="600001", days=1, when=None):
+    item = Disclosure("cninfo", key, (code,), title, when if when is not None else _SCOPE.cutoff - timedelta(days=days),
         "https://static.cninfo.com.cn/finalpage/2026-11-16/one.PDF", hashlib.sha256((key + text).encode()).hexdigest())
     runtime.material.register_disclosures((item,))
     runtime.material.commit_document(item, CompanyDocumentExtraction(text, "text", b"p" * 32, "test_text"), _SCOPE.cutoff)
@@ -51,7 +51,7 @@ def _run(runtime, transport, *, steps=80):
 
 @pytest.mark.parametrize("scenario", (
     "verified", "source_only", "scoped_denominator", "wrong_issuer", "wrong_date", "wrong_ratio", "zero_ratio",
-    "later_revision", "prior_complete",
+    "later_revision", "prior_complete", "total_in_body", "restricted_shares", "conflicting_totals", "same_day_date_only",
 ))
 def test_unlock_admits_exact_issuer_event_without_completing_the_window(tmp_path, scenario):
     runtime, reader, transport, physical = _runtime(tmp_path)
@@ -76,7 +76,18 @@ def test_unlock_admits_exact_issuer_event_without_completing_the_window(tmp_path
             body = body.replace("11月27日", "11月28日")
         elif scenario == "wrong_ratio":
             body = body.replace("0.024%", "0.025%")
-        notice = _material(runtime, body, key="unlock", title=title, days=2)
+        elif scenario in {"total_in_body", "conflicting_totals"}:
+            body = body.rsplit("\n", 1)[0] + "\n本次上市流通的限售股股数为2,034,800股，占公司目前股份总数的比例为0.024%。"
+            if scenario == "conflicting_totals":
+                body += "\n本次上市流通的限售股总数为2,034,801股，占公司总股本比例为0.025%。"
+        elif scenario == "restricted_shares":
+            title = "关于限制性股票解除限售股份上市流通的提示性公告"
+            body = _UNLOCK.split("\n本次股票")[0] + (
+                "\n本次解除限售的限制性股票的上市流通日为2026年11月27日。"
+                "\n本次解除限售的限制性股票数量为2,034,800股，占目前公司总股本比例为0.024%。"
+            )
+        when = _SCOPE.cutoff if scenario == "same_day_date_only" else None
+        notice = _material(runtime, body, key="unlock", title=title, days=2, when=when)
         if scenario == "later_revision":
             runtime.material.register_disclosures((replace(notice, identity="revision", title=f"{title}的更正公告",
                 published_at=_SCOPE.cutoff - timedelta(days=1), digest="a" * 64),))
@@ -86,7 +97,8 @@ def test_unlock_admits_exact_issuer_event_without_completing_the_window(tmp_path
     assert (runtime.field_watermark(_SCOPE, _SCOPE.codes, lambda: None) != before) is (
         scenario not in {"source_only", "prior_complete", "zero_ratio"}
     )
-    if scenario == "verified":
+    verified = scenario in {"verified", "total_in_body", "restricted_shares"}
+    if verified:
         _run(runtime, transport)
     else:
         runtime.prepare_local(_SCOPE, check=lambda: None, cancel_requested=lambda: False, eligible_codes=_SCOPE.codes,
@@ -103,7 +115,7 @@ def test_unlock_admits_exact_issuer_event_without_completing_the_window(tmp_path
         )
         return
     assert fact.unlock_checked_at is None and fact.unlock_coverage_end is None
-    if scenario != "verified":
+    if not verified:
         assert fact.unlock_schedule == () and fact.unlock_state is CompanyDataState.UNAVAILABLE
         assert not valid
         return

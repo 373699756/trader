@@ -2,29 +2,34 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal, ROUND_HALF_UP
 import re
+from zoneinfo import ZoneInfo
 
 from trader.download.domain.company_announcement_numbers import ExtractCompanyAnnouncementNumbers
 from trader.download.domain.company_evidence import CompanyDocument, CompanyRatio
 
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
 _NOTICE = re.compile(r"限售股(?:份)?上市流通(?:的)?(?:提示性)?公告(?:[（(]临?20[0-9]{2}-[0-9]{1,4}[）)])?$")
 _REVISIONS = ("更正", "修订", "延期", "取消", "终止", "暂缓", "变更")
 _DATE = re.compile(
-    r"本次(?:股票|限售股(?:份)?|解除限售的股份)?上市流通日期(?:为|[:：])"
+    r"本次(?:(?:股票|限售股(?:份)?|解除限售的股份)?上市流通日期|解除限售的限制性股票的上市流通日)(?:为|[:：])"
     r"(?P<year>20[0-9]{2})年(?P<month>[0-9]{1,2})月(?P<day>[0-9]{1,2})日"
 )
 _SHARES = r"[1-9][0-9]{0,9}|[1-9][0-9]{0,2}(?:[,，][0-9]{3}){1,3}"
+_LISTING_TOTAL = r"上市流通的限售股(?:份)?(?:总数|股数)"
+_RESTRICTED_COUNT = r"解除限售的限制性股票数量"
 _TOTAL_SHARES = re.compile(
-    r"本次(?:股票上市流通总数|上市流通的限售股(?:份)?总数|解除限售的?股份数量)"
+    rf"本次(?:股票上市流通总数|{_LISTING_TOTAL}|解除限售的?股份数量|{_RESTRICTED_COUNT})"
     rf"(?:为|[:：])(?P<shares>{_SHARES})股"
 )
 _RATIO = re.compile(
-    r"(?:本次上市流通的限售股(?:份)?数量|解除限售的?股份数量|持有公司限售股(?:份)?数量)"
+    rf"(?:本次(?:上市流通的限售股(?:份)?数量|{_LISTING_TOTAL}|{_RESTRICTED_COUNT})"
+    rf"|可{_RESTRICTED_COUNT}|解除限售的?股份数量|持有公司限售股(?:份)?数量)"
     rf"(?:为|[:：])(?P<shares>{_SHARES})股[，,]"
-    r"(?:股东数量为[0-9]+人[，,])?占(?:截至本公告披露之日)?公司"
-    r"(?:(?:目前|最新|发行后)?总股本|股本总数)(?:的)?(?:比例)?(?:为)?"
+    r"(?:股东数量为[0-9]+人[，,])?占(?:截至本公告披露之日|目前)?公司"
+    r"(?:(?:目前|最新|发行后)?总股本(?:数)?|股本总数|目前股份总数)(?:的)?(?:比例)?(?:为)?"
     r"(?P<percent>[0-9]{1,3}(?:\.[0-9]{1,8})?)[%％]"
 )
 
@@ -54,6 +59,10 @@ def ConfirmCompanyUnlockListing(
         or not IsCompanyUnlockListingNotice(item.title)
     ):
         return None
+    published = item.published_at.astimezone(_SHANGHAI)
+    if published.date() == observed_at.astimezone(_SHANGHAI).date() and published.time() == time.min:
+        # CNINFO midnight records can describe a disclosure day without a time.
+        return None
     identity = ExtractCompanyAnnouncementNumbers(document.text)
     if identity.issuer_codes != item.codes or identity.own is None:
         return None
@@ -70,7 +79,7 @@ def ConfirmCompanyUnlockListing(
     if len(days) != 1:
         return None
     day = next(iter(days))
-    if day < item.published_at.date():
+    if day < published.date():
         return None
     observed = tuple(row for row in observations if row.code == code and row.day == day)
     if len(observed) != 1 or observed[0].ratio_pct <= 0:

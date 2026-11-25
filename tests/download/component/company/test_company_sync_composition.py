@@ -15,6 +15,8 @@ from trader.download.domain.company_source_records import (
     CompanyFinancialSourceRecordHash,
 )
 from trader.download.domain.company_sync import COMPANY_SYNC_FAMILIES, CompanySyncFamily, CompanySyncRoundScope
+from trader.download.infra.company_document_ocr import CompanyOcrCapability
+from trader.download.infra.company_document_parser import CompanyTextCapability
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
 from trader.download.infra.company_sync_runtime import CompanySyncRuntime
@@ -105,7 +107,8 @@ def test_company_deadline_reports_last_checked_fields_without_a_final_read(tmp_p
     assert company is not None and company.budget_exhausted and not company.publication_hash
     assert result.exit_code == 1 and calls == [100.0] and physical == []
     logs = "\n".join(RenderProgress(message) for message in messages)
-    assert f"已到公司轮次时限 {timeout:g}秒" in logs
+    assert "达到公司轮次时限" in logs and f"单次时限{timeout:g}秒" in logs
+    assert "本次公司作业用时" in logs and "本次确认调度" in logs
     assert "本轮收尾 | 来源 本地正式公司库 | 收尾未重新核对" in logs
     assert logs.count("company·正式库·EPS") == 2
 
@@ -115,6 +118,10 @@ def test_company_cli_reports_three_stores_and_fixed_ledger_on_resume(tmp_path, m
     settings, physical = _settings(tmp_path, monkeypatch, allowance=1)
     monkeypatch.setattr("trader.entrypoints.cli.LoadRuntimeSettings", lambda _: settings)
     monkeypatch.setattr(bootstrap, "PrepareRuntimeDisk", lambda runtime, **_kwargs: runtime)
+    monkeypatch.setattr("trader.download.infra.company_document_ocr.DetectCompanyOcr", lambda languages, **kwargs:
+        CompanyOcrCapability("unavailable", None, None, languages, "disclosure_document_ocr_unavailable"))
+    monkeypatch.setattr("trader.download.infra.company_document_parser.DetectCompanyText", lambda **kwargs:
+        CompanyTextCapability("unavailable", None, None, "disclosure_document_text_unavailable"))
 
     def execute(request):
         physical.append(request.url)

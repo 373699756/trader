@@ -56,6 +56,45 @@ def test_company_round_start_has_heartbeat_and_finishes_with_owner():
     assert len(messages) == 2
 
 
+@pytest.mark.parametrize(("reason", "cancelled", "explanation"), (
+    ("deadline", False, "达到公司轮次时限"),
+    ("step_limit", False, "达到本次调度总步数上限"),
+    ("request_limit", False, "固定轮次的来源请求额度已用完"),
+    ("source_window", False, "来源派发窗口已结束"),
+    (None, True, "收到取消请求"),
+    (None, False, "本轮暂停原因未核对"),
+))
+def test_company_round_finish_explains_actual_stop_and_separate_limits(reason, cancelled, explanation):
+    messages = []
+    clock = [100.0]
+    progress = CompanyRoundProgress(SyncProgress(messages.append, lambda: clock[0]), lambda: clock[0])
+    progress.start(1)
+    step_limit = 1 if reason == "step_limit" else 1024
+    request_used = 512 if reason == "request_limit" else 359
+    result = CompanySyncRoundFixture(_ROUND_AT, families=None if reason == "request_limit" else (),
+                                     cancelled=cancelled, budget_exhausted=not cancelled)
+    if reason is not None:
+        progress.observe_requests(CompanyRequestProgress(result.round_id, 512, request_used, 1))
+        progress.advance(CompanySyncFamilyFixture(CompanySyncFamily.FINANCIAL))
+    else:
+        result = replace(result, round_id="")
+    elapsed = 1800.0 if reason == "deadline" else 37.25
+    clock[0] += elapsed
+    progress.finish(replace(result, pause_reason=reason), time_limit_seconds=1800.0, step_limit=step_limit)
+
+    stopped = next(message for message in messages if message.task.key == "prepare" and message.finished)
+    summary = " | ".join(field.text for field in stopped.fields)
+    assert stopped.state == ("取消" if cancelled else "暂停")
+    assert explanation in summary
+    assert f"本次公司作业用时{elapsed:.2f}秒，单次时限1800秒" in summary
+    assert f"本次确认调度{int(reason is not None)}/{step_limit}步" in summary
+    if reason is None:
+        assert "本轮断点未核对" in summary and "固定轮次请求额度未核对" in summary
+    else:
+        occupancy = "已占用" if reason == "request_limit" else "最近确认占用"
+        assert "已有断点保留" in summary and f"固定轮次请求额度{occupancy}{request_used}/512次" in summary
+
+
 def test_company_round_unconfirmed_counts_are_not_none_or_zero():
     messages = []
     progress = SyncProgress(messages.append, lambda: 0.0)
@@ -121,19 +160,24 @@ def test_company_progress_projects_formal_and_event_gaps_during_same_round(pause
         assert "缺值2/3（66.67%）" in rows["回购用途"] and "已核有值2项" in rows["回购或增持实际比例"]
 
 
-def test_company_round_financial_observations_do_not_close_qualification_gaps():
+@pytest.mark.parametrize("closed", (False, True))
+def test_company_round_financial_observations_do_not_close_qualification_gaps(closed):
     messages = []
     progress = CompanyRoundProgress(SyncProgress(messages.append, lambda: 0.0), lambda: 0.0)
     progress.set_financial_batch(CompanyFinancialBatchCoverage(
         population=4403,
-        accepted_pages=89,
+        accepted_pages=89 if closed else 88,
         expected_pages=89,
-        accepted_raw_rows=44_498,
+        accepted_raw_rows=44_498 if closed else 43_998,
         expected_raw_rows=44_498,
         latest_observed_stocks=4403,
         latest_complete_stocks=4367,
         latest_profit_pair_stocks=4403,
         missing_fields=(("basic_eps", 7), ("revenue_growth_pct", 1), ("core_profit_growth_pct", 18), ("roe_pct", 11)),
+        supplier_updates_same_day=4384,
+        supplier_updates_later=15,
+        supplier_updates_earlier=1,
+        supplier_updates_missing=3,
     ))
     family = CompanySyncFamilyFixture(CompanySyncFamily.FINANCIAL, gaps=("latest_financial_population_unverified",))
     progress.finish(CompanySyncRoundFixture(_ROUND_AT, families=(family,)))
@@ -141,12 +185,19 @@ def test_company_round_financial_observations_do_not_close_qualification_gaps():
     source, status = messages
     text = " | ".join(field.text for field in source.fields)
     assert status.state == "待补证"
-    assert "财务批量页89/89，原始行44498/44498" in text
+    assert ("页账本已闭合，财务批量页89/89，原始行44498/44498" if closed
+            else "页账本待闭合，财务批量页88/89，原始行43998/44498") in text
     assert "财务源观察4403/4403股，最新报表八项有值4367股，归母与扣非同时有值4403股" in text
     assert "EPS缺7股、营收同比缺1股、扣非同比缺18股、ROE缺11股" in text
     assert "已观察财报原始缺值37/35224（0.11%）" in text and "观测报告有缺项36/4403（0.82%）" in text
     assert any("各股最新财报的全量覆盖待核" in field.text for field in status.fields)
     assert any(row.label == "来源库·EPS" and "有值4396/4403（99.84%）" in row.fields[-1].text for row in source.rows)
+    dates = next(row for row in source.rows if row.label == "来源库·东财供应商日期")
+    metadata = " | ".join(field.text for field in dates.fields)
+    assert ("已入库各股最新报告4403股" if closed else "已入库页暂计各股最新报告4403股") in metadata
+    assert "更新日与披露日同日4384/4403（99.57%）" in metadata
+    assert "晚于15/4403（0.34%），早于1/4403（0.02%），更新日缺失3/4403（0.07%）" in metadata
+    assert "供应商日期元数据，发行人首次披露时间及修订链仍待核" in metadata
 
 
 @pytest.mark.parametrize("terminal", (False, True))
