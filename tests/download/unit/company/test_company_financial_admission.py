@@ -1,11 +1,14 @@
 """Exercise supplier/issuer binding, partial admission and exact body dependencies."""
 
 import hashlib
+import json
 from dataclasses import replace
 from datetime import date, timedelta
 
 import pytest
 
+from scripts.download.company.company_field_audit import AuditCompanyFields
+from scripts.download.company.company_financial_replay import AuditCompanyFinancialAdoption
 from tests.helpers.download.company.company_financial_report import AT, BODY, ReportDocument
 from tests.helpers.download.configuration import CompanyEventPolicyFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
@@ -27,7 +30,10 @@ from trader.download.domain.company_source_records import (
 from trader.download.infra.company_financial_publication import (
     CompanyFinancialAdmissionReceipts,
     PrepareCompanyFinancialAdmissions,
+    ReadCompanyFinancialIssuerEvidence,
 )
+from trader.download.infra.company_financial_observations import WriteCompanyFinancialObservations
+from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
 from trader.download.infra.company_source_schema import COMPANY_SOURCE_SCHEMA
 from trader.infra.sqlite_connection import EnsureSqliteSchema, SqliteSession
 
@@ -37,8 +43,8 @@ _PARENT = "归属于上市公司股东的净利润（元）  80.00  12.00%  -170
 _ORIGINAL = BODY.replace("归属于上市公司股东的扣除", _PARENT + "归属于上市公司股东的扣除")
 
 
-def _observation(*, updated_at=AT, notice_at=AT, core=2.0, growth=20.0):
-    report = CompanyFinancial("600001", _PERIOD, notice_at, 0.0, 9.0, growth, -16.081055793029, None, -0.0, -170.0, core)
+def _observation(*, updated_at=AT, notice_at=AT, core=2.0, growth=20.0, net_growth=-16.081055793029):
+    report = CompanyFinancial("600001", _PERIOD, notice_at, 0.0, 9.0, growth, net_growth, None, -0.0, -170.0, core)
     identity = "600001.SH"
     return CompanyFinancialSourceObservation(
         report, identity, notice_at, updated_at, _CUTOFF, "CNY",
@@ -142,3 +148,71 @@ def test_extraction_qualified_issuer_body_requires_closed_directory_and_no_corre
         collected.run("INSERT INTO disclosures VALUES (2,'cninfo','second','announcement','撤回财务报表的公告',?,'','x',NULL,0,0)", (_CUTOFF.isoformat(),))
         collected.run("INSERT INTO disclosure_codes VALUES ('600001',2)")
         assert prepare(revisions=(revision,)) == ()
+
+
+def test_published_issuer_receipt_traces_filled_value_at_official_time(tmp_path):
+    supplier = _observation(net_growth=None)
+    document = ReportDocument(_ORIGINAL)
+    original = replace(document.disclosure, source="sse", published_at=AT + timedelta(hours=16), digest="a" * 64)
+    body_hash = hashlib.sha256(document.text.encode()).digest()
+    financial = MatchCompanyFinancialOriginal(supplier, replace(document, disclosure=original), _CUTOFF)
+    assert financial is not None and financial.core_profit_growth_pct == 34.0
+    revision = CompanyFinancialRevisionProof(original, _PERIOD, _PERIOD, _CUTOFF, supplier.record_hash, b"a" * 32)
+    proof = CompanyFinancialAdmission(financial, supplier, body_hash, revision)
+    initial = CompileCompanyFacts(CompanyEvidenceInput(
+        "600001", AT, AT.date() - timedelta(days=365), AT.date(), "fixture", (), True,
+        (), None, (), False, (), False, (),
+    ), CompanyEventPolicyFixture())
+    previous = replace(financial, book_value_per_share=10.0, core_profit_growth_pct=None, net_profit_growth_pct=None)
+    initial = replace(initial, financial=previous, financial_state=CompanyDataState.PARTIAL,
+                      latest_financial=previous, published_at=original.published_at)
+    admitted = ApplyCompanyFinancialAdmission(initial, proof, _CUTOFF)
+    assert admitted.latest_financial.book_value_per_share == 10.0
+    policy = SqlitePolicyFixture()
+    events = CompanyEventPolicyFixture()
+    writer = SQLiteCompanyFactsIndex(tmp_path / "formal.sqlite3", event_policy=events, sqlite_policy=policy)
+    writer.initialize()
+    writer.publish((admitted,), {original.identity: original.source}, None, _CUTOFF, receipts=CompanyFinancialAdmissionReceipts(
+        proof, extraction_hash=writer.extraction_hash, published_at=_CUTOFF,
+    ))
+    raw_path = tmp_path / "collection.sqlite3"
+    payload_hash = b"p" * 32
+    with SqliteSession(raw_path, sqlite_policy=policy) as raw, SqliteSession(writer.path, sqlite_policy=policy) as formal:
+        EnsureSqliteSchema(raw, COMPANY_SOURCE_SCHEMA, allow_create=True, exact=True)
+        raw.run("INSERT INTO disclosures VALUES (1,?,?,?,?,?,?,?,?,1,1)", (
+            original.source, original.identity, original.kind, original.title, original.published_at.isoformat(),
+            original.url, original.digest, body_hash,
+        ))
+        raw.run("INSERT INTO disclosure_codes VALUES ('600001',1)")
+        raw.run("INSERT INTO document_extractions VALUES (1,?,?,'text','pdftotext',NULL,?)", (
+            original.digest, payload_hash, original.published_at.isoformat(),
+        ))
+        assert ReadCompanyFinancialIssuerEvidence(raw, formal, financial, _CUTOFF, writer.extraction_hash) is None
+        WriteCompanyFinancialObservations(raw, (supplier,))
+        assert ReadCompanyFinancialIssuerEvidence(raw, formal, financial, AT + timedelta(hours=20), writer.extraction_hash) is None
+        assert ReadCompanyFinancialIssuerEvidence(raw, formal, replace(financial, core_profit_growth_pct=35.0),
+                                                   _CUTOFF, writer.extraction_hash) is None
+        assert ReadCompanyFinancialIssuerEvidence(raw, formal, financial, _CUTOFF, b"x" * 32) is None
+        raw.run("UPDATE disclosures SET body_retained=0")
+        audit = AuditCompanyFields(formal, raw_path, raw=raw, observed_at=_CUTOFF)
+        latest = audit["financial_sources"]["latest"]
+        assert latest["official_fields"] == {"numeric": 2}
+        assert {item["field"] for item in latest["official_evidence"]} == {"profit_growth_pct", "core_profit_growth_pct"}
+        assert all(item["source"] == "sse" for item in latest["official_evidence"])
+        assert latest["source_identity_unconfirmed_rows"] == 0 and latest["value_mismatch_rows"] == 0
+        assert latest["reasons"] == {"official_value_unverified": 2}
+
+    annotations = tmp_path / "annotations.json"
+    annotation = {
+        "code": financial.code, "report_date": str(financial.report_date), "disclosed_at": financial.published_at.isoformat(),
+        "field": "core_profit_growth_pct", "reported_value": 34.0, "state": "numeric", "source_key": original.identity,
+        "record_hash": original.digest, "pdf_sha256": payload_hash.hex(),
+    }
+    annotations.write_text(json.dumps({"rows": [annotation]}))
+    result = AuditCompanyFinancialAdoption(raw_path, writer.path, annotations, observed_at=_CUTOFF,
+                                          event_policy=events, sqlite_policy=policy, budget_seconds=30)
+    assert result["status"] == "passed" and result["matched"] == 1
+    annotations.write_text(json.dumps({"rows": [dict(annotation, report_date="2026-06-30")]}))
+    wrong_period = AuditCompanyFinancialAdoption(raw_path, writer.path, annotations, observed_at=_CUTOFF,
+                                                event_policy=events, sqlite_policy=policy, budget_seconds=30)
+    assert wrong_period["status"] == "degraded" and wrong_period["matched"] == 0

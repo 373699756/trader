@@ -4,7 +4,7 @@ import gzip
 import hashlib
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 import sqlite3
@@ -94,6 +94,41 @@ def test_revised_ordinary_title_keeps_locator_for_existing_formal_evidence(tmp_p
     assert reader.read(item.codes)[0].risk_events
     links = reader.read_document_links(("600001",)).links
     assert len(links) == 1 and links[0].record_hash == item.digest
+
+
+def test_cleanup_preserves_only_in_window_single_issuer_financial_directory_rows(tmp_path):
+    index = fixtures._index(tmp_path)
+    original = fixtures._disclosure("original", "2026年第三季度报告全文")
+    revision = fixtures._disclosure("revision", "关于修订2026年第三季度财务报告的公告")
+    boundary = NOW - timedelta(days=365)
+    index.register_disclosures((
+        original,
+        revision,
+        fixtures._disclosure("boundary", "2025年第三季度报告全文", when=boundary),
+        fixtures._disclosure("expired", "2025年第三季度报告全文", when=boundary - timedelta(days=1)),
+        fixtures._disclosure("future", original.title, when=NOW + timedelta(minutes=1)),
+        fixtures._disclosure("unclassified"),
+        fixtures._disclosure("transaction-revision", "关于重大资产重组报告书修订说明的公告"),
+        replace(original, identity="multi", codes=("600001", "600002")),
+        replace(original, identity="other-source", source="issuer_disclosure"),
+    ))
+    index.publish(("600001",), NOW)
+
+    index.clean_material(NOW)
+
+    with SqliteSession(index.path) as connection:
+        assert tuple(tuple(row) for row in connection.run(
+            "SELECT source_key,body_checked,body_retained FROM disclosures ORDER BY source_key"
+        )) == (("boundary", 0, 0), ("original", 0, 0), ("revision", 0, 0))
+        assert connection.run("SELECT COUNT(*) FROM company_document_requirements").require_one()[0] == 0
+    assert not tuple((tmp_path / "text").rglob("*.gz"))
+
+    index.clean_material(NOW + timedelta(days=1))
+
+    with SqliteSession(index.path) as connection:
+        assert tuple(row[0] for row in connection.run(
+            "SELECT source_key FROM disclosures ORDER BY source_key"
+        )) == ("original", "revision")
 
 
 

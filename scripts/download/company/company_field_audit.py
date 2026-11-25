@@ -23,7 +23,7 @@ from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_protocol import DecodeCompanyDate, EncodeCompanyTime, EVIDENCE_SOURCES, RequireCompanyTime
 from trader.download.infra.company_financial_observations import ReadCommittedCompanyFinancialReports
-from trader.download.infra.company_financial_publication import ReadCompanyFinancialSourceProofs
+from trader.download.infra.company_financial_publication import ReadCompanyFinancialIssuerEvidence, ReadCompanyFinancialSourceProofs
 from scripts.core.projection_values import SafeStringList, SafeNonnegativeInt, SafeText, ProjectMapping
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
 from trader.download.infra.company_field_recovery import ReadCompanyFieldRecovery
@@ -209,28 +209,41 @@ def _financial_sources(formal: SqliteConnection, raw: SqliteConnection, observed
         for row in rows:
             day = DecodeCompanyDate(row["report_date"])
             source = inputs.get((row["code"], day)) if day is not None else None
+            published = CompanyFinancial(row["code"], day, RequireCompanyTime(row["disclosed_at"]), *tuple(row)[3:]) if (
+                day is not None and type(row["disclosed_at"]) is int
+                and all(row[field] is None or type(row[field]) in {int, float} and isfinite(row[field]) for field in columns)
+            ) else None
+            issuer = ReadCompanyFinancialIssuerEvidence(raw, formal, published, observed_at, identity.extraction_hash) if (
+                published is not None and identity is not None and identity.published_at <= observed_at
+            ) else None
+            if issuer is not None:
+                source = issuer.supplier_report
             source_values = dict(zip(columns, (value for _, value in CompanyFinancialSourceValues(source)), strict=True)) if source is not None else {}
-            same_identity = source is not None and EncodeCompanyTime(source.published_at) == row["disclosed_at"]
+            same_identity = issuer is not None or (source is not None and EncodeCompanyTime(source.published_at) == row["disclosed_at"])
             identity_changes += not same_identity
             gaps: list[dict[str, str]] = []
-            proofs = ReadCompanyFinancialSourceProofs(
-                raw, formal, source,
-                CompanyFinancial(row["code"], day, RequireCompanyTime(row["disclosed_at"]), *tuple(row)[3:]), observed_at,
-            ) if (same_identity and source is not None and day is not None
-                  and any(source_values[field] is None for field in ("eps", "roe_pct", "core_profit_growth_pct", "revenue_growth_pct"))
-                  and all(row[field] is None or type(row[field]) in {int, float} and isfinite(row[field]) for field in columns)) else ()
+            proofs = issuer.completed_fields if issuer is not None else ()
+            if issuer is None and same_identity and source is not None and published is not None and any(
+                source_values[field] is None for field in ("eps", "roe_pct", "core_profit_growth_pct", "revenue_growth_pct")
+            ):
+                proofs = ReadCompanyFinancialSourceProofs(raw, formal, source, published, observed_at)
+            proofs_by_column = {}
+            if published is not None and proofs:
+                column_by_field = {name: column for column, (name, _) in zip(columns, CompanyFinancialSourceValues(published), strict=True)}
+                proofs_by_column = {column_by_field[proof.field]: proof for proof in proofs}
             different = False
             incomplete += any(row[field] is None for field in columns)
             for field in columns:
                 provider_null_fields += source is not None and source_values[field] is None
-                proof = next((proof for proof in proofs if ("eps" if proof.field == "basic_eps" else proof.field) == field), None)
+                proof = proofs_by_column.get(field)
                 if row[field] is None:
                     missing[field] += 1
                 if proof is not None and row[field] == proof.value:
                     official_states[proof.state] += 1
                     if len(official_evidence) < 50:
                         official_evidence.append({"code": row["code"], "report_date": str(day), "field": field,
-                                                  "state": proof.state, "source_keys": list(proof.source_keys)})
+                                                  "state": proof.state, "source_keys": list(proof.source_keys),
+                                                  **({"source": issuer.source} if issuer is not None else {})})
                     if proof.state == "numeric":
                         continue
                     reason = "official_" + proof.state
@@ -240,6 +253,8 @@ def _financial_sources(formal: SqliteConnection, raw: SqliteConnection, observed
                     reason = "source_revision_changed"
                 elif row[field] is None and source_values[field] is None:
                     reason = "source_null"
+                elif issuer is not None and row[field] != source_values[field]:
+                    reason = "official_value_unverified"
                 elif row[field] is None:
                     reason = "publication_missing"
                 elif row[field] != source_values[field]:
@@ -454,6 +469,7 @@ def ProjectCompanyFieldAudit(source: Mapping[str, object]) -> dict[str, object]:
                 for item in _rows(group.get("items"), 50)
             ], "official_evidence": [
                 {key: SafeText(item.get(key)) for key in ("code", "report_date", "field", "state")}
+                | ({"source": SafeText(item.get("source"))} if "source" in item else {})
                 | {"source_keys": SafeStringList(item.get("source_keys"), limit=4)}
                 for item in _rows(group.get("official_evidence"), 50)
             ], "provider_null_fields": SafeNonnegativeInt(group.get("provider_null_fields")),

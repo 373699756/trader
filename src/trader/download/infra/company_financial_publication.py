@@ -12,9 +12,11 @@ from zoneinfo import ZoneInfo
 from trader.download.domain.company_evidence import CompanyDocument, CompanyFinancial, Disclosure
 from trader.download.domain.company_financial_admission import CompanyFinancialAdmission, CompanyFinancialRevisionProof, MatchCompanyFinancialOriginal
 from trader.download.domain.company_financial_report import COMPANY_FINANCIAL_REPORT_DIGEST, COMPANY_FINANCIAL_REPORT_FIELDS, CompanyFinancialReportField, CompanyFinancialReportState
-from trader.download.domain.company_source_records import CompanyFinancialSourceObservation
+from trader.download.domain.company_source_records import CompanyFinancialField, CompanyFinancialSourceObservation, CompanyFinancialSourceValues
 from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
 from trader.download.infra.company_facts_index import CompanyInputReceipt, ReadCompanyPublicationIdentity
+from trader.download.infra.company_facts_protocol import EncodeCompanyTime, RequireCompanyTime
+from trader.download.infra.company_financial_observations import ReadCompanyFinancialObservation
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_connection import SqliteConnection
 
@@ -24,10 +26,26 @@ _PERIODIC = re.compile(r"(20[0-9]{2})年(第一季度|一季度|一季|半年度
 _ORIGINAL_QUARTER = re.compile(r"(?:[\u4e00-\u9fffA-Za-z0-9（）():：·]{0,80})?20[0-9]{2}年(?:第三季度|三季度|三季)报告(?:全文|正文)?")
 _CORRECTION = re.compile(r"更正|修订|调整|重述|补充|差错|撤回|取消|作废")
 _FINANCIAL = re.compile(r"财务|财报|报表|会计|利润|报告")
+_FINANCIAL_STATEMENTS = re.compile(r"定期报告|财报|财务(?:会计)?(?:报告|报表|数据|信息)|会计差错|前期差错")
+_ISSUER_PROOF = "financial_issuer_original"
+_DIGEST = re.compile(r"[0-9a-f]{64}")
 _PERIOD_END = {
     "第一季度": (3, 31), "一季度": (3, 31), "一季": (3, 31), "半年度": (6, 30), "中期": (6, 30),
     "第三季度": (9, 30), "三季度": (9, 30), "三季": (9, 30), "年度": (12, 31),
 }
+
+
+def IsCompanyFinancialDirectoryEvidence(title: str) -> bool:
+    """Identify original and correction titles needed by financial admission."""
+    normalized = "".join(title.split())
+    return _ORIGINAL_QUARTER.fullmatch(normalized) is not None or (
+        _CORRECTION.search(normalized) is not None
+        and (_period(normalized) is not None or _FINANCIAL_STATEMENTS.search(normalized) is not None)
+    )
+
+
+def _is_financial_correction(title: str) -> bool:
+    return _CORRECTION.search(title) is not None and _FINANCIAL.search(title) is not None
 
 
 def PrepareCompanyFinancialAdmissions(
@@ -71,8 +89,7 @@ def PrepareCompanyFinancialAdmissions(
         for row in rows:
             title = "".join(row["title"].split())
             period = _period(title)
-            if (period is not None and period > report.report_date
-                or _CORRECTION.search(title) and _FINANCIAL.search(title)):
+            if (period is not None and period > report.report_date or _is_financial_correction(title)):
                 break
             if period == report.report_date and _ORIGINAL_QUARTER.fullmatch(title) is not None:
                 originals.append(row)
@@ -113,22 +130,99 @@ def CompanyFinancialAdmissionReceipts(
 ) -> tuple[CompanyInputReceipt, ...]:
     """Bind the exact official body, supplier row and admitted values together."""
     original, supplier = proof.revision.original, proof.supplier
-    policy = (f"financial_issuer_original:{proof.report.report_date}:{supplier.record_hash}:"
-              f"{CanonicalDigest(proof.report)}:{proof.revision.authority_evidence_hash.hex()}")
+    fields = tuple(field for field, value in CompanyFinancialSourceValues(proof.report) if value is not None)
+    policy = (f"{_ISSUER_PROOF}:{proof.report.report_date}:{supplier.record_hash}:"
+              f"{_issuer_report_digest(proof.report, fields)}:{proof.revision.authority_evidence_hash.hex()}:{','.join(fields)}")
     return (
         CompanyInputReceipt(original.source, original.identity, proof.report.code, original.digest,
-            extraction_hash, proof.body_hash, published_at, "valid", "financial_issuer_original"),
+            extraction_hash, proof.body_hash, published_at, "valid", _ISSUER_PROOF),
         CompanyInputReceipt(original.source, original.identity, proof.report.code, original.digest,
             hashlib.sha256(policy.encode()).digest(), proof.body_hash, published_at, "field_attempted", policy),
     )
 
 
+def _issuer_report_digest(report: CompanyFinancial, fields: tuple[CompanyFinancialField, ...]) -> str:
+    values = tuple((field, None if value is None else 0.0 if value == 0 else float(value))
+                   for field, value in CompanyFinancialSourceValues(report) if field in fields)
+    return CanonicalDigest((report.code, report.report_date, EncodeCompanyTime(report.published_at), values))
+
+
+def _issuer_policy_fields(part: str, report: CompanyFinancial) -> tuple[CompanyFinancialField, ...]:
+    requested = part.split(",")
+    fields = tuple(field for field, value in CompanyFinancialSourceValues(report) if field in requested and value is not None)
+    return fields if ",".join(fields) == part else ()
+
+
 @dataclass(frozen=True, slots=True)
 class CompanyFinancialSourceProof:
-    field: CompanyFinancialReportField
+    field: CompanyFinancialField
     value: float | None
     state: CompanyFinancialReportState
     source_keys: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyFinancialIssuerEvidence:
+    supplier_report: CompanyFinancial
+    source: str
+    completed_fields: tuple[CompanyFinancialSourceProof, ...]
+
+
+def ReadCompanyFinancialIssuerEvidence(
+    collected: SqliteConnection,
+    formal: SqliteConnection,
+    report: CompanyFinancial,
+    observed_at: datetime,
+    extraction_hash: bytes,
+) -> CompanyFinancialIssuerEvidence | None:
+    """Trace an admitted report to its exact supplier row and issuer receipts."""
+    if report.published_at > observed_at or (report.report_date.month, report.report_date.day) != (9, 30):
+        return None
+    prefix = f"{_ISSUER_PROOF}:{report.report_date}:"
+    originals = collected.run("""
+        SELECT d.source,d.source_key,d.record_hash,d.body_hash,d.title
+        FROM disclosure_codes c JOIN disclosures d ON d.id=c.disclosure_id
+        WHERE c.code=? AND d.published_at=? AND d.kind='announcement' AND d.body_checked=1
+        AND NOT EXISTS(SELECT 1 FROM disclosure_codes other WHERE other.disclosure_id=d.id AND other.code<>c.code)
+        AND EXISTS(SELECT 1 FROM document_extractions x WHERE x.disclosure_id=d.id AND x.record_hash=d.record_hash)
+        """, (report.code, report.published_at.astimezone(_SHANGHAI).isoformat()))
+    matched: dict[tuple[str, str, str, bytes], CompanyFinancialIssuerEvidence] = {}
+    for source, key, record_hash, body, title in originals:
+        if (not isinstance(body, bytes) or len(body) != 32
+            or _ORIGINAL_QUARTER.fullmatch("".join(title.split())) is None):
+            continue
+        candidates = formal.run("""
+            SELECT r.published_at,r.policy_id,r.extraction_hash
+            FROM company_input_receipt r JOIN company_input_receipt v
+            ON v.source=r.source AND v.source_key=r.source_key AND v.code=r.code AND v.record_hash=r.record_hash
+            AND v.body_hash=r.body_hash AND v.published_at<=r.published_at
+            WHERE r.source=? AND r.source_key=? AND r.code=? AND r.record_hash=? AND r.body_hash=?
+            AND r.outcome='field_attempted' AND r.policy_id GLOB ? AND r.published_at BETWEEN ? AND ?
+            AND v.outcome='valid' AND v.extraction_hash=?
+            """, (source, key, report.code, record_hash, body, prefix + "*", EncodeCompanyTime(report.published_at),
+                   EncodeCompanyTime(observed_at), extraction_hash))
+        for stamped, policy, digest in candidates:
+            parts = policy[len(prefix):].split(":")
+            if (len(parts) != 4 or not all(_DIGEST.fullmatch(value) for value in parts[:3])
+                or digest != hashlib.sha256(policy.encode()).digest()):
+                continue
+            signed_fields = _issuer_policy_fields(parts[3], report)
+            if not signed_fields or parts[1] != _issuer_report_digest(report, signed_fields):
+                continue
+            supplier = ReadCompanyFinancialObservation(collected, report.code, report.report_date, parts[0])
+            if supplier is None or supplier.observed_at > RequireCompanyTime(stamped):
+                continue
+            fields = tuple(CompanyFinancialSourceProof(field, current, "numeric", (key,))
+                for (field, current), (_, supplied) in zip(CompanyFinancialSourceValues(report),
+                    CompanyFinancialSourceValues(supplier.financial), strict=True)
+                if field in signed_fields and supplied is None and current is not None)
+            identity = (parts[0], source, key, body)
+            previous = matched.get(identity)
+            if previous is not None:
+                fields = tuple(sorted(set(previous.completed_fields).union(fields), key=lambda item: item.field))
+            matched[identity] = CompanyFinancialIssuerEvidence(supplier.financial, source, fields)
+    return next(iter(matched.values())) if len(matched) == 1 else None
+
 
 @dataclass(frozen=True, slots=True)
 class _ReportSource:
@@ -152,8 +246,8 @@ def ReadCompanyFinancialMaterials(formal: SqliteConnection, codes: Sequence[str]
         "AND outcome='field_attempted' AND (policy_id LIKE 'financial_source:%' OR policy_id LIKE 'financial_issuer_original:%')", codes,
     ):
         parts = row[2].split(":")
-        if parts[0] == "financial_issuer_original":
-            if len(parts) != 5 or any(re.fullmatch(r"[0-9a-f]{64}", part) is None for part in parts[2:]):
+        if parts[0] == _ISSUER_PROOF:
+            if len(parts) != 6 or any(_DIGEST.fullmatch(part) is None for part in parts[2:5]) or not parts[5]:
                 raise ValueError("company_financial_source_policy_invalid")
         elif len(parts) != 6 or parts[3] not in COMPANY_FINANCIAL_REPORT_FIELDS or parts[4] not in _STATES:
             raise ValueError("company_financial_source_policy_invalid")
@@ -245,4 +339,4 @@ def ReadCompanyFinancialSourceProofs(
                 break
     return tuple(proofs)
 
-__all__ = ["CompanyFinancialAdmissionReceipts", "CompanyFinancialSourceProof", "CompanyFinancialMaterial", "PrepareCompanyFinancialAdmissions", "ReadCompanyFinancialMaterials", "CompanyFinancialReportValue", "ReadCompanyFinancialSourceProofs"]
+__all__ = ["CompanyFinancialAdmissionReceipts", "CompanyFinancialIssuerEvidence", "CompanyFinancialSourceProof", "CompanyFinancialMaterial", "IsCompanyFinancialDirectoryEvidence", "PrepareCompanyFinancialAdmissions", "ReadCompanyFinancialIssuerEvidence", "ReadCompanyFinancialMaterials", "CompanyFinancialReportValue", "ReadCompanyFinancialSourceProofs"]

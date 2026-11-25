@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -15,6 +15,7 @@ from trader.download.infra.company_field_recovery import RestoreCompanyMaterialD
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
 from trader.download.infra.company_facts_protocol import DecodeCompanyLabel, EVIDENCE_SOURCES
+from trader.download.infra.company_financial_publication import IsCompanyFinancialDirectoryEvidence
 from trader.download.infra.company_pipeline_queries import ReleaseUnusedCompanyDisclosures
 from trader.download.infra.company_raw_files import CompanyRawFiles
 from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
@@ -84,11 +85,25 @@ def ReleaseCompanyMaterialFiles(
             "UNION SELECT body_hash FROM company_material_dependencies"
         ))
         documents.release(retained)
-        referenced = tuple(
+        referenced = {
             (DecodeCompanyLabel(EVIDENCE_SOURCES, row[0]), row[1])
             for row in formal.run("SELECT source,source_key FROM company_evidence_ref")
-        )
-        ReleaseUnusedCompanyDisclosures(connection, referenced)
+        }
+        if cutoff is not None:
+            referenced.update(_financial_directory_references(connection, cutoff))
+        ReleaseUnusedCompanyDisclosures(connection, tuple(referenced))
+
+
+def _financial_directory_references(connection: SqliteConnection, cutoff: datetime) -> Iterator[tuple[str, str]]:
+    start = cutoff.date() - timedelta(days=365)
+    rows = connection.run(
+        "SELECT d.source,d.source_key,d.title FROM disclosures d "
+        "WHERE d.kind='announcement' AND d.body_retained=0 AND d.source IN ('cninfo','sse','szse','bse') "
+        "AND d.published_at BETWEEN ? AND ? "
+        "AND (SELECT COUNT(*) FROM disclosure_codes c WHERE c.disclosure_id=d.id)=1",
+        (start.isoformat(), cutoff.isoformat()),
+    )
+    return ((row[0], row[1]) for row in rows if IsCompanyFinancialDirectoryEvidence(row[2]))
 
 
 def _release_obsolete(

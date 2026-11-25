@@ -28,7 +28,9 @@ from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
-from trader.download.infra.company_financial_publication import CompanyFinancialReportValue, ReadCompanyFinancialSourceProofs
+from trader.download.infra.company_financial_publication import (
+    CompanyFinancialReportValue, ReadCompanyFinancialIssuerEvidence, ReadCompanyFinancialSourceProofs,
+)
 from trader.download.application.company_financial_producer import CompanyFinancialProducer
 from trader.download.application.company_sync import RunCompanySyncRound
 from trader.download.domain.company_sync import CompanySyncBudget, CompanySyncFamily, CompanySyncRoundScope
@@ -190,17 +192,24 @@ def AuditCompanyFinancialAdoption(
                     raise TimeoutError("company_financial_adoption_deadline_exceeded")
                 original = originals.get((cell.code, cell.period))
                 current = next((fact.latest_financial for fact in facts if fact.code == cell.code), None)
-                proofs = ReadCompanyFinancialSourceProofs(raw, formal, original, current, observed_at) if original is not None else ()
+                issuer = ReadCompanyFinancialIssuerEvidence(raw, formal, current, observed_at, identity.extraction_hash) if (
+                    current is not None and current.report_date == cell.period
+                    and identity is not None and identity.published_at <= observed_at
+                ) else None
+                proofs = issuer.completed_fields if issuer is not None else ()
+                if issuer is None and original is not None:
+                    proofs = ReadCompanyFinancialSourceProofs(raw, formal, original, current, observed_at)
                 proof = next((proof for proof in proofs if proof.field == cell.field), None)
                 material = raw.run(
                     "SELECT d.record_hash,e.payload_hash FROM disclosures d JOIN document_extractions e "
-                    "ON e.disclosure_id=d.id AND e.record_hash=d.record_hash WHERE d.source='cninfo' AND d.source_key=?",
-                    (cell.source_key,),
+                    "ON e.disclosure_id=d.id AND e.record_hash=d.record_hash WHERE d.source=? AND d.source_key=?",
+                    (issuer.source if issuer is not None else "cninfo", cell.source_key),
                 ).fetchone()
                 actual = CompanyFinancialReportValue(current, cell.field) if current is not None else None
+                disclosed = current if issuer is not None else original
                 matched = (proof is not None and proof.state == cell.state and actual == cell.value
-                           and cell.source_key in proof.source_keys and original is not None
-                           and original.published_at == cell.disclosed_at and material is not None
+                           and cell.source_key in proof.source_keys and disclosed is not None and disclosed.report_date == cell.period
+                           and disclosed.published_at == cell.disclosed_at and material is not None
                            and material[0] == cell.record_hash and material[1] == bytes.fromhex(cell.pdf_hash))
                 observations.append({"code": cell.code, "field": cell.field, "value": actual,
                                      "state": proof.state if proof is not None else "unproved", "matched": matched,

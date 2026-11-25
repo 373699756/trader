@@ -88,6 +88,17 @@ def ReadCompanyFinancialObservations(
     return tuple(result)
 
 
+def ReadCompanyFinancialObservation(
+    connection: SqliteConnection, code: str, report_date: date, record_hash: str,
+) -> CompanyFinancialSourceObservation | None:
+    """Locate the precise supplier row named by an input receipt."""
+    row = connection.run(
+        "SELECT * FROM company_financial_observation WHERE code=? AND report_date=? AND record_hash=?",
+        (code, report_date.isoformat(), record_hash),
+    ).fetchone()
+    return _decode(row) if row is not None else None
+
+
 def ReadRoundCompanyFinancialObservations(
     connection: SqliteConnection,
     scope: str,
@@ -272,7 +283,7 @@ def _decode(row: Row) -> CompanyFinancialSourceObservation:
 
 __all__ = [
     "COMPANY_FINANCIAL_SCORING_POLICY_PREFIX", "CompanyFinancialScoringSourceKey",
-    "COMPANY_FINANCIAL_OBSERVATIONS_SCHEMA", "WriteCompanyFinancialObservations", "ReadCompanyFinancialObservations",
+    "COMPANY_FINANCIAL_OBSERVATIONS_SCHEMA", "WriteCompanyFinancialObservations", "ReadCompanyFinancialObservation", "ReadCompanyFinancialObservations",
     "ReadRoundCompanyFinancialObservations", "ReadRoundLatestCompanyFinancialObservations", "ReadRoundCompanyFinancialBatch",
     "ReadCommittedCompanyFinancialReports", "ReadCompanyFinancialScoringObservations", "ReadCompanyFinancialScoringScopeObservations",
     "CountCompanyFinancialScoringObservations",
