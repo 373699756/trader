@@ -67,6 +67,26 @@ class SQLiteCompanyMaterialIndex:
         self._event_policy, self._sqlite_policy, self._cancel_requested = event_policy, sqlite_policy, cancel_requested
         self._io_budget = io_budget
 
+    def pending_registered_documents(self, codes: tuple[str, ...], cutoff: datetime) -> int:
+        """Count the frozen population's registered single-issuer notices awaiting analysis."""
+        window = ((cutoff.date() - timedelta(days=365)).isoformat(), cutoff.isoformat())
+        total = 0
+        with self._session(self.path, SqliteConnectionOptions(read_only=True),
+            sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection):
+            for offset in range(0, len(codes), 512):
+                batch = codes[offset : offset + 512]
+                slots = ",".join("?" for _ in batch)
+                row = connection.run(f"""
+                    SELECT COUNT(*) FROM company_document_requirements required
+                    JOIN disclosures d ON d.id=required.disclosure_id
+                    JOIN disclosure_codes c ON c.disclosure_id=d.id
+                    WHERE d.source='cninfo' AND d.kind='announcement' AND d.body_checked=0
+                      AND d.published_at BETWEEN ? AND ? AND c.code IN ({slots})
+                      AND (SELECT COUNT(*) FROM disclosure_codes AS members WHERE members.disclosure_id=d.id)=1
+                    """, (*window, *batch)).require_one()
+                total += int(row[0])
+        return total
+
     @contextmanager
     def _session(self, path: Path, options: SqliteConnectionOptions | None = None, *,
         sqlite_policy: SqliteIoPolicy, cancel_requested: Callable[[], bool] | None = None) -> Iterator[SqliteConnection]:

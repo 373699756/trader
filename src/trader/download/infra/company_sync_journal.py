@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
+from trader.download.application.company_round_progress import CompanyRequestProgress
 from trader.download.application.company_sync import CompanyDirectoryResponseReceipt
 from trader.download.infra.company_disclosure_source import CNINFO_DIRECTORY_URL
 from trader.download.infra.company_sync_io import CompanySyncIoBudget
@@ -76,14 +77,31 @@ class SQLiteCompanySyncRoundJournal:
     """
 
     def __init__(
-        self, path: Path, *, sqlite_policy: SqliteIoPolicy,
-        publication_identity: Callable[[], str], io_budget: CompanySyncIoBudget | None = None,
+        self,
+        path: Path,
+        *,
+        sqlite_policy: SqliteIoPolicy,
+        publication_identity: Callable[[], str],
+        io_budget: CompanySyncIoBudget | None = None,
+        observe_requests: Callable[[CompanyRequestProgress], None] | None = None,
     ) -> None:
         self.path = path
         self._io_budget = io_budget
         self._sqlite_policy = sqlite_policy
         self._publication_identity = publication_identity
+        self._observe_requests = observe_requests
+        self._latest_request_progress: CompanyRequestProgress | None = None
         self._executing: tuple[str, CompanySyncFamily, int] | None = None
+
+    @property
+    def executing_step(self) -> tuple[str, CompanySyncFamily, int] | None:
+        """Identify a newly started durable intent while it executes."""
+        return self._executing
+
+    def _report_requests(self, progress: CompanyRequestProgress | None) -> None:
+        if progress is not None and self._observe_requests is not None and progress != self._latest_request_progress:
+            self._latest_request_progress = progress
+            self._observe_requests(progress)
 
     @contextmanager
     def _session(self, path: Path, options: SqliteConnectionOptions | None = None, *,
@@ -121,30 +139,48 @@ class SQLiteCompanySyncRoundJournal:
         if type(max_source_calls) is not int or not 0 <= max_source_calls <= 2048:
             raise ValueError("company_sync_source_budget_invalid")
         round_id = CompanySyncRoundIdentity(scope, plans)
-        with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
-            active = connection.run("SELECT round_id,max_source_calls FROM company_sync_round WHERE active=1").fetchone()
-            if active is not None:
-                if (active[0], active[1]) != (round_id, max_source_calls):
-                    raise ValueError("company_sync_active_scope_must_resume")
-                for plan in plans:
-                    if plan.refresh_on_input_change:
-                        connection.run("INSERT OR IGNORE INTO company_sync_local_plan VALUES(?,?,?,?)",
-                            (round_id, plan.family.value, plan.request_hash, json.dumps(plan.qualification_gaps)))
-                        connection.run("UPDATE company_sync_plan SET request_hash=?,gaps=? WHERE round_id=? AND family=? AND refresh_on_input_change=1",
-                            (plan.request_hash, json.dumps(plan.qualification_gaps), round_id, plan.family.value))
-                return round_id
-            old = connection.run("SELECT 1 FROM company_sync_round WHERE round_id=?", (round_id,)).fetchone()
-            if old is not None:
-                raise ValueError("company_sync_closed_scope_cannot_restart")
-            connection.run("INSERT INTO company_sync_round VALUES(?,?,?,1)", (round_id, scope.cutoff.isoformat(), max_source_calls))
-            connection.run_many("INSERT INTO company_sync_code VALUES(?,?)", ((round_id, code) for code in scope.codes))
-            connection.run_many("INSERT INTO company_sync_plan VALUES(?,?,?,?,?,?)", (
-                (round_id, plan.family.value, position, plan.request_hash, json.dumps(plan.qualification_gaps), int(plan.refresh_on_input_change)) for position, plan in enumerate(plans)
-            ))
-            connection.run_many("INSERT INTO company_sync_local_plan VALUES(?,?,?,?)", (
-                (round_id, plan.family.value, plan.request_hash, json.dumps(plan.qualification_gaps)) for plan in plans if plan.refresh_on_input_change
-            ))
+        progress = self._latest_request_progress
+        with (
+            self._session(self.path, sqlite_policy=self._sqlite_policy) as connection,
+            SqliteTransaction(connection, immediate=True) as transaction,
+        ):
+            self._begin(connection, round_id, scope, plans, max_source_calls)
+            if self._observe_requests is not None and (progress is None or progress.round_id != round_id):
+                progress = _read_request_progress(connection, round_id)
+            transaction.commit()
+            self._report_requests(progress)
         return round_id
+
+    @staticmethod
+    def _begin(
+        connection: SqliteConnection,
+        round_id: str,
+        scope: CompanySyncRoundScope,
+        plans: tuple[CompanySyncPhasePlan, ...],
+        limit: int,
+    ) -> None:
+        current = connection.run("SELECT round_id,max_source_calls FROM company_sync_round WHERE active=1").fetchone()
+        if current is not None:
+            if (current[0], current[1]) != (round_id, limit):
+                raise ValueError("company_sync_active_scope_must_resume")
+            for plan in plans:
+                if plan.refresh_on_input_change:
+                    connection.run("INSERT OR IGNORE INTO company_sync_local_plan VALUES(?,?,?,?)",
+                        (round_id, plan.family.value, plan.request_hash, json.dumps(plan.qualification_gaps)))
+                    connection.run("UPDATE company_sync_plan SET request_hash=?,gaps=? WHERE round_id=? AND family=? AND refresh_on_input_change=1",
+                        (plan.request_hash, json.dumps(plan.qualification_gaps), round_id, plan.family.value))
+            return
+        old = connection.run("SELECT 1 FROM company_sync_round WHERE round_id=?", (round_id,)).fetchone()
+        if old is not None:
+            raise ValueError("company_sync_closed_scope_cannot_restart")
+        connection.run("INSERT INTO company_sync_round VALUES(?,?,?,1)", (round_id, scope.cutoff.isoformat(), limit))
+        connection.run_many("INSERT INTO company_sync_code VALUES(?,?)", ((round_id, code) for code in scope.codes))
+        connection.run_many("INSERT INTO company_sync_plan VALUES(?,?,?,?,?,?)", (
+            (round_id, plan.family.value, position, plan.request_hash, json.dumps(plan.qualification_gaps), int(plan.refresh_on_input_change)) for position, plan in enumerate(plans)
+        ))
+        connection.run_many("INSERT INTO company_sync_local_plan VALUES(?,?,?,?)", (
+            (round_id, plan.family.value, plan.request_hash, json.dumps(plan.qualification_gaps)) for plan in plans if plan.refresh_on_input_change
+        ))
 
     def finish_refresh(self, round_id: str) -> None:
         """Explicitly release a terminated round; unknown requests require reconciliation."""
@@ -295,12 +331,17 @@ class SQLiteCompanySyncRoundJournal:
         if executing is None:
             raise ValueError("company_sync_request_outside_source_step")
         round_id, family, step = executing
-        with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
+        progress = self._latest_request_progress
+        with (
+            self._session(self.path, sqlite_policy=self._sqlite_policy) as connection,
+            SqliteTransaction(connection, immediate=True) as transaction,
+        ):
             row = connection.run("SELECT source_required,complete,state_hash FROM company_sync_step WHERE round_id=? AND family=? AND step=?", (round_id, family.value, step)).require_one()
             if not row[0] or row[1]:
                 raise ValueError("company_sync_request_outside_source_step")
             maximum = connection.run("SELECT max_source_calls FROM company_sync_round WHERE round_id=? AND active=1", (round_id,)).require_one()[0]
-            if _source_calls(connection, round_id) >= maximum:
+            used = _source_calls(connection, round_id)
+            if used >= maximum:
                 raise CompanySyncSourceBudgetExceeded("company_sync_source_budget_exhausted")
             request_hash = _request_hash(request.method, request.url, request.body)
             host = urlsplit(request.url).hostname or ""
@@ -313,9 +354,18 @@ class SQLiteCompanySyncRoundJournal:
                     """, (family.value, host, request_hash, row[2])).fetchone()
                 if unsettled is not None:
                     raise CompanySyncUnresolvedDirectoryRequest("previous_directory_attempt_unconfirmed")
+            if self._observe_requests is not None and (
+                progress is None or progress.round_id != round_id or progress.used != used
+            ):
+                progress = _read_request_progress(connection, round_id)
             connection.run("""INSERT INTO company_sync_request(round_id,family,step,request_hash,host,method)
                 VALUES(?,?,?,?,?,?)""", (round_id, family.value, step,
                 request_hash, host, request.method))
+            # The journal owns the one running attempt. Project the committed
+            # reservation before the I/O context checks its deadline again.
+            transaction.commit()
+            if progress is not None:
+                self._report_requests(replace(progress, used=used + 1, unknown=progress.unknown + 1))
 
     def retain_directory_response(self, request: HttpRequest, response: HttpResponse) -> None:
         """Save only the complete response bound to the current reserved directory request."""
@@ -358,19 +408,26 @@ class SQLiteCompanySyncRoundJournal:
         if _read_directory_receipt(self._directory_response_path, check=check) != receipt:
             raise ValueError("company_directory_recovery_receipt_changed")
         family = CompanySyncFamily.ANNOUNCEMENTS.value
-        with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
+        with (
+            self._session(self.path, sqlite_policy=self._sqlite_policy) as connection,
+            SqliteTransaction(connection, immediate=True) as transaction,
+        ):
             recovered_step = _directory_recovery_step(connection, receipt)
             if recovered_step is None:
                 raise ValueError("company_directory_recovery_intent_changed")
+            was_complete, was_observed = recovered_step
             connection.run("""UPDATE company_sync_request SET observed=1,status=200
                 WHERE attempt=? AND round_id=?""", (receipt.attempt, receipt.round_id))
-            if recovered_step:
+            if was_complete:
                 audit_gap = f"{_DIRECTORY_RECOVERY_GAP_PREFIX}{receipt.step}"
                 recovery_hash = CanonicalDigest((receipt.request_hash, receipt.state_hash, hashlib.sha256(receipt.response_content).hexdigest()))
                 connection.run("""INSERT INTO company_sync_step(round_id,family,step,state_hash,source_required)
                     VALUES(?,?,?,?,0)""", (receipt.round_id, family, receipt.step + 1, recovery_hash))
                 result = replace(result, gaps=(*result.gaps, audit_gap))
             self._finish(connection, receipt.round_id, family, result)
+            progress = self._after_observation(connection, receipt.round_id, newly_observed=not was_observed)
+            transaction.commit()
+            self._report_requests(progress)
         self._executing = None
 
     def observe_attempt(self, attempt: HttpAttempt) -> None:
@@ -378,11 +435,27 @@ class SQLiteCompanySyncRoundJournal:
         if executing is None:
             raise ValueError("company_sync_attempt_outside_source_step")
         round_id, family, step = executing
-        with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
+        with (
+            self._session(self.path, sqlite_policy=self._sqlite_policy) as connection,
+            SqliteTransaction(connection, immediate=True) as transaction,
+        ):
             row = connection.run("SELECT attempt,host,method FROM company_sync_request WHERE round_id=? AND family=? AND step=? AND observed=0 ORDER BY attempt DESC LIMIT 1", (round_id, family.value, step)).fetchone()
             if row is None or (row[1], row[2]) != (attempt.host, attempt.method):
                 raise ValueError("company_sync_attempt_identity_mismatch")
             connection.run("UPDATE company_sync_request SET observed=1,status=?,failure=? WHERE attempt=?", (attempt.status_code, attempt.failure[:160], row[0]))
+            progress = self._after_observation(connection, round_id, newly_observed=True)
+            transaction.commit()
+            self._report_requests(progress)
+
+    def _after_observation(
+        self, connection: SqliteConnection, round_id: str, *, newly_observed: bool,
+    ) -> CompanyRequestProgress | None:
+        if self._observe_requests is None:
+            return None
+        progress = self._latest_request_progress
+        if progress is None or progress.round_id != round_id or newly_observed and not progress.unknown:
+            return _read_request_progress(connection, round_id)
+        return replace(progress, unknown=progress.unknown - 1) if newly_observed else progress
 
     def publication_identity(self) -> str:
         return self._publication_identity()
@@ -424,8 +497,10 @@ def _read_directory_receipt(
         return None
 
 
-def _directory_recovery_step(connection: SqliteConnection, receipt: CompanyDirectoryResponseReceipt) -> bool | None:
-    row = connection.run("""SELECT s.complete FROM company_sync_request r
+def _directory_recovery_step(
+    connection: SqliteConnection, receipt: CompanyDirectoryResponseReceipt,
+) -> tuple[bool, bool] | None:
+    row = connection.run("""SELECT s.complete,r.observed FROM company_sync_request r
         JOIN company_sync_step s USING(round_id,family,step) JOIN company_sync_round active USING(round_id)
         WHERE r.round_id=? AND r.family='announcements' AND r.step=? AND r.attempt=? AND r.request_hash=?
           AND s.state_hash=? AND s.source_required=1 AND active.active=1
@@ -439,7 +514,16 @@ def _directory_recovery_step(connection: SqliteConnection, receipt: CompanyDirec
           AND NOT EXISTS(SELECT 1 FROM company_sync_step pending WHERE pending.round_id=r.round_id
               AND pending.complete=0 AND (pending.family!='announcements' OR pending.step!=s.step))""",
         (receipt.round_id, receipt.step, receipt.attempt, receipt.request_hash, receipt.state_hash, _DIRECTORY_HOST)).fetchone()
-    return None if row is None else bool(row[0])
+    return None if row is None else (bool(row[0]), bool(row[1]))
+
+
+def _read_request_progress(connection: SqliteConnection, round_id: str) -> CompanyRequestProgress:
+    limit, used, unknown = connection.run("""
+        SELECT rounds.max_source_calls,COUNT(requests.attempt),COUNT(CASE WHEN requests.observed=0 THEN 1 END)
+        FROM company_sync_round rounds LEFT JOIN company_sync_request requests USING(round_id)
+        WHERE rounds.round_id=? GROUP BY rounds.round_id,rounds.max_source_calls
+        """, (round_id,)).require_one()
+    return CompanyRequestProgress(round_id, limit, used, unknown)
 
 
 def _source_calls(connection: SqliteConnection, round_id: str) -> int:

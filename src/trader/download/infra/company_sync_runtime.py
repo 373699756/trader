@@ -25,7 +25,8 @@ from trader.download.domain.company_field_results import CompanyFieldConclusion
 from trader.download.domain.company_normalization import ApplyCompanyFinancialAdmission
 from trader.download.domain.company_source_records import CompanyFinancialSourceObservation
 from trader.download.domain.company_sync import (
-    CompanySyncBudget, CompanySyncFamily, CompanySyncFamilyResult, CompanySyncInterrupted, CompanySyncPhasePlan, CompanySyncPhaseState,
+    CompanySourceDownloadProgress, CompanySyncBudget, CompanySyncFamily, CompanySyncFamilyResult, CompanySyncPauseReason,
+    CompanySyncInterrupted, CompanySyncPhasePlan, CompanySyncPhaseState,
     CompanySyncRebuildActiveRound, CompanySyncRoundResult, CompanySyncRoundScope, CompanySyncStepResult, CompanySourceCancelled,
 )
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
@@ -67,6 +68,7 @@ class CompanySyncRuntime:
         wall_clock: Callable[[], datetime] | None = None,
         observe_scope: Callable[[CompanySyncRoundScope], None] | None = None,
         observe: Callable[[CompanySyncFamilyResult], None] | None = None,
+        observe_download: Callable[[CompanySourceDownloadProgress], None] | None = None,
         activity: Callable[[CompanySyncFamily], AbstractContextManager[None]] | None = None,
         source_ready: Callable[[], bool] | None = None,
         admit_observations: bool = False,
@@ -87,6 +89,7 @@ class CompanySyncRuntime:
         self._wall_clock = wall_clock
         self._observe_scope = observe_scope
         self._observe = observe
+        self._observe_download = observe_download
         self._activity = activity
         self._source_ready = source_ready
         self._admit_observations = admit_observations
@@ -171,7 +174,16 @@ class CompanySyncRuntime:
             if isinstance(exc, CompanySourceCancelled) and not cancel_requested() and monotonic() < budget.deadline:
                 raise
             scope = self._execution_scope if self._execution_scope is not None else CompanySyncRoundScope(codes, cutoff)
-            return CompanySyncRoundResult(self._execution_round_id, scope, (), cancel_requested(), not cancel_requested(), "")
+            return self._stopped(self._execution_round_id, scope, budget, cancel_requested, monotonic)
+
+    @staticmethod
+    def _stopped(
+        round_id: str, scope: CompanySyncRoundScope, budget: CompanySyncBudget,
+        cancel_requested: Callable[[], bool], monotonic: Callable[[], float],
+    ) -> CompanySyncRoundResult:
+        cancelled = cancel_requested()
+        reason: CompanySyncPauseReason | None = "deadline" if not cancelled and monotonic() >= budget.deadline else None
+        return CompanySyncRoundResult(round_id, scope, (), cancelled, not cancelled, "", pause_reason=reason)
 
     def _run(
         self, codes: tuple[str, ...], cutoff: datetime, budget: CompanySyncBudget, *,
@@ -179,7 +191,7 @@ class CompanySyncRuntime:
         financial_query: StructuredCompanyQuery | None = None, new_refresh: bool = True,
     ) -> CompanySyncRoundResult:
         if cancel_requested() or monotonic() >= budget.deadline:
-            return CompanySyncRoundResult("", CompanySyncRoundScope(codes, cutoff), (), cancel_requested(), not cancel_requested(), "")
+            return self._stopped("", CompanySyncRoundScope(codes, cutoff), budget, cancel_requested, monotonic)
         requested_scope = CompanySyncRoundScope(codes, cutoff)
         active = self.journal.active()
         exhausted_same_day = active is not None and cutoff.astimezone(active.scope.cutoff.tzinfo).date() == active.scope.cutoff.date() and (
@@ -223,14 +235,20 @@ class CompanySyncRuntime:
         announcements = CompanyAnnouncementProducer(self.inputs, self.material, self._official_source, scope,
             sqlite_policy=self._sqlite_policy, extraction_hash=self.facts.extraction_hash, io_budget=self._io_budget,
             current_codes=eligible_codes, configuration=self._document_configuration, policies=self._document_policies,
-            wall_clock=self._wall_clock, admit_observations=self._admit_observations)
+            wall_clock=self._wall_clock, admit_observations=self._admit_observations, observe_download=self._observe_download)
         producers: tuple[CompanySyncProducer, ...] = (
             CompanyFinancialProducer(self.normalized, self._financial_source, query, qualification_gaps=(
-                "latest_financial_population_unverified", "financial_first_disclosure_revision_unverified"), current_codes=eligible_codes),
-            CompanyRatioProducer(self.inputs, self._ratio_source, StructuredCompanyQuery("pledge", scope.cutoff.date() - timedelta(days=365), scope.cutoff.date()), current_codes=eligible_codes),
-            CompanyRatioProducer(self.inputs, self._ratio_source, StructuredCompanyQuery("unlock", scope.cutoff.date(), scope.cutoff.date() + timedelta(days=min(180, self._event_policy.unlock_days))), current_codes=eligible_codes),
+                "latest_financial_population_unverified", "financial_first_disclosure_revision_unverified"),
+                current_codes=eligible_codes, observe_download=self._observe_download),
+            CompanyRatioProducer(self.inputs, self._ratio_source,
+                StructuredCompanyQuery("pledge", scope.cutoff.date() - timedelta(days=365), scope.cutoff.date()),
+                current_codes=eligible_codes, observe_download=self._observe_download),
+            CompanyRatioProducer(self.inputs, self._ratio_source,
+                StructuredCompanyQuery("unlock", scope.cutoff.date(), scope.cutoff.date() + timedelta(days=min(180, self._event_policy.unlock_days))),
+                current_codes=eligible_codes, observe_download=self._observe_download),
             announcements,
-            CompanyAnnualIncomeProducer(self.inputs, self._annual_source, annual_facts, current_codes=eligible_codes),
+            CompanyAnnualIncomeProducer(self.inputs, self._annual_source, annual_facts,
+                current_codes=eligible_codes, observe_download=self._observe_download),
             *retired_news,
             fields,
         )
@@ -249,7 +267,7 @@ class CompanySyncRuntime:
                 activity=self._activity, recover_directory=announcements.recover_directory)
             if recovered:
                 if budget.max_steps == 1:
-                    return CompanySyncRoundResult(round_id, scope, (), False, True, "")
+                    return CompanySyncRoundResult(round_id, scope, (), False, True, "", pause_reason="step_limit")
                 budget = replace(budget, max_steps=budget.max_steps - 1)
             pending = self.journal.outstanding(round_id, CompanySyncFamily.FIELDS)
             if pending is None:
@@ -259,7 +277,7 @@ class CompanySyncRuntime:
                 try:
                     prepared = fields.advance(scope, cancel_requested=cancel_requested, deadline=budget.deadline)
                 except CompanySyncInterrupted:
-                    return CompanySyncRoundResult(round_id, scope, (), cancel_requested(), not cancel_requested(), "")
+                    return self._stopped(round_id, scope, budget, cancel_requested, monotonic)
                 self.journal.finish(round_id, CompanySyncFamily.FIELDS, replace(prepared, processed_scope_complete=False, can_continue=True, deferred=True))
                 self.inputs.complete_task(scope.identity, "fields", preflight_task, prepared.accepted_inputs or 0, CanonicalDigest((prepared.changed_codes, fields.plan)))
             if self._observe is not None:
@@ -268,14 +286,15 @@ class CompanySyncRuntime:
                     self._observe(confirmed)
             if budget.max_steps == 1:
                 current = self.journal.family(round_id, CompanySyncFamily.FIELDS)
-                return CompanySyncRoundResult(round_id, scope, (current,) if current is not None else (), False, True, "")
+                return CompanySyncRoundResult(round_id, scope, (current,) if current is not None else (), False, True, "",
+                    pause_reason="step_limit")
             budget = replace(budget, max_steps=budget.max_steps - 1)
         try:
             result = RunCompanySyncRound(self.journal, producers, scope, budget, monotonic=monotonic,
                 cancel_requested=cancel_requested, observe=self._observe, activity=self._activity,
                 recover_directory=announcements.recover_directory, source_ready=self._source_ready)
         except CompanySyncInterrupted:
-            return CompanySyncRoundResult(round_id, scope, (), cancel_requested(), not cancel_requested(), "")
+            return self._stopped(round_id, scope, budget, cancel_requested, monotonic)
         if population_gaps:
             result = replace(result, families=tuple(replace(item, result=replace(item.result,
                 gaps=item.result.gaps + tuple(gap for gap in population_gaps if gap not in item.result.gaps))) for item in result.families))

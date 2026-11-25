@@ -5,12 +5,14 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from trader.download.infra.company_sync_io import CompanySyncIoBudget
 from trader.download.infra.company_source_schema import COMPANY_SOURCE_SCHEMA
 from trader.download.domain.company_annual_income import CompanyAnnualIncome, CompanyAnnualIncomeRequest
 from trader.download.domain.company_evidence import CompanyInputValidationFailure, CompanyRatio, StructuredCompanyPage, StructuredCompanyQuery
+from trader.download.domain.company_sync import CompanyStructuredDownloadProgress, CompanySyncFamily
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema, SqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction,
@@ -54,16 +56,41 @@ class SQLiteCompanySyncInputStore:
                 EnsureSqliteSchema(connection, COMPANY_SOURCE_SCHEMA, exact=True)
 
     def ratio_cursor(self, scope: str, query: StructuredCompanyQuery, cutoff: datetime) -> StructuredCompanyQuery | None:
-        _query(query, cutoff)
-        with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
-            row = connection.run("SELECT MAX(page),pages,total,SUM(raw_count) FROM company_source_page WHERE scope=? AND component=?", (scope, query.component)).require_one()
-        if row[0] is None:
+        component = _query(query, cutoff)
+        progress = self.ratio_download_progress(scope, component)
+        if progress is None:
             return StructuredCompanyQuery(query.component, query.start, query.end)
-        if row[0] == row[1]:
-            if row[2] != row[3]:
+        if progress.accepted_pages == progress.expected_pages:
+            if progress.accepted_rows != progress.expected_rows:
                 raise ValueError("company_ratio_source_count_mismatch")
             return None
-        return StructuredCompanyQuery(query.component, query.start, query.end, row[0] + 1, row[2], row[3])
+        return StructuredCompanyQuery(
+            component=query.component,
+            start=query.start,
+            end=query.end,
+            page=progress.accepted_pages + 1,
+            expected_rows=progress.expected_rows,
+            received_rows=progress.accepted_rows,
+        )
+
+    def ratio_download_progress(
+        self, scope: str, component: Literal["pledge", "unlock"],
+    ) -> CompanyStructuredDownloadProgress | None:
+        """Read the exact persisted supplier page prefix for one fixed scope."""
+        with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
+            row = connection.run(
+                "SELECT MAX(page),pages,total,SUM(raw_count) FROM company_source_page WHERE scope=? AND component=?",
+                (scope, component),
+            ).require_one()
+        if row[0] is None:
+            return None
+        return CompanyStructuredDownloadProgress(
+            family=CompanySyncFamily(component),
+            accepted_pages=row[0],
+            expected_pages=row[1],
+            accepted_rows=row[3],
+            expected_rows=row[2],
+        )
 
     def pledge_day(self, scope: str) -> date | None:
         with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
@@ -203,12 +230,14 @@ class SQLiteCompanySyncInputStore:
             ))
 
 
-def _query(query: StructuredCompanyQuery, cutoff: datetime) -> None:
+def _query(query: StructuredCompanyQuery, cutoff: datetime) -> Literal["pledge", "unlock"]:
     today = cutoff.astimezone(ZoneInfo("Asia/Shanghai")).date()
-    if (query.component not in {"pledge", "unlock"} or query.start < today - timedelta(days=365)
-        or query.component == "pledge" and query.end > today
-        or query.component == "unlock" and (query.start < today or query.end > today + timedelta(days=180))):
+    component = query.component
+    if (component != "pledge" and component != "unlock" or query.start < today - timedelta(days=365)
+        or component == "pledge" and query.end > today
+        or component == "unlock" and (query.start < today or query.end > today + timedelta(days=180))):
         raise ValueError("company_ratio_source_query_invalid")
+    return component
 
 
 def _annual_task(request: CompanyAnnualIncomeRequest) -> str:

@@ -6,8 +6,18 @@ from dataclasses import dataclass, replace
 from typing import Protocol
 
 from trader.download.domain.company_sync import (
-    CompanySyncBudget,CompanySyncFamily,CompanySyncFamilyResult,CompanySyncPhasePlan,CompanySyncPhaseState,
-    CompanySyncRoundResult,CompanySyncRoundScope,CompanySyncSourceBudgetExceeded,CompanySyncStepResult,CompanySyncInterrupted,CompanySourceCancelled,
+    CompanySourceCancelled,
+    CompanySyncBudget,
+    CompanySyncFamily,
+    CompanySyncFamilyResult,
+    CompanySyncInterrupted,
+    CompanySyncPauseReason,
+    CompanySyncPhasePlan,
+    CompanySyncPhaseState,
+    CompanySyncRoundResult,
+    CompanySyncRoundScope,
+    CompanySyncSourceBudgetExceeded,
+    CompanySyncStepResult,
     CompanySyncUnresolvedDirectoryRequest,
 )
 from trader.download.domain.company_evidence import CompanyInputValidationFailure, CompanySourceFailure
@@ -100,7 +110,7 @@ def RunCompanySyncRound(
     )
     steps = int(recovered_directory)
     stopped=False
-    exhausted=False
+    pause_reason: CompanySyncPauseReason | None = None
     pending_family = journal.outstanding_family(round_id)
     ordered_producers = sorted(producers, key=lambda producer: producer.plan.family not in _RECOMMENDATION_FAMILIES)
     progress = tuple(_FamilyProgress(producer) for producer in ordered_producers)
@@ -123,8 +133,9 @@ def RunCompanySyncRound(
                 continue
             if item.deferred or item.steps>=budget.steps_per_family:
                 continue
-            if cancel_requested() or monotonic()>=budget.deadline:
-                exhausted=not cancel_requested()
+            cancelled = cancel_requested()
+            if cancelled or monotonic()>=budget.deadline:
+                pause_reason = None if cancelled else "deadline"
                 stopped=True
                 break
             current=journal.family(round_id,family)
@@ -133,10 +144,11 @@ def RunCompanySyncRound(
             refresh=(current is not None and producer.plan.refresh_on_input_change
                 and journal.completed_state(round_id,family)!=producer.state(scope))
             if current is not None and not current.result.can_continue and not refresh and family is not pending_family:
-                exhausted=exhausted or "source_budget_exhausted" in current.result.gaps
+                if "source_budget_exhausted" in current.result.gaps:
+                    pause_reason = "request_limit"
                 continue
             if steps>=budget.max_steps:
-                exhausted=True
+                pause_reason = "step_limit"
                 stopped=True
                 break
             state=producer.state(scope)
@@ -150,13 +162,13 @@ def RunCompanySyncRound(
             else:
                 source_budget_exhausted = state.source_required and journal.source_calls(round_id) >= budget.max_source_calls
                 if outstanding is None and state.source_required and not source_budget_exhausted and source_ready is not None and not source_ready():
-                    exhausted = True
+                    if pause_reason is None:
+                        pause_reason = "source_window"
                     item.deferred = True
                     continue
                 if outstanding is None:
                     journal.start(round_id,family,state)
                 if source_budget_exhausted:
-                    exhausted=True
                     result=CompanySyncStepResult(False,False,gaps=("source_budget_exhausted",))
                 else:
                     try:
@@ -164,10 +176,11 @@ def RunCompanySyncRound(
                             result=_invoke_step(producer,scope,budget,monotonic,cancel_requested)
                     except CompanySyncInterrupted:
                         item.result=_interrupted_family(item.result,producer.plan,state.source_required)
-                        exhausted=not cancel_requested()
+                        pause_reason = None if cancel_requested() else "deadline"
                         stopped=True
                         break
-                    exhausted=exhausted or "source_budget_exhausted" in result.gaps
+                if "source_budget_exhausted" in result.gaps:
+                    pause_reason = "request_limit"
             steps+=1
             item.steps+=1
             advanced=True
@@ -193,7 +206,16 @@ def RunCompanySyncRound(
     publication="" if cancel_requested() or monotonic()>=budget.deadline else journal.publication_identity()
     ordered_results=tuple(sorted((item.result for item in progress if item.result is not None),
         key=lambda result:tuple(CompanySyncFamily).index(result.family)))
-    return CompanySyncRoundResult(round_id,scope,ordered_results,cancel_requested(),exhausted,publication)
+    cancelled = cancel_requested()
+    return CompanySyncRoundResult(
+        round_id=round_id,
+        scope=scope,
+        families=ordered_results,
+        cancelled=cancelled,
+        budget_exhausted=pause_reason is not None,
+        publication_hash=publication,
+        pause_reason=None if cancelled else pause_reason,
+    )
 
 
 def _with_plan_gaps(result:CompanySyncStepResult,plan:CompanySyncPhasePlan)->CompanySyncStepResult:

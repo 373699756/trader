@@ -17,8 +17,13 @@ from trader.download.domain.company_evidence import (
     CompanyOperationResult, CompanyPublicationProgress, CompanyRecoveryDecision, CompanyStockProgress,
     DisclosurePartition, StructuredCompanyQuery,
 )
+from trader.download.domain.company_sync import (
+    CompanySyncFamily,
+    CompanySyncPauseReason,
+    CompanySyncRoundResult,
+    CompanySyncStepResult,
+)
 from trader.download.domain.download_failure import DownloadFailureObservation, DownloadFailureRecord
-from trader.download.domain.company_sync import CompanySyncRoundResult
 from trader.infra.progress_format import ShortProgressText
 
 _SOURCES = {"cninfo": "巨潮", "eastmoney": "东财", "eastmoney_news": "东财", "local": "本地"}
@@ -39,6 +44,12 @@ _ACTIONS = {
     "annual_income": "年度营收", "news": "新闻获取",
 }
 _SUMMARY_FAMILIES = {"announcements": "公告", "fields": "字段核验"}
+_PAUSE_EXPLANATIONS: dict[CompanySyncPauseReason, str] = {
+    "deadline": "达到公司轮次时限",
+    "step_limit": "达到本次调度总步数上限",
+    "request_limit": "固定轮次的来源请求额度已用完",
+    "source_window": "来源派发窗口已结束，剩余时间留给确认和本地处理",
+}
 _SUMMARY_FAILURES = {
     "preparation_ReferenceDatabaseIncompatibleError": "ST资格及交易日历参考库结构不兼容",
     "preparation_AkshareCalendarTimeoutError": "交易日历准备超时",
@@ -76,6 +87,14 @@ _ROUND_REASON_EXPLANATIONS = {
     "request_counts_unconfirmed": "步骤中断，终态请求数待核",
     "source_budget_exhausted": "本轮来源请求额度已用完",
     "step_interrupted": "本次步骤中断，沿原回执续传",
+    "company_round_page_number_mismatch": "财务返回的页码与请求不符",
+    "company_round_total_changed": "财务分页总数变化",
+    "company_round_observation_time_mismatch": "财务观察时点与固定轮次不符",
+    "company_round_notice_outside_window": "财务披露日期超出本轮窗口",
+    "cninfo_partition_changed": "巨潮目录返回总数变化",
+    "cninfo_page_truncated": "巨潮目录返回页截断",
+    "cninfo_page_count_inconsistent": "巨潮目录分页计数不一致",
+    "cninfo_duplicate_page_links": "巨潮目录出现重复公告链接",
     "supplier_input_rejected": "来源返回内容未通过校验，具体原因见错误码",
     "population_members_became_ineligible": "原轮次中部分股票已不符合当前资格",
     "new_population_members_wait_for_refresh": "新增合格股票等待下一轮次",
@@ -94,19 +113,29 @@ def ExplainCompanyRoundReason(code: str) -> str | None:
     return _ROUND_REASON_EXPLANATIONS.get(code)
 
 
+def ExplainCompanySyncPause(reason: CompanySyncPauseReason | None) -> str:
+    """Describe the exact guard that prevented further work, when recorded."""
+    return _PAUSE_EXPLANATIONS[reason] if reason is not None else "本轮暂停原因未核对"
+
+
 def FormatCompanySyncSummary(result: SyncResult, state: ProgressState) -> str:
     """Summarize an explicit company command without projecting internal JSON."""
-    status = "采集结束（新闻为辅助资料）" if state == "采集结束" else state
-    heading = f"公司同步：{status}"
+    status: str = "采集结束（新闻为辅助资料）" if state == "采集结束" else state
     task = next((item for item in result.tasks if item.task == "company"), None)
     company = task.company if task is not None else None
     if company is None:
+        heading = f"公司同步：{status}"
         reason = result.failure or (task.reason if task is not None else None)
         if reason is None:
             return heading
         return f"{heading}\n原因：{_summary_failure(reason)}。"
 
-    lines = [f"{heading}，范围 {len(company.scope.codes):,} 股"]
+    if state == "暂停" or company.pause_reason is not None:
+        status = f"{status}（{ExplainCompanySyncPause(company.pause_reason)}）"
+    heading = f"公司同步：{status}，范围 {len(company.scope.codes):,} 股"
+    if state == "暂停" and company.round_id:
+        heading += "，断点已保留"
+    lines = [heading, _source_summary(company), _formal_summary(company)]
     failures: list[str] = []
     pending: list[str] = []
     for family in company.families:
@@ -121,12 +150,50 @@ def FormatCompanySyncSummary(result: SyncResult, state: ProgressState) -> str:
                 pending.append(label)
     if failures:
         lines.append("异常：" + "。".join(failures) + "。")
-    if state == "暂停":
-        lines.append("已到本轮时限或工作上限，已有断点保留。")
     if pending and not result.cancelled:
         lines.append("待处理：" + "、".join(pending) + "。")
     lines.append(_request_totals(company))
     return "\n".join(lines)
+
+
+def _source_summary(company: CompanySyncRoundResult) -> str:
+    steps = {
+        family.family: family.result for family in company.families
+        if family.family not in {CompanySyncFamily.FIELDS, CompanySyncFamily.NEWS}
+    }
+    if not steps:
+        return "来源库：本轮采集状态未核对。"
+    sources = (
+        f"{_SUMMARY_FAMILIES.get(family.value, _LABELS[family.value])}{_source_status(steps.get(family))}"
+        for family in company.scope.families if family not in {CompanySyncFamily.FIELDS, CompanySyncFamily.NEWS}
+    )
+    return "来源库：" + "、".join(sources) + "。"
+
+
+def _source_status(step: CompanySyncStepResult | None) -> str:
+    if step is None:
+        return "未核对"
+    if step.failure in {"source_attempt_unconfirmed", "previous_directory_attempt_unconfirmed"}:
+        return "原请求待核"
+    if step.failure is not None:
+        return "有异常"
+    if "source_budget_exhausted" in step.gaps:
+        return "请求额度用尽"
+    if step.processed_scope_complete:
+        if "population_members_became_ineligible" in step.gaps:
+            return "部分股票资格已变化"
+        if "announcement_required_material_not_fully_verified" in step.gaps:
+            return "必要材料待核"
+        return "采集处理结束"
+    return "待续传" if step.can_continue else "采集待核"
+
+
+def _formal_summary(company: CompanySyncRoundResult) -> str:
+    if company.business_complete:
+        return "正式库：本轮资料已核实。"
+    if company.publication_hash:
+        return "正式库：已确认发布，业务资料仍有缺口。"
+    return "正式库：本轮发布状态未核对。"
 
 
 def _summary_failure(code: str) -> str:
@@ -536,4 +603,9 @@ def _state(value: CompanyDataState | None) -> str:
     }[value]
 
 
-__all__ = ["CompanyResultFeedback", "ExplainCompanyRoundReason", "FormatCompanySyncSummary"]
+__all__ = [
+    "CompanyResultFeedback",
+    "ExplainCompanyRoundReason",
+    "ExplainCompanySyncPause",
+    "FormatCompanySyncSummary",
+]

@@ -115,6 +115,9 @@ def test_formal_event_value_absence_is_independent_of_pending_proof_status(tmp_p
     fields_coverage = totals.coverage.other_fields
     assert fields_coverage.pending == fields_coverage.applicable == 2
     assert fields_coverage.missing_values == 1
+    actual_counts, purpose_counts = totals.coverage.other_field_counts
+    assert actual_counts[0] == "actual_pct" and actual_counts[1].pending == 1 and actual_counts[1].missing_values == 0
+    assert purpose_counts[0] == "repurchase_purpose" and purpose_counts[1].pending == purpose_counts[1].missing_values == 1
 
 
 def _receipts(index, *, ordinary_only=False):
@@ -215,6 +218,9 @@ def test_reduction_fields_publish_with_risk_facts_and_reuse_without_reading_body
     assert scoped is not None and scoped.coverage is not None
     assert scoped.coverage.reduction_fields.applicable == scoped.coverage.reduction_fields.verified == 3
     assert scoped.coverage.reduction_fields.not_applicable == 1
+    counts = dict(scoped.coverage.reduction_field_counts)
+    assert {name for name, field_counts in counts.items() if field_counts.verified} == verified
+    assert counts["completion_disclosed_at"].applicable == 0 and counts["completion_disclosed_at"].not_applicable == 1
     assert scoped.coverage.other_fields.applicable == 0
     assert all(proof.source_key == document.disclosure.identity for item in fields for proof in item.evidence)
     valid = _receipts(index, ordinary_only=True)

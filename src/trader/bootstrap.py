@@ -22,7 +22,6 @@ from flask import Flask
 
 from trader.download.application.company_exclusions import PublishCompanyExclusions
 from trader.download.application.company_financial_producer import BuildCompanyFinancialRoundQuery
-from trader.download.application.company_round_progress import CompanyFieldOutcomeCounts
 from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.application.history_ports import HistorySyncDependencies
 from trader.download.application.prepare_reference import PrepareReference, ReferencePreparationDependencies, ReferencePreparationSources
@@ -30,7 +29,7 @@ from trader.download.application.progress_message import ProgressMessage
 from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.sync_data import SyncData, SyncResult, SyncTarget
-from trader.download.domain.company_sync import CompanySyncFamily, CompanySyncFamilyResult, CompanySyncRoundResult, CompanySyncRoundScope
+from trader.download.domain.company_sync import CompanySyncRoundResult, CompanySyncRoundScope
 from trader.download.domain import company_evidence, company_events
 from trader.download.domain.current_industry import CurrentIndustrySnapshot
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
@@ -1335,8 +1334,10 @@ def ExecuteCompanySync(
 
     def paused() -> CompanySyncRoundResult:
         cancelled = cancel_requested()
-        result = CompanySyncRoundResult("", CompanySyncRoundScope(codes, cutoff), (), cancelled, not cancelled, "")
-        progress.finish(result)
+        deadline_reached = not cancelled and time.monotonic() >= deadline
+        result = CompanySyncRoundResult("", CompanySyncRoundScope(codes, cutoff), (), cancelled, not cancelled, "",
+            pause_reason="deadline" if deadline_reached else None)
+        progress.finish(result, time_limit_seconds=configuration.round_timeout_seconds)
         return result
 
     def stopped() -> bool:
@@ -1352,7 +1353,7 @@ def ExecuteCompanySync(
         reader = company_facts_reader.SQLiteCompanyEvidenceReader(formal_path, event_policy=event_policy,
             sqlite_policy=sqlite_policy, io_budget=io_budget)
         journal = SQLiteCompanySyncRoundJournal(paths.company_sync, sqlite_policy=sqlite_policy,
-                                               publication_identity=reader.publication_identity, io_budget=io_budget)
+            publication_identity=reader.publication_identity, io_budget=io_budget, observe_requests=progress.observe_requests)
         documents = CompanyDocumentFiles(paths.company_documents,
             max_text_characters=configuration.extended_document_limits.max_text_characters,
             max_bytes=configuration.temporary_text_capacity_bytes, reserve_bytes=configuration.temporary_disk_reserve_bytes)
@@ -1408,51 +1409,22 @@ def ExecuteCompanySync(
             pacer=CompanyRequestPacer(configuration.request_interval_seconds, time.monotonic, time.sleep, stopped),
             text_reserve_bytes=configuration.text_task_reserve_bytes, ocr_reserve_bytes=configuration.ocr_task_reserve_bytes)
 
-        def read_counts(selected: CompanySyncRoundScope) -> CompanyFieldOutcomeCounts | None:
-            if stopped():
-                return None
-            try:
-                return reader.read_field_counts(codes=selected.codes, as_of=selected.cutoff, cancel_requested=stopped)
-            except InterruptedError:
-                if not stopped():
-                    raise
-                return None
-            except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
-                logging.getLogger(__name__).warning("公司正式字段计数不可用 category=%s", type(exc).__name__)
-                return None
-
-        initial_scope: CompanySyncRoundScope | None = None
-        initial_fields: CompanyFieldOutcomeCounts | None = None
-        last_coverage_hash = ""
-        next_coverage_check = 0.0
-
-        def observe_scope(scope: CompanySyncRoundScope) -> None:
-            nonlocal initial_scope, initial_fields, last_coverage_hash, next_coverage_check
-            initial_scope = scope
-            initial_fields = read_counts(scope)
-            last_coverage_hash = initial_fields.publication_hash if initial_fields is not None else ""
-            next_coverage_check = time.monotonic() + 30.0
-            progress.report_coverage("本轮开始", initial_fields)
-
-        def observe_family(family: CompanySyncFamilyResult) -> None:
-            nonlocal last_coverage_hash, next_coverage_check
-            progress.advance(family)
-            now = time.monotonic()
-            if (initial_scope is None or family.family is not CompanySyncFamily.FIELDS
-                or not family.result.changed_codes or now < next_coverage_check):
-                return
-            next_coverage_check = now + 30.0
-            current = read_counts(initial_scope)
-            if current is not None and current.publication_hash != last_coverage_hash:
-                last_coverage_hash = current.publication_hash
-                progress.report_coverage("同步中", current)
-
+        progress.configure_snapshots(
+            stopped=stopped,
+            read_fields=lambda selected: reader.read_field_counts(
+                codes=selected.codes, as_of=selected.cutoff, cancel_requested=stopped),
+            read_financial=lambda selected: normalized.financial_batch(
+                BuildCompanyFinancialRoundQuery(selected.cutoff), selected.codes, selected.cutoff),
+            read_ratio=inputs.ratio_download_progress,
+            read_pending=lambda selected: material.pending_registered_documents(selected.codes, selected.cutoff),
+        )
         runtime = CompanySyncRuntime(normalized, facts, material, journal, inputs=inputs,
             event_policy=event_policy, sqlite_policy=sqlite_policy, read_document=read_document,
             financial_source=structured, ratio_source=structured, annual_source=structured,
             official_source=official, io_budget=io_budget,
             document_configuration=configuration, document_policies=policies, wall_clock=ShanghaiClock(_utc_now).now,
-            observe_scope=observe_scope, observe=observe_family, activity=progress.activity,
+            observe_scope=progress.begin_scope, observe=progress.observe_family, activity=progress.activity,
+            observe_download=lambda event: progress.download(event, journal.executing_step),
             source_ready=lambda: time.monotonic() < source_deadline, admit_observations=admit_observations)
         budget = CompanySyncBudget(configuration.round_step_limit, configuration.round_request_limit,
             min(256, configuration.round_step_limit), deadline)
@@ -1461,16 +1433,5 @@ def ExecuteCompanySync(
             result = runtime.run(codes, cutoff, budget, cancel_requested=cancel_requested, monotonic=time.monotonic)
         except CompanySyncInterrupted:
             return paused()
-        fields = read_counts(result.scope) if result.publication_hash else None
-        if not stopped() and any(item.family is CompanySyncFamily.FINANCIAL for item in result.families):
-            query = BuildCompanyFinancialRoundQuery(result.scope.cutoff)
-            try:
-                financial = normalized.financial_batch(query, result.scope.codes, result.scope.cutoff)
-            except CompanySyncInterrupted:
-                pass
-            except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
-                logging.getLogger(__name__).warning("公司财务批量观察计数不可用 category=%s", type(exc).__name__)
-            else:
-                progress.set_financial_batch(financial)
-        progress.finish(result, fields=fields, previous=initial_fields if result.scope == initial_scope else None)
+        progress.finish(result, time_limit_seconds=configuration.round_timeout_seconds)
         return result

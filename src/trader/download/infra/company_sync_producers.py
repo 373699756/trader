@@ -18,6 +18,9 @@ from trader.download.domain.company_evidence import (
 )
 from datetime import datetime
 from trader.download.domain.company_sync import (
+    CompanyDisclosureDownloadProgress, CompanyDocumentDownloadProgress, CompanyDocumentDownloadTarget,
+    CompanyDownloadIssue, CompanyDownloadOperation, CompanyPledgeSnapshotProgress,
+    CompanySourceDownloadProgress, CompanyStructuredDownloadProgress,
     CompanySyncFamily, CompanySyncPhasePlan, CompanySyncPhaseState, CompanySyncRoundScope, CompanySyncStepResult,
 )
 from trader.download.domain.company_unlock_notice import IsCompanyUnlockListingNotice, IsCompanyUnlockListingRevision
@@ -37,11 +40,20 @@ from trader.infra.sqlite_policy import SqliteIoPolicy
 
 
 class CompanyRatioProducer:
-    def __init__(self, inputs: SQLiteCompanySyncInputStore, source: CompanyRatioSource, query: StructuredCompanyQuery, *, current_codes: tuple[str, ...] | None = None) -> None:
+    def __init__(
+        self,
+        inputs: SQLiteCompanySyncInputStore,
+        source: CompanyRatioSource,
+        query: StructuredCompanyQuery,
+        *,
+        current_codes: tuple[str, ...] | None = None,
+        observe_download: Callable[[CompanySourceDownloadProgress], None] | None = None,
+    ) -> None:
         if query.component not in {"pledge", "unlock"}:
             raise ValueError("company_ratio_producer_component_invalid")
         self._inputs, self._source, self._query = inputs, source, query
         self._current_codes = current_codes
+        self._observe_download = observe_download
         self._plan = CompanySyncPhasePlan(CompanySyncFamily(query.component), CanonicalDigest(query), (
             f"{query.component}_total_share_denominator_unverified", f"{query.component}_population_coverage_unverified",
         ))
@@ -63,14 +75,28 @@ class CompanyRatioProducer:
             return CompanySyncStepResult(True, False, gaps=("population_members_became_ineligible",), pending_count=None)
         day = self._inputs.pledge_day(scope.identity) if self._query.component == "pledge" else None
         if self._query.component == "pledge" and day is None:
+            if self._observe_download is not None:
+                self._observe_download(CompanyDownloadOperation(self._plan.family, "pledge_snapshot", self._query))
             day = self._source.pledge_day(scope.cutoff)
             self._inputs.freeze_pledge_day(scope.identity, day, scope.cutoff)
+            if self._observe_download is not None:
+                self._observe_download(CompanyPledgeSnapshotProgress(day))
             return CompanySyncStepResult(False, True, accepted_inputs=1, source_calls=1)
         query = replace(self._query, start=day, end=day) if day is not None else self._query
         cursor = self._inputs.ratio_cursor(scope.identity, query, scope.cutoff)
         if cursor is not None:
+            if self._observe_download is not None:
+                self._observe_download(CompanyDownloadOperation(self._plan.family, "structured_page", cursor))
             page = self._source.fetch(cursor, observed_at=scope.cutoff)
             self._inputs.accept_ratios(scope.identity, cursor, page, scope.cutoff, eligible_codes=self._current_codes)
+            if self._observe_download is not None:
+                self._observe_download(CompanyStructuredDownloadProgress(
+                    family=self._plan.family,
+                    accepted_pages=page.page,
+                    expected_pages=page.pages,
+                    accepted_rows=cursor.received_rows + page.row_count,
+                    expected_rows=page.total,
+                ))
             return CompanySyncStepResult(False, True, accepted_inputs=len(page.ratios), source_calls=1)
         # These decoded values lack a proven total-share denominator and
         # absence/coverage contract. Retain them as observations, not facts.
@@ -115,13 +141,16 @@ class CompanyAnnouncementProducer:
         source: CompanyOfficialDocumentSource, scope: CompanySyncRoundScope, *, sqlite_policy: SqliteIoPolicy, extraction_hash: bytes,
         io_budget: CompanySyncIoBudget | None = None, current_codes: tuple[str, ...] | None = None,
         configuration: CompanySyncConfiguration | None = None, policies: CompanyDocumentPolicies | None = None,
-        wall_clock: Callable[[], datetime] | None = None, admit_observations: bool = False) -> None:
+        wall_clock: Callable[[], datetime] | None = None, admit_observations: bool = False,
+        observe_download: Callable[[CompanySourceDownloadProgress], None] | None = None,
+    ) -> None:
         self._inputs, self._material, self._source, self._sqlite_policy = inputs, material, source, sqlite_policy
         self._extraction_hash = extraction_hash
         self._current_codes = scope.codes if current_codes is None else current_codes
         self._io_budget = io_budget
         self._configuration, self._policies, self._wall_clock = configuration, policies, wall_clock
         self._admit_observations = admit_observations
+        self._observe_download = observe_download
         markets = tuple(sorted({EvidenceMarket(code) for code in scope.codes}))
         self._partitions = tuple(DisclosurePartition(market, start, end)
             for start, end in ((scope.cutoff.date(), scope.cutoff.date()),
@@ -143,6 +172,10 @@ class CompanyAnnouncementProducer:
     @property
     def plan(self) -> CompanySyncPhasePlan:
         return self._plan
+
+    def _emit_download(self, progress: CompanySourceDownloadProgress) -> None:
+        if self._observe_download is not None:
+            self._observe_download(progress)
 
     def _initialized(self, scope: CompanySyncRoundScope) -> bool:
         return self._inputs.task_done(scope.identity, "announcements", "initialize")
@@ -268,8 +301,14 @@ class CompanyAnnouncementProducer:
             or not any(EvidenceMarket(code) == partition.market for code in self._current_codes)
         ):
             return None
+        self._emit_download(CompanyDownloadOperation(self._plan.family, "announcement_recover", partition))
         if not self._material.recover_directory_page(partition, page, scope.cutoff, receipt.state_hash):
             return None
+        if self._observe_download is not None:
+            # The saved request carries the page number but only the material
+            # index knows the accepted prefix of an intermediate recovered page.
+            accepted_rows = page.total if not page.has_more else len(page.rows) if partition.page == 1 else None
+            self._observe_download(CompanyDisclosureDownloadProgress(partition, "recovered", accepted_rows, page.total))
         return CompanySyncStepResult(False, True, accepted_inputs=len(page.rows))
 
     def advance(self, scope: CompanySyncRoundScope, *, cancel_requested: Callable[[], bool], deadline: float) -> CompanySyncStepResult:
@@ -292,25 +331,36 @@ class CompanyAnnouncementProducer:
             if not any(EvidenceMarket(code) == partition.market for code in self._current_codes):
                 self._inputs.complete_task(scope.identity, "announcements", "ineligible_partition:" + CanonicalDigest(partition), 0, CanonicalDigest(("ineligible", partition)))
                 return CompanySyncStepResult(False, True, gaps=("population_members_became_ineligible",))
+            operation = CompanyDownloadOperation(self._plan.family, "announcement_page", partition)
+            self._emit_download(operation)
             page = self._source.fetch(partition, order="desc")
             if partition.query is None and self._material.disclosure_queries(partition) == ():
                 self._material.commit_query_coverage(partition, page, scope.cutoff)
+                self._emit_download(CompanyDisclosureDownloadProgress(partition, "reconciled", page.total, page.total))
                 return CompanySyncStepResult(False, True, source_calls=1)
             if page.total > 100 * partition.page_size:
                 self._refine_partition(partition, scope)
+                self._emit_download(CompanyDownloadIssue(
+                    operation, "cninfo_partition_split_page_limit", material_accepted=False, action="split",
+                ))
+                self._emit_download(CompanyDisclosureDownloadProgress(partition, "split", None, page.total))
                 return CompanySyncStepResult(False, True, source_calls=1)
-            else:
-                try:
-                    self._material.commit_page(partition, page, scope.cutoff)
-                except CompanyInputValidationFailure as exc:
-                    if str(exc) not in {
-                        "cninfo_partition_changed", "cninfo_page_truncated", "cninfo_page_count_inconsistent", "cninfo_duplicate_page_links",
-                    }:
-                        raise
-                    # A drifting broad range cannot establish coverage. Refine
-                    # its durable owner instead of repeating the rejected page.
-                    self._refine_partition(partition, scope)
-                    return CompanySyncStepResult(False, True, source_calls=1)
+            try:
+                self._material.commit_page(partition, page, scope.cutoff)
+            except CompanyInputValidationFailure as exc:
+                if str(exc) not in {
+                    "cninfo_partition_changed", "cninfo_page_truncated", "cninfo_page_count_inconsistent", "cninfo_duplicate_page_links",
+                }:
+                    raise
+                # A drifting broad range cannot establish coverage. Refine
+                # its durable owner instead of repeating the rejected page.
+                self._refine_partition(partition, scope)
+                self._emit_download(CompanyDownloadIssue(operation, str(exc), material_accepted=False, action="split"))
+                self._emit_download(CompanyDisclosureDownloadProgress(partition, "split", None, page.total))
+                return CompanySyncStepResult(False, True, source_calls=1)
+            self._emit_download(CompanyDisclosureDownloadProgress(
+                partition, "accepted", partition.received_rows + len(page.rows), page.total,
+            ))
             return CompanySyncStepResult(False, True, len(page.rows), 1)
         document = work
         if document is None:
@@ -318,11 +368,18 @@ class CompanyAnnouncementProducer:
         if document.disclosure.codes[0] not in self._current_codes:
             self._inputs.complete_task(scope.identity, "announcements", "ineligible_document:" + _required_identity(document), 0, _required_identity(document))
             return CompanySyncStepResult(False, True, gaps=("population_members_became_ineligible",))
-        called = not self._source.document_ready(document.disclosure)
+        item = document.disclosure
+        target = CompanyDocumentDownloadTarget(item.codes[0], item.source, item.identity)
+        called = not self._source.document_ready(item)
+        operation = CompanyDownloadOperation(self._plan.family, "document_extract", target, route="standard")
         try:
             if called:
-                self._source.download_document(document.disclosure, attempt_limit=1)
-            extraction = self._source.extract_document(document.disclosure)
+                operation = replace(operation, kind="document_download", route=None)
+                self._emit_download(operation)
+                self._download_document(item, target, recovered=True)
+                operation = replace(operation, kind="document_extract", route="standard")
+            self._emit_download(operation)
+            extraction = self._source.extract_document(item)
         except CompanyDocumentFailure as exc:
             assert self._configuration is not None and self._policies is not None and self._wall_clock is not None
             transient = next((transient for failure, _route, transient in CompanyDocumentFailureRules() if failure == exc.reason), False)
@@ -330,24 +387,43 @@ class CompanyAnnouncementProducer:
             attempted_at = self._wall_clock()
             if attempted_at.utcoffset() is None:
                 raise ValueError("company_document_retry_clock_invalid") from exc
-            self._material.document_failure(document.disclosure, self._policies.standard, exc.reason, attempted_at,
-                attempted_at + timedelta(seconds=delay), payload_hash=exc.payload_hash, diagnostic=exc.diagnostic)
+            retry_at = attempted_at + timedelta(seconds=delay)
+            self._material.document_failure(item, self._policies.standard, exc.reason, attempted_at,
+                retry_at, payload_hash=exc.payload_hash, diagnostic=exc.diagnostic)
+            self._emit_download(CompanyDownloadIssue(
+                operation, exc.reason, material_accepted=False, action="defer", retry_at=retry_at,
+            ))
             return CompanySyncStepResult(False, False, failure=exc.reason, gaps=("required_original_recovery_failed",))
         except CompanyRawCapacityError:
+            self._emit_download(CompanyDownloadIssue(
+                operation, "company_raw_capacity_unavailable", material_accepted=False, action="stop",
+            ))
             return CompanySyncStepResult(False, False, gaps=("company_raw_capacity_unavailable",), pending_count=None)
         if extraction.payload_hash != document.payload_hash or hashlib.sha256(extraction.text.encode()).digest() != document.body_hash:
             self._inputs.complete_task(scope.identity, "announcements", "document:" + _required_identity(document), 0, CanonicalDigest(extraction.payload_hash.hex()))
+            self._emit_download(CompanyDownloadIssue(
+                operation, "required_original_hash_mismatch", material_accepted=False, action="stop",
+            ))
             return CompanySyncStepResult(False, False, gaps=("required_original_hash_mismatch",), failure="required_original_hash_mismatch")
         try:
-            accepted = self._material.recover_required_text(document.disclosure.identity, extraction.text, scope.cutoff)
+            accepted = self._material.recover_required_text(item.identity, extraction.text, scope.cutoff)
         except CompanyRawCapacityError:
+            self._emit_download(CompanyDownloadIssue(
+                operation, "company_raw_capacity_unavailable", material_accepted=False, action="stop",
+            ))
             return CompanySyncStepResult(False, False, gaps=("company_raw_capacity_unavailable",), pending_count=None)
         if not accepted:
+            self._emit_download(CompanyDownloadIssue(
+                operation, "required_original_not_accepted", material_accepted=False, action="stop",
+            ))
             return CompanySyncStepResult(False, False, gaps=("required_original_not_accepted",), failure="required_original_not_accepted")
-        self._inputs.record_recovered(scope.identity, CompanyRecoveredInput(document.disclosure.codes[0], document.disclosure.source,
-            document.disclosure.identity, document.disclosure.digest, document.body_hash))
+        self._inputs.record_recovered(scope.identity, CompanyRecoveredInput(target.code, target.source,
+            target.official_id, item.digest, document.body_hash))
         self._inputs.complete_task(scope.identity, "announcements", "document:" + _required_identity(document), 1,
             CanonicalDigest((_required_identity(document), extraction.payload_hash.hex())))
+        self._emit_download(CompanyDocumentDownloadProgress(
+            code=target.code, source=target.source, reused=not called, recovered=True, official_id=target.official_id,
+        ))
         return CompanySyncStepResult(False, True, 1, int(called))
 
     def _new_document(self, scope: CompanySyncRoundScope, *, risk_only: bool) -> Disclosure | None:
@@ -402,15 +478,24 @@ class CompanyAnnouncementProducer:
         assert self._configuration is not None and self._policies is not None and self._wall_clock is not None
         called = not self._source.document_ready(item)
         key = CanonicalDigest((item, self._policies))
+        target = CompanyDocumentDownloadTarget(item.codes[0], item.source, item.identity)
+        operation = CompanyDownloadOperation(self._plan.family, "document_extract", target, route="standard")
         try:
             if called:
-                self._source.download_document(item, attempt_limit=1)
+                operation = replace(operation, kind="document_download", route=None)
+                self._emit_download(operation)
+                self._download_document(item, target, recovered=False)
+                operation = replace(operation, kind="document_extract", route="standard")
+            self._emit_download(operation)
             try:
                 extraction = self._source.extract_document(item)
             except CompanyDocumentFailure as failure:
                 route = CompanyDocumentRouteForFailure(failure.reason)
                 if route == "standard":
                     raise
+                self._emit_download(CompanyDownloadIssue(operation, failure.reason, material_accepted=False, action="retry"))
+                operation = replace(operation, route=route)
+                self._emit_download(operation)
                 extraction = self._source.extract_document(item, route=route)
             if not self._material.commit_document(item, extraction, scope.cutoff):
                 raise ValueError("company_announcement_material_changed")
@@ -418,15 +503,38 @@ class CompanyAnnouncementProducer:
             transient = next((transient for reason, _route, transient in CompanyDocumentFailureRules() if reason == failure.reason), False)
             delay = self._configuration.document_transient_retry_seconds if transient else self._configuration.document_failure_retry_seconds
             attempted_at = self._wall_clock()
+            retry_at = attempted_at + timedelta(seconds=delay)
             self._material.document_failure(item, self._policies.standard, failure.reason, attempted_at,
-                attempted_at + timedelta(seconds=delay), payload_hash=failure.payload_hash, diagnostic=failure.diagnostic)
+                retry_at, payload_hash=failure.payload_hash, diagnostic=failure.diagnostic)
             self._inputs.complete_task(scope.identity, "new_announcement_document", key, 0, CanonicalDigest(failure.reason))
+            self._emit_download(CompanyDownloadIssue(
+                operation, failure.reason, material_accepted=False, action="defer", retry_at=retry_at,
+            ))
             return CompanySyncStepResult(False, True, source_calls=int(called), gaps=("announcement_document_failed",))
         except CompanyRawCapacityError:
+            self._emit_download(CompanyDownloadIssue(
+                operation, "company_raw_capacity_unavailable", material_accepted=False, action="stop",
+            ))
             return CompanySyncStepResult(False, False, gaps=("company_raw_capacity_unavailable",), pending_count=None)
         self._inputs.complete_task(scope.identity, "new_announcement_document", key, 1,
             CanonicalDigest((extraction.payload_hash.hex(), hashlib.sha256(extraction.text.encode()).hexdigest())))
+        self._emit_download(CompanyDocumentDownloadProgress(
+            code=target.code, source=target.source, reused=not called, recovered=False, official_id=target.official_id,
+        ))
         return CompanySyncStepResult(False, True, accepted_inputs=1, source_calls=int(called))
+
+    def _download_document(
+        self, item: Disclosure, target: CompanyDocumentDownloadTarget, *, recovered: bool,
+    ) -> None:
+        self._source.download_document(item, attempt_limit=1)
+        self._emit_download(CompanyDocumentDownloadProgress(
+            code=target.code,
+            source=target.source,
+            reused=False,
+            recovered=recovered,
+            official_id=target.official_id,
+            state="downloaded",
+        ))
 
 
 __all__ = ["CompanyRatioProducer", "CompanyRetiredNewsProducer", "CompanyAnnouncementProducer"]

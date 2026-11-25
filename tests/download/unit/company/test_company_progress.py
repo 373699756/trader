@@ -9,7 +9,9 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader import bootstrap
-from trader.download.application.company_round_progress import CompanyEventFieldCoverage, CompanyFieldOutcomeCounts, CompanyFormalCoverage
+from trader.download.application.company_round_progress import (
+    CompanyEventFieldCoverage, CompanyFieldOutcomeCounts, CompanyFormalCoverage, CompanyRequestProgress,
+)
 from trader.download.application.sync_data import SyncResult, SyncTaskResult
 from trader.download.application.progress_message import ProgressField, ProgressMessage, ProgressTask
 from trader.download.domain.company_evidence import (
@@ -20,11 +22,14 @@ from trader.download.domain.company_evidence import (
     DisclosureQuery,
     DisclosureSecurity,
     EvidenceSyncProgress,
+    StructuredCompanyQuery,
 )
 from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress, CompanyRoundProgress, ReportCompanyStock
 from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.entrypoints.cli import Main
-from trader.download.domain.company_sync import CompanySyncFamily, CompanySyncFamilyResult, CompanySyncStepResult
+from trader.download.domain.company_sync import (
+    CompanyDownloadOperation, CompanyStructuredDownloadProgress, CompanySyncFamily, CompanySyncFamilyResult, CompanySyncStepResult,
+)
 from trader.download.domain.company_source_records import CompanyFinancialBatchCoverage
 from tests.helpers.download.company_round import CompanySyncFamilyFixture, CompanySyncRoundFixture
 
@@ -63,9 +68,11 @@ def test_company_round_unconfirmed_counts_are_not_none_or_zero():
     assert "统计未核对" in text
 
 
-def test_company_progress_projects_formal_and_event_gaps_during_same_round():
+@pytest.mark.parametrize("paused", (False, True))
+def test_company_progress_projects_formal_and_event_gaps_during_same_round(paused):
     messages = []
-    progress = CompanyRoundProgress(SyncProgress(messages.append, lambda: 0.0), lambda: 0.0)
+    clock = [0.0]
+    progress = CompanyRoundProgress(SyncProgress(messages.append, lambda: clock[0]), lambda: clock[0])
     coverage = CompanyFormalCoverage(
         stocks=4, financial_complete=0, latest_profit_values=1,
         pledge_with_value=0, pledge_without_event=1, unlock_with_event=0, unlock_without_event=1,
@@ -73,28 +80,41 @@ def test_company_progress_projects_formal_and_event_gaps_during_same_round():
         financial_fields=(("basic_eps", 2), ("book_value_per_share", 0), ("revenue_growth_pct", 0),
             ("net_profit_growth_pct", 0), ("core_profit_growth_pct", 0), ("roe_pct", 0),
             ("parent_net_profit", 1), ("core_net_profit", 1)),
-        other_fields=CompanyEventFieldCoverage(2, 1, 1, 1, 3, missing_values=2),
-        reduction_fields=CompanyEventFieldCoverage(0, 0, 0, 0, 0),
+        other_field_counts=(
+            ("actual_pct", CompanyEventFieldCoverage(2, 0, 0, 0, 1)),
+            ("repurchase_purpose", CompanyEventFieldCoverage(0, 1, 1, 1, 2, missing_values=2)),
+        ),
+        reduction_field_counts=(),
     )
     counts = CompanyFieldOutcomeCounts("b" * 64, 2, 1, 1, 1, 3, 0, coverage)
     progress.start(4)
     progress.report_coverage("本轮开始", counts)
+    clock[0] = 30.0
+    counts = replace(counts, publication_hash="c" * 64, coverage=replace(coverage, financial_fields=(
+        ("basic_eps", 3), *coverage.financial_fields[1:],
+    )))
     progress.report_coverage("同步中", counts)
-    result = CompanySyncRoundFixture(_ROUND_AT, families=())
-    progress.finish(result, fields=counts)
+    result = replace(CompanySyncRoundFixture(_ROUND_AT, families=()), publication_hash=counts.publication_hash)
+    clock[0] = 60.0
+    if paused:
+        result = replace(result, budget_exhausted=True, publication_hash="")
+    progress.finish(result, fields=None if paused else counts)
 
     reports = tuple(message for message in messages if message.task.key == "coverage")
     assert len(reports) == 3 and reports[-1].finished
     expected_phases = ("本轮开始", "同步中", "本轮收尾")
-    for message, phase in zip(reports, expected_phases, strict=True):
+    for index, (message, phase) in enumerate(zip(reports, expected_phases, strict=True)):
         header = " | ".join(field.text for field in message.fields)
-        assert phase in header and "正式荐股资料缺口38/44（86.36%）" in header
-        rows = {row.label: " | ".join(field.text for field in row.fields) for row in message.rows}
-        assert "EPS缺2/4（50.00%）" in rows["荐股财务"]
-        assert "已核无质押1股" in rows["荐股风险"] and "部分覆盖1/4（25.00%）" in rows["荐股风险"]
+        assert phase in header and "来源 本地正式公司库" in header
+        assert "正式荐股资料缺口" + ("38/44（86.36%）" if index == 0 else "37/44（84.09%）") in header
+        assert ("以下为00:00:30前已核对的正式快照" in header) is (paused and phase == "本轮收尾")
+        rows = {row.label.removeprefix("正式库·"): " | ".join(field.text for field in row.fields) for row in message.rows}
+        assert ("正式缺2/4（50.00%）" if index == 0 else "正式缺1/4（25.00%）") in rows["EPS"]
+        assert "已核无质押1股" in rows["质押比例"] and "部分覆盖1/4（25.00%）" in rows["公告风险覆盖"]
         assert "无适用项" in rows["减持事件字段"]
         assert "缺值2/5（40.00%）" in rows["其他公告字段"] and "待补证2/5（40.00%）" in rows["其他公告字段"]
         assert "已证未披露1项，不适用3项" in rows["其他公告字段"]
+        assert "缺值2/3（66.67%）" in rows["回购用途"] and "已核有值2项" in rows["回购或增持实际比例"]
 
 
 def test_company_round_financial_observations_do_not_close_qualification_gaps():
@@ -114,14 +134,15 @@ def test_company_round_financial_observations_do_not_close_qualification_gaps():
     family = CompanySyncFamilyFixture(CompanySyncFamily.FINANCIAL, gaps=("latest_financial_population_unverified",))
     progress.finish(CompanySyncRoundFixture(_ROUND_AT, families=(family,)))
 
-    message, = messages
-    text = " | ".join(field.text for field in message.fields)
-    assert message.state == "待补证"
+    source, status = messages
+    text = " | ".join(field.text for field in source.fields)
+    assert status.state == "待补证"
     assert "财务批量页89/89，原始行44498/44498" in text
     assert "财务源观察4403/4403股，最新报表八项有值4367股，归母与扣非同时有值4403股" in text
     assert "EPS缺7股、营收同比缺1股、扣非同比缺18股、ROE缺11股" in text
     assert "已观察财报原始缺值37/35224（0.11%）" in text and "观测报告有缺项36/4403（0.82%）" in text
-    assert "各股最新财报的全量覆盖待核" in text
+    assert any("各股最新财报的全量覆盖待核" in field.text for field in status.fields)
+    assert any(row.label == "来源库·EPS" and "有值4396/4403（99.84%）" in row.fields[-1].text for row in source.rows)
 
 
 @pytest.mark.parametrize("terminal", (False, True))
@@ -146,7 +167,7 @@ def test_company_failure_is_visible_with_exact_gaps_before_progress_throttle(ter
     text = " | ".join(field.text for field in messages[-1].fields)
     assert f"错误 {failure}" in text
     assert "缺口原因 supplier_input_rejected,latest_financial_population_unverified" in text
-    assert "说明 来源返回内容未通过校验" in text
+    assert "来源返回内容未通过校验" in text
     assert "本族请求预算已占用0" in text
 
 
@@ -159,7 +180,7 @@ def test_company_interim_reasons_are_tracked_by_family_and_restored_at_finish():
         gaps=gaps, accepted_inputs=12, source_calls=3)
     pledge = replace(financial, family=CompanySyncFamily.PLEDGE)
 
-    def display(family: CompanySyncFamilyResult, *, elapsed: float = 2.0) -> tuple[str, ...]:
+    def display(family: CompanySyncFamilyResult, *, elapsed: float = 5.0) -> tuple[str, ...]:
         clock[0] += elapsed
         before = len(messages)
         progress.advance(family)
@@ -224,7 +245,7 @@ def test_company_step_heartbeat_repeats_only_progress_and_stops_with_owner(failu
         clock[0] = 8
         progress.heartbeat()
         assert messages[-1].state == "处理中"
-        assert any("当前执行 pledge 已用 00:00:06" in field.text for field in messages[-1].fields)
+        assert any("当前执行 东财质押 已用 00:00:06" in field.text for field in messages[-1].fields)
     clock[0] = 14
     progress.heartbeat()
     assert len(messages) == 4 and messages[-1].state == "等待"
@@ -237,6 +258,30 @@ def test_company_step_heartbeat_repeats_only_progress_and_stops_with_owner(failu
     clock[0] = 40
     progress.heartbeat()
     assert len(messages) == count
+
+
+def test_company_heartbeat_shows_live_page_and_keeps_source_counts_separate_from_the_ledger():
+    messages = []
+    clock = [0.0]
+    progress = SyncProgress(messages.append, lambda: clock[0])
+    report = CompanyRoundProgress(progress, lambda: clock[0])
+    report.start(4)
+    round_id = "a" * 64
+    report.observe_requests(CompanyRequestProgress(round_id, 20, 4, 0))
+    family = CompanySyncFamily.FINANCIAL
+    report.download(CompanyStructuredDownloadProgress(family, 2, 4, 1_000, 2_000), (round_id, family, 2))
+    with report.activity(family):
+        clock[0] = 1
+        day = _ROUND_AT.date()
+        report.download(CompanyDownloadOperation(family, "structured_page", StructuredCompanyQuery("financial", day, day, page=3)),
+            (round_id, family, 3))
+        report.observe_requests(CompanyRequestProgress(round_id, 20, 5, 1))
+        clock[0] = 6
+        progress.heartbeat()
+    heartbeat = " | ".join(field.text for field in messages[-1].fields)
+    assert "第3页 已用 00:00:05" in heartbeat and "东财财务 2/4（50.00%）页" in heartbeat
+    assert "距最近入库 00:00:06" in heartbeat and "本次新增1次" in heartbeat
+    assert "轮次累计5/20次" in heartbeat and "未确认1次" in heartbeat
 
 
 def test_company_finishes_with_measured_execution_and_pinned_field_counts():
@@ -276,7 +321,11 @@ def test_company_finishes_with_measured_execution_and_pinned_field_counts():
         not_applicable=46,
         pending_documents=85,
     ))
-    pledge_done, announcements_done, news_done, fields_done = messages[-4:]
+    terminal = {message.task.key: message for message in messages if message.finished}
+    pledge_done, announcements_done, news_done, fields_done = (
+        terminal[family.value] for family in (CompanySyncFamily.PLEDGE, CompanySyncFamily.ANNOUNCEMENTS,
+            CompanySyncFamily.NEWS, CompanySyncFamily.FIELDS)
+    )
     assert pledge_done.state == "待补证" and "--:--:--" in pledge_done.fields[1].text
     assert any("本次未执行，沿用账本" in item.text for item in pledge_done.fields)
     assert announcements_done.state == "阻塞" and any("source_attempt_unconfirmed" in item.text for item in announcements_done.fields)
@@ -498,7 +547,9 @@ def test_terminal_and_fill_summary_show_pending_units_without_claiming_full_cove
     config = Path(__file__).resolve().parents[4] / "config/runtime.json"
     assert Main(["--config", str(config), "sync", "company", "fill"]) == 1
     assert capsys.readouterr().out.splitlines() == [
-        "公司同步：待继续，范围 4,402 股", "异常：公告：请求超时。",
+        "公司同步：待继续，范围 4,402 股",
+        "来源库：财务采集处理结束、质押采集处理结束、解禁采集处理结束、公告有异常、年度营收采集处理结束。",
+        "正式库：已确认发布，业务资料仍有缺口。", "异常：公告：请求超时。",
         "待处理：公告 26 项、字段核验 3 项。", "请求账本：已占用 0 次，未确认 0 次。",
     ]
 
@@ -528,7 +579,12 @@ def test_cancelled_terminal_and_summary_report_unknown_counts_without_claiming_z
     )
     config = Path(__file__).resolve().parents[4] / "config/runtime.json"
     assert Main(["--config", str(config), "sync", "company"]) == 130
-    assert capsys.readouterr().out.splitlines() == ["公司同步：取消，范围 2 股", "请求账本：本轮总数未核对。"]
+    assert capsys.readouterr().out.splitlines() == [
+        "公司同步：取消，范围 2 股",
+        "来源库：财务采集待核、质押未核对、解禁未核对、公告未核对、年度营收未核对。",
+        "正式库：已确认发布，业务资料仍有缺口。",
+        "请求账本：本轮总数未核对。",
+    ]
 
 
 def test_last_stock_closes_verification_without_claiming_a_publication():

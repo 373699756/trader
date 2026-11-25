@@ -1,12 +1,14 @@
 """Finite company processing and business completeness are different conclusions."""
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from math import isfinite
+from typing import Literal
 from zoneinfo import ZoneInfo
 
-from trader.download.domain.company_evidence import EvidenceMarket, StructuredCompanyQuery
+from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest
+from trader.download.domain.company_evidence import DisclosurePartition, DocumentRoute, EvidenceMarket, StructuredCompanyQuery
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 
 
@@ -21,6 +23,96 @@ class CompanySyncFamily(str,Enum):
 
 
 COMPANY_SYNC_FAMILIES = tuple(family for family in CompanySyncFamily if family is not CompanySyncFamily.NEWS)
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyStructuredDownloadProgress:
+    """Persisted pages and raw supplier rows for a single structured query."""
+
+    family: CompanySyncFamily
+    accepted_pages: int
+    expected_pages: int
+    accepted_rows: int
+    expected_rows: int
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyDisclosureDownloadProgress:
+    """A durable directory action and cumulative rows for its exact partition."""
+
+    partition: DisclosurePartition
+    state: Literal["accepted", "recovered", "split", "reconciled"]
+    accepted_rows: int | None
+    expected_rows: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyDocumentDownloadProgress:
+    """One durable original file or material registration for an announcement."""
+
+    code: str
+    source: str
+    reused: bool
+    recovered: bool
+    official_id: str
+    state: Literal["downloaded", "processed"] = "processed"
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyPledgeSnapshotProgress:
+    """The persisted snapshot date selected for subsequent pledge pages."""
+
+    day: date
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyAnnualIncomeDownloadProgress:
+    """Operating revenue records durably accepted for one request group."""
+
+    request: CompanyAnnualIncomeRequest
+    accepted_rows: int
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyDocumentDownloadTarget:
+    """Public identifiers sufficient to locate an announcement in monitoring."""
+
+    code: str
+    source: str
+    official_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyDownloadOperation:
+    """The source task selected for execution, before inspecting its outcome."""
+
+    family: CompanySyncFamily
+    kind: Literal[
+        "pledge_snapshot", "structured_page", "announcement_page", "announcement_recover",
+        "document_download", "document_extract", "annual_income",
+    ]
+    target: (
+        StructuredCompanyQuery | DisclosurePartition | CompanyDocumentDownloadTarget | CompanyAnnualIncomeRequest | None
+    ) = None
+    route: DocumentRoute | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyDownloadIssue:
+    """A reported source task that requires a new route, deferral or stopping its family."""
+
+    operation: CompanyDownloadOperation
+    code: str
+    material_accepted: bool
+    action: Literal["split", "retry", "defer", "stop"]
+    retry_at: datetime | None = None
+
+
+CompanySourceDownloadProgress = (
+    CompanyStructuredDownloadProgress | CompanyDisclosureDownloadProgress
+    | CompanyDocumentDownloadProgress | CompanyPledgeSnapshotProgress
+    | CompanyAnnualIncomeDownloadProgress | CompanyDownloadOperation | CompanyDownloadIssue
+)
 
 
 @dataclass(frozen=True,slots=True)
@@ -131,6 +223,9 @@ class CompanySyncFamilyResult:
             raise ValueError("company_sync_family_counts_invalid")
 
 
+CompanySyncPauseReason = Literal["deadline", "step_limit", "request_limit", "source_window"]
+
+
 @dataclass(frozen=True,slots=True)
 class CompanySyncRoundResult:
     round_id:str
@@ -139,11 +234,13 @@ class CompanySyncRoundResult:
     cancelled:bool
     budget_exhausted:bool
     publication_hash:str
+    pause_reason: CompanySyncPauseReason | None = None
 
     def __post_init__(self)->None:
         families=tuple(item.family for item in self.families)
         if (families != tuple(family for family in CompanySyncFamily if family in families)
-            or type(self.cancelled) is not bool or type(self.budget_exhausted) is not bool):
+            or type(self.cancelled) is not bool or type(self.budget_exhausted) is not bool
+            or self.pause_reason is not None and (self.cancelled or not self.budget_exhausted)):
             raise ValueError("company_sync_round_result_invalid")
 
     @property

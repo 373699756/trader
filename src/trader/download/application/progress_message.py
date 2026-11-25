@@ -66,6 +66,7 @@ class ProgressMessage:
     rows: tuple[ProgressRow, ...] = ()
     heartbeat_interval_seconds: float = 5.0
     stage_elapsed_seconds: float | Literal["not_run"] | None = None
+    stage_width: int | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -79,6 +80,8 @@ class ProgressMessage:
             type(seconds) not in (int, float) or not math.isfinite(seconds) or seconds < 0
         ):
             raise ValueError("sync_progress_stage_elapsed_invalid")
+        if self.stage_width is not None and (type(self.stage_width) is not int or self.stage_width < 10):
+            raise ValueError("sync_progress_stage_width_invalid")
 
 
 __all__ = [

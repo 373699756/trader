@@ -10,12 +10,13 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 from trader.download.application.company_round_progress import CompanyEventFieldCoverage, CompanyFieldOutcomeCounts, CompanyFormalCoverage
 from trader.download.domain.company_document_links import CompanyDocumentLinkSnapshot
 from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy, RepurchasePurpose
 from trader.download.domain.company_facts import CompanyFacts
-from trader.download.domain.company_field_results import CompanyFieldSnapshot
+from trader.download.domain.company_field_results import CompanyFieldName, CompanyFieldSnapshot
 from trader.download.domain.company_source_records import CompanyFinancialField
 from trader.download.infra.company_document_link_rows import ReadCompanyDocumentLinks
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
@@ -204,7 +205,8 @@ class SQLiteCompanyEvidenceReader:
         horizon = EncodeCompanyDate(as_of.date() + timedelta(days=self._unlock_days))
         cutoff = EncodeCompanyTime(as_of)
         totals = [0] * (9 + len(_FINANCIAL_FIELDS))
-        other_totals, reduction_totals = [0] * 6, [0] * 6
+        other_totals: dict[CompanyFieldName, list[int]] = {}
+        reduction_totals: dict[CompanyFieldName, list[int]] = {}
         for offset in range(0, len(requested), 512):
             check()
             batch = requested[offset : offset + 512]
@@ -253,13 +255,13 @@ class SQLiteCompanyEvidenceReader:
             for index, value in enumerate(row):
                 totals[index] += CompanyInteger(value)
 
-            for row in connection.run(f"""
+            for field_row in connection.run(f"""
                 WITH event_fields AS (
                     SELECT code, event_key, field, state, applicable,
                       field IN ('start_date','end_date','planned_pct','completion_disclosed_at') AS reduction
                     FROM company_field_result WHERE code IN ({slots})
                 )
-                SELECT e.reduction,
+                SELECT e.reduction, e.field,
                   COUNT(CASE WHEN e.state='verified' THEN 1 END),
                   COUNT(CASE WHEN e.state='present_unverified' THEN 1 END),
                   COUNT(CASE WHEN e.applicable=1 AND e.state NOT IN ('verified','present_unverified','not_disclosed') THEN 1 END),
@@ -284,11 +286,14 @@ class SQLiteCompanyEvidenceReader:
                 LEFT JOIN company_reduction_plan plan ON plan.risk_id=r.id
                 LEFT JOIN company_positive_event p ON NOT e.reduction AND p.code=e.code AND p.event_key=e.event_key
                 WHERE COALESCE(r.last_disclosed_at,p.last_disclosed_at)<=?
-                GROUP BY e.reduction
+                GROUP BY e.reduction, e.field
                 """, (*batch, REPURCHASE_PURPOSES[RepurchasePurpose.UNKNOWN], cutoff)):
-                event_totals = reduction_totals if CompanyInteger(row[0]) else other_totals
-                for index, value in enumerate(row[1:]):
-                    event_totals[index] += CompanyInteger(value)
+                totals_by_field = reduction_totals if CompanyInteger(field_row[0]) else other_totals
+                # The validated schema restricts this column to CompanyFieldName.
+                field = cast(CompanyFieldName, field_row[1])
+                field_totals = totals_by_field.setdefault(field, [0] * 6)
+                for index, value in enumerate(field_row[2:]):
+                    field_totals[index] += CompanyInteger(value)
 
         (financial_complete, latest_profit_values, pledge_with_value, pledge_without_event,
          unlock_with_event, unlock_without_event, announcement_complete, announcement_partial,
@@ -305,8 +310,12 @@ class SQLiteCompanyEvidenceReader:
             announcement_partial=announcement_partial,
             verified_risk_stocks=verified_risk_stocks,
             financial_fields=tuple(zip(_FINANCIAL_FIELDS, financial_counts, strict=True)),
-            other_fields=CompanyEventFieldCoverage(*other_totals),
-            reduction_fields=CompanyEventFieldCoverage(*reduction_totals),
+            other_field_counts=tuple(
+                (field, CompanyEventFieldCoverage(*counts)) for field, counts in sorted(other_totals.items())
+            ),
+            reduction_field_counts=tuple(
+                (field, CompanyEventFieldCoverage(*counts)) for field, counts in sorted(reduction_totals.items())
+            ),
         )
 
     def publication_identity(self, *, cancel_requested: Callable[[], bool] | None = None) -> str:

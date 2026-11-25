@@ -9,7 +9,11 @@ from trader.download.application.company_source_ports import CompanyAnnualIncome
 from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest, PlanCompanyAnnualIncome
 from trader.download.domain.company_evidence import CompanyInputValidationFailure, CompanySourceFailure
 from trader.download.domain.company_facts import CompanyFacts
-from trader.download.domain.company_sync import CompanySyncFamily, CompanySyncPhasePlan, CompanySyncPhaseState, CompanySyncRoundScope, CompanySyncStepResult, CompanySyncInterrupted
+from trader.download.domain.company_sync import (
+    CompanyAnnualIncomeDownloadProgress, CompanyDownloadIssue, CompanyDownloadOperation, CompanySourceDownloadProgress,
+    CompanySyncFamily, CompanySyncPhasePlan, CompanySyncPhaseState, CompanySyncRoundScope, CompanySyncStepResult,
+    CompanySyncInterrupted,
+)
 from trader.download.domain.download_failure import DownloadValidationFailure
 from trader.download.infra.company_sync_inputs import SQLiteCompanySyncInputStore
 from trader.infra.serialization.canonical_codec import CanonicalDigest
@@ -31,9 +35,11 @@ class CompanyAnnualIncomeProducer:
         read_facts: Callable[[], tuple[CompanyFacts, ...]],
         *,
         current_codes: tuple[str, ...],
+        observe_download: Callable[[CompanySourceDownloadProgress], None] | None = None,
     ) -> None:
         self._inputs, self._source, self._read_facts = inputs, source, read_facts
         self._current_codes = current_codes
+        self._observe_download = observe_download
         self._plan = CompanySyncPhasePlan(CompanySyncFamily.ANNUAL_INCOME,
             CanonicalDigest(("Eastmoney.F10.NewFinanceAnalysis", "OPERATE_INCOME", 365, 5)), refresh_on_input_change=True)
 
@@ -88,6 +94,9 @@ class CompanyAnnualIncomeProducer:
         if cancel_requested():
             raise CompanySyncInterrupted("company_annual_income_cancelled_before_source")
         self._inputs.begin_annual_request(scope.identity, request)
+        operation = CompanyDownloadOperation(self._plan.family, "annual_income", request)
+        if self._observe_download is not None:
+            self._observe_download(operation)
         try:
             rows = self._source.annual_income(request, observed_at=scope.cutoff)
             if (any(item.code != request.code or item.observed_at != scope.cutoff for item in rows)
@@ -96,10 +105,14 @@ class CompanyAnnualIncomeProducer:
         except (CompanyInputValidationFailure, CompanySourceFailure, DownloadValidationFailure) as exc:
             failure = CompanyFailureCode(exc)
             self._inputs.reject_annual(scope.identity, request, failure)
+            if self._observe_download is not None:
+                self._observe_download(CompanyDownloadIssue(operation, failure, material_accepted=False, action="defer"))
             return CompanySyncStepResult(False, True, source_calls=1, gaps=("annual_income_source_failed",), failure=failure)
         if cancel_requested():
             raise CompanySyncInterrupted("company_annual_income_cancelled_after_source")
         self._inputs.accept_annual(scope.identity, request, rows, scope.cutoff)
+        if self._observe_download is not None:
+            self._observe_download(CompanyAnnualIncomeDownloadProgress(request, len(rows)))
         return CompanySyncStepResult(False, True, accepted_inputs=len(rows), source_calls=1)
 
 

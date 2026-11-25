@@ -2,8 +2,19 @@
 
 from dataclasses import dataclass
 
+from trader.download.domain.company_field_results import CompanyFieldName
 from trader.download.domain.company_source_records import CompanyFinancialField
 from trader.download.domain.company_sync import CompanySyncFamily, CompanySyncFamilyResult
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyRequestProgress:
+    """A committed request-ledger snapshot for one fixed company round."""
+
+    round_id: str
+    limit: int
+    used: int
+    unknown: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +33,19 @@ class CompanyEventFieldCoverage:
         return self.verified + self.present_unverified + self.pending + self.not_disclosed
 
 
+def _sum_event_fields(
+    fields: tuple[tuple[CompanyFieldName, CompanyEventFieldCoverage], ...],
+) -> CompanyEventFieldCoverage:
+    return CompanyEventFieldCoverage(
+        verified=sum(counts.verified for _, counts in fields),
+        present_unverified=sum(counts.present_unverified for _, counts in fields),
+        pending=sum(counts.pending for _, counts in fields),
+        not_disclosed=sum(counts.not_disclosed for _, counts in fields),
+        not_applicable=sum(counts.not_applicable for _, counts in fields),
+        missing_values=sum(counts.missing_values for _, counts in fields),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class CompanyFormalCoverage:
     """Verified company facts within one fixed synchronization population."""
@@ -37,8 +61,16 @@ class CompanyFormalCoverage:
     announcement_partial: int
     verified_risk_stocks: int
     financial_fields: tuple[tuple[CompanyFinancialField, int], ...]
-    other_fields: CompanyEventFieldCoverage
-    reduction_fields: CompanyEventFieldCoverage
+    other_field_counts: tuple[tuple[CompanyFieldName, CompanyEventFieldCoverage], ...]
+    reduction_field_counts: tuple[tuple[CompanyFieldName, CompanyEventFieldCoverage], ...]
+
+    @property
+    def other_fields(self) -> CompanyEventFieldCoverage:
+        return _sum_event_fields(self.other_field_counts)
+
+    @property
+    def reduction_fields(self) -> CompanyEventFieldCoverage:
+        return _sum_event_fields(self.reduction_field_counts)
 
     @property
     def recommendation_expected(self) -> int:
@@ -88,5 +120,6 @@ __all__ = [
     "CompanyEventFieldCoverage",
     "CompanyFieldOutcomeCounts",
     "CompanyFormalCoverage",
+    "CompanyRequestProgress",
     "IsCompanyNewsReference",
 ]

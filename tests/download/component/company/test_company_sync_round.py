@@ -7,19 +7,24 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.helpers.shared.configuration import SqlitePolicyFixture
+from trader.download.application.company_round_progress import CompanyRequestProgress
 from trader.download.application.company_sync import ResumeCompanySyncPendingStep, RunCompanySyncRound
+from trader.download.application.sync_data import SyncResult, SyncTaskResult
 from trader.download.domain.company_sync import (
     CompanySyncBudget, CompanySyncFamily, CompanySyncPhasePlan, CompanySyncPhaseState, CompanySyncRoundScope, CompanySyncStepResult, CompanySyncInterrupted,
-    CompanySyncUnresolvedDirectoryRequest,
+    CompanySyncSourceBudgetExceeded, CompanySyncUnresolvedDirectoryRequest,
 )
+from trader.download.entrypoints.company_result_feedback import FormatCompanySyncSummary
 from trader.download.infra.company_disclosure_source import CNINFO_DIRECTORY_URL
 from trader.download.infra.company_sync_inputs import SQLiteCompanySyncInputStore
+from trader.download.infra.company_sync_io import CompanySyncIoBudget
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
 from trader.download.infra.company_sync_producers import CompanyRetiredNewsProducer
-from trader.infra.http_contracts import HttpRequest, HttpResponse
+from trader.infra.http_contracts import HttpAttempt, HttpRequest, HttpResponse
 from trader.download.domain.company_sync import CompanySourceCancelled
 from trader.infra.http_transport import RequestsHttpTransport
 from trader.infra.serialization.canonical_codec import CanonicalDigest
+from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
 
 
 _SCOPE = CompanySyncRoundScope(("600001",), datetime(2026, 11, 17, tzinfo=ZoneInfo("Asia/Shanghai")))
@@ -142,6 +147,7 @@ def test_unknown_response_acceptance_never_repeats_source_but_later_local_famili
     with transport:
         result = RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: cancelled[0])
     assert result.cancelled and len(physical) == 1
+    assert result.pause_reason is None
     interrupted=result.families[0]
     assert interrupted.source_calls is None and interrupted.unknown_attempts is None
     assert interrupted.accepted_inputs is None and "request_counts_unconfirmed" in interrupted.result.gaps
@@ -160,11 +166,20 @@ def test_fixed_source_budget_exhaustion_still_runs_local_fields_and_does_not_ref
     with transport:
         result = RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: False)
     assert result.budget_exhausted and result.processing_complete and not result.business_complete
+    assert result.pause_reason == "request_limit"
+    assert FormatCompanySyncSummary(SyncResult((SyncTaskResult("company", "pending", company=result),)), "暂停").splitlines() == [
+        "公司同步：暂停（固定轮次的来源请求额度已用完），范围 1 股，断点已保留",
+        "来源库：财务请求额度用尽、质押采集处理结束、解禁采集处理结束、公告采集处理结束、年度营收采集处理结束。",
+        "正式库：已确认发布，业务资料仍有缺口。",
+        "待处理：财务。",
+        "请求账本：已占用 1 次，未确认 0 次。",
+    ]
     assert len(physical) == 1 and "fields" in calls
     journal, producers, budget, physical, calls, transport = _resources(tmp_path, maximum=1)
     with transport:
         result = RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: False)
     assert not physical and journal.source_calls(result.round_id) == 1
+    assert result.pause_reason == "request_limit"
 
 
 def test_source_reserve_does_not_preallocate_next_page_and_keeps_local_work(tmp_path):
@@ -184,6 +199,7 @@ def test_source_reserve_does_not_preallocate_next_page_and_keeps_local_work(tmp_
             cancel_requested=lambda: False, source_ready=lambda: clock[0] < 8,
         )
     assert first.paused and not first.processing_complete
+    assert first.pause_reason == "source_window"
     assert physical == ["https://example.test/1"] and "fields" in calls
     assert journal.source_calls(first.round_id) == 1
     assert journal.outstanding_family(first.round_id) is None
@@ -221,6 +237,7 @@ def test_small_step_allowance_reaches_recommendation_fields_before_optional_inpu
     with transport:
         result = RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: False)
     assert not result.processing_complete and result.budget_exhausted
+    assert result.pause_reason == "step_limit"
     assert len(physical) == 1 and calls == ["pledge", "unlock", "announcements", "fields"]
     assert result.families[-1].family is CompanySyncFamily.FIELDS
     assert result.families[-1].result.processed_scope_complete
@@ -232,6 +249,7 @@ def test_optional_inputs_run_after_core_family_reaches_its_invocation_limit(tmp_
     with transport:
         result = RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: False)
     assert not result.processing_complete and not result.budget_exhausted
+    assert result.pause_reason is None
     assert len(physical) == 1
     assert calls == ["pledge", "unlock", "announcements", "fields", "annual_income"]
 
@@ -456,6 +474,7 @@ def test_source_deadline_marks_counters_unknown_without_post_deadline_sql(tmp_pa
         result = RunCompanySyncRound(journal, producers, _SCOPE, budget,
             monotonic=lambda: clock[0], cancel_requested=lambda: False)
     assert result.budget_exhausted and not result.cancelled and len(physical) == 1
+    assert result.pause_reason == "deadline"
     family, = result.families
     assert family.source_calls is None and family.unknown_attempts is None
     assert family.accepted_inputs is None and not family.result.business_complete
@@ -539,3 +558,74 @@ def test_local_acceptance_failure_stops_every_later_family_and_keeps_request_int
         RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: False)
     assert caught.value is error and len(physical) == 1 and not calls
     assert journal.outstanding_family(journal.active().round_id) is CompanySyncFamily.FINANCIAL
+
+
+def test_request_progress_tracks_durable_retries_and_resumes_without_reset(tmp_path):
+    path = tmp_path / "journal.sqlite3"
+    family = CompanySyncFamily.FINANCIAL
+    scope = replace(_SCOPE, families=(family,))
+    plans = (CompanySyncPhasePlan(family, CanonicalDigest(family)),)
+    progress: list[CompanyRequestProgress] = []
+    policy = SqlitePolicyFixture()
+    journal = SQLiteCompanySyncRoundJournal(
+        path,
+        sqlite_policy=policy,
+        publication_identity=lambda: "",
+        observe_requests=progress.append,
+    )
+    journal.initialize()
+    round_id = journal.begin(scope, plans, max_source_calls=2)
+    journal.start(round_id, family, CompanySyncPhaseState(CanonicalDigest("first-page"), True))
+    assert journal.executing_step == (round_id, family, 1)
+    request = HttpRequest("GET", "https://example.test/first-page", 1)
+    journal.authorize_request(request)
+    journal.observe_attempt(HttpAttempt("example.test", "GET", 0.1, 0, 503, "http_503"))
+    journal.authorize_request(request)
+    with pytest.raises(CompanySyncSourceBudgetExceeded):
+        journal.authorize_request(request)
+    journal.begin(scope, plans, max_source_calls=2)
+
+    assert [(item.used, item.unknown) for item in progress] == [(0, 0), (1, 1), (1, 0), (2, 1)]
+    assert all(item.round_id == round_id and item.limit == 2 for item in progress)
+    resumed: list[CompanyRequestProgress] = []
+    reopened = SQLiteCompanySyncRoundJournal(
+        path,
+        sqlite_policy=policy,
+        publication_identity=lambda: "",
+        observe_requests=resumed.append,
+    )
+    assert reopened.begin(scope, plans, max_source_calls=2) == round_id
+    assert resumed == [CompanyRequestProgress(round_id, 2, 2, 1)]
+    assert reopened.executing_step is None
+
+
+def test_request_progress_keeps_an_observation_committed_at_deadline(tmp_path):
+    path = tmp_path / "journal.sqlite3"
+    family = CompanySyncFamily.FINANCIAL
+    scope = replace(_SCOPE, families=(family,))
+    plans = (CompanySyncPhasePlan(family, CanonicalDigest(family)),)
+    clock = [0.0]
+    progress: list[CompanyRequestProgress] = []
+
+    def observe(snapshot: CompanyRequestProgress) -> None:
+        progress.append(snapshot)
+        if snapshot.used == 1 and snapshot.unknown == 0:
+            clock[0] = 10.0
+
+    journal = SQLiteCompanySyncRoundJournal(
+        path,
+        sqlite_policy=SqlitePolicyFixture(),
+        publication_identity=lambda: "",
+        io_budget=CompanySyncIoBudget(deadline=10, monotonic=lambda: clock[0], cancel_requested=lambda: False),
+        observe_requests=observe,
+    )
+    journal.initialize()
+    round_id = journal.begin(scope, plans, max_source_calls=1)
+    journal.start(round_id, family, CompanySyncPhaseState(CanonicalDigest("first-page"), True))
+    journal.authorize_request(HttpRequest("GET", "https://example.test/first-page", 1))
+    with pytest.raises(CompanySyncInterrupted):
+        journal.observe_attempt(HttpAttempt("example.test", "GET", 0.1, 1, 200, ""))
+
+    assert progress[-1] == CompanyRequestProgress(round_id, 1, 1, 0)
+    with SqliteSession(path, SqliteConnectionOptions(read_only=True)) as connection:
+        assert tuple(connection.run("SELECT observed,status FROM company_sync_request").require_one()) == (1, 200)

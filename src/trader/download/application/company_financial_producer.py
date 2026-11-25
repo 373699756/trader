@@ -9,6 +9,7 @@ from trader.download.application.company_source_ports import CompanyFinancialObs
 from trader.download.domain.company_evidence import StructuredCompanyQuery
 from trader.download.domain.company_source_records import CompanyFinancialSourcePage
 from trader.download.domain.company_sync import (
+    CompanyDownloadOperation, CompanySourceDownloadProgress, CompanyStructuredDownloadProgress,
     CompanySyncFamily, CompanySyncInterrupted, CompanySyncPhasePlan, CompanySyncPhaseState, CompanySyncRoundScope, CompanySyncStepResult,
     CompanyFinancialRequestIdentity, CompanyFinancialCursorIdentity,
 )
@@ -35,6 +36,7 @@ class CompanyFinancialProducer:
         qualification_gaps: tuple[str, ...],
         publication_scope: Literal["observations", "isolated_candidate"] = "observations",
         current_codes: tuple[str, ...] | None = None,
+        observe_download: Callable[[CompanySourceDownloadProgress], None] | None = None,
     ) -> None:
         if query.component != "financial" or query.page != 1:
             raise ValueError("company_financial_producer_query_invalid")
@@ -42,6 +44,7 @@ class CompanyFinancialProducer:
             raise ValueError("company_financial_publication_scope_invalid")
         self._index, self._source, self._query, self._publication_scope = index, source, query, publication_scope
         self._current_codes = current_codes
+        self._observe_download = observe_download
         self._plan = CompanySyncPhasePlan(CompanySyncFamily.FINANCIAL, CompanyFinancialRequestIdentity(query, publication_scope), qualification_gaps)
 
     @property
@@ -61,6 +64,8 @@ class CompanyFinancialProducer:
             return CompanySyncStepResult(True, False, gaps=("population_members_became_ineligible",), pending_count=None)
         cursor = self._index.cursor(self._query, scope.codes, scope.cutoff)
         if cursor is not None:
+            if self._observe_download is not None:
+                self._observe_download(CompanyDownloadOperation(CompanySyncFamily.FINANCIAL, "structured_page", cursor))
             page = self._source.financial_observations(cursor, observed_at=scope.cutoff)
             # Accept even when a deadline arrives after the response. If the
             # material owner refuses cancellation, the intent stays unknown.
@@ -70,6 +75,14 @@ class CompanyFinancialProducer:
                 if str(exc) != "company_round_cancelled" or not cancel_requested():
                     raise
                 raise CompanySyncInterrupted("company_financial_accept_cancelled") from exc
+            if self._observe_download is not None:
+                self._observe_download(CompanyStructuredDownloadProgress(
+                    family=CompanySyncFamily.FINANCIAL,
+                    accepted_pages=page.page,
+                    expected_pages=page.pages,
+                    accepted_rows=cursor.received_rows + page.raw_count,
+                    expected_rows=page.total,
+                ))
             return CompanySyncStepResult(False, True, accepted_inputs=len(page.observations), source_calls=1)
         if self._publication_scope == "observations":
             return CompanySyncStepResult(True, False, pending_count=0)
