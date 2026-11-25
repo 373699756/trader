@@ -1301,7 +1301,7 @@ def _build_publication(
 
 def ExecuteCompanySync(
     settings: RuntimeSettings, scope: CompanySyncRoundScope, *,
-    cancel_requested: Callable[[], bool], report: SyncProgress, admit_observations: bool = False,
+    cancel_requested: Callable[[], bool], report: SyncProgress,
 ) -> CompanySyncRoundResult:
     from trader.download.domain.company_sync import COMPANY_SYNC_FAMILIES, CompanySyncBudget, CompanySyncInterrupted
     from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
@@ -1428,7 +1428,7 @@ def ExecuteCompanySync(
             observe_scope=progress.begin_scope, observe=progress.observe_family, activity=progress.activity,
             observe_financial_scoring=progress.observe_financial_scoring,
             observe_download=lambda event: progress.download(event, journal.executing_step),
-            source_ready=lambda: time.monotonic() < source_deadline, admit_observations=admit_observations)
+            source_ready=lambda: time.monotonic() < source_deadline)
         budget = CompanySyncBudget(configuration.round_step_limit, configuration.round_request_limit,
             min(256, configuration.round_step_limit), deadline)
         try:

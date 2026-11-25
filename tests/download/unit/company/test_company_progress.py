@@ -86,6 +86,7 @@ def test_company_progress_projects_formal_and_event_gaps_during_same_round(pause
         ),
         reduction_field_counts=(),
         financial_scoring_stocks=2,
+        unlock_partial_with_event=1,
     )
     counts = CompanyFieldOutcomeCounts("b" * 64, 2, 1, 1, 1, 3, 0, coverage)
     progress.start(4)
@@ -113,6 +114,7 @@ def test_company_progress_projects_formal_and_event_gaps_during_same_round(pause
         assert ("正式缺2/4（50.00%）" if index == 0 else "正式缺1/4（25.00%）") in rows["EPS"]
         assert "已发布来源观测2/4（50.00%）股" in rows["D25财务评分输入"]
         assert "已核无质押1股" in rows["质押比例"] and "部分覆盖1/4（25.00%）" in rows["公告风险覆盖"]
+        assert "完整覆盖1/4（25.00%）" in rows["未来解禁"] and "部分覆盖已核有解禁1股" in rows["未来解禁"]
         assert "无适用项" in rows["减持事件字段"]
         assert "缺值2/5（40.00%）" in rows["其他公告字段"] and "待补证2/5（40.00%）" in rows["其他公告字段"]
         assert "已证未披露1项，不适用3项" in rows["其他公告字段"]

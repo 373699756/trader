@@ -93,7 +93,7 @@ def AuditCompanySyncRounds(
             return time.monotonic() >= stop_at
         result = ExecuteCompanySync(
             isolated, scope, cancel_requested=cancelled,
-            report=CreateSyncProgress(), admit_observations=True,
+            report=CreateSyncProgress(),
         )
         observations.append({
             "invocation": number, "round_id": result.round_id, "scope_identity": result.scope.identity,
@@ -160,7 +160,7 @@ def AuditCompanySyncRestart(
     requested_scope = CompanySyncRoundScope(scope.codes, requested_cutoff or scope.cutoff)
     stop_at = time.monotonic() + seconds
     result = ExecuteCompanySync(isolated, requested_scope, cancel_requested=lambda: time.monotonic() >= stop_at,
-        report=CreateSyncProgress(), admit_observations=True)
+        report=CreateSyncProgress())
     calls = tuple(item.source_calls for item in result.families)
     after_calls = sum(value for value in calls if value is not None) if len(calls) == len(scope.families) and all(value is not None for value in calls) else None
     return {

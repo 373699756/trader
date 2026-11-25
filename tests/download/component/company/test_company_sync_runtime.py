@@ -58,7 +58,7 @@ class _Sources:
         raise AssertionError("no_pdf_fanout")
 
 
-def _runtime(tmp_path, *, observe_scope=None, admit_observations=False, financial_revision_proofs=()):
+def _runtime(tmp_path, *, observe_scope=None, financial_revision_proofs=()):
     policy, event_policy = SqlitePolicyFixture(), CompanyEventPolicyFixture()
     facts = SQLiteCompanyFactsIndex(tmp_path / "formal.sqlite3", event_policy=event_policy, sqlite_policy=policy)
     reader = SQLiteCompanyEvidenceReader(facts.path, event_policy=event_policy, sqlite_policy=policy)
@@ -81,7 +81,7 @@ def _runtime(tmp_path, *, observe_scope=None, admit_observations=False, financia
     source = _Sources(transport)
     runtime = CompanySyncRuntime(normalized, facts, material, journal, inputs, event_policy=event_policy, sqlite_policy=policy,
         read_document=documents.read, financial_source=source, ratio_source=source, annual_source=source,
-        official_source=source, observe_scope=observe_scope, admit_observations=admit_observations,
+        official_source=source, observe_scope=observe_scope,
         financial_revision_proofs=financial_revision_proofs)
     return runtime, reader, transport, physical
 
@@ -146,7 +146,7 @@ def test_candidate_watermark_includes_exact_financial_original_and_authority_dig
     report_date = _SCOPE.cutoff.date() - timedelta(days=30)
     original = Disclosure("sse", "issuer-report", _SCOPE.codes, "季度报告", _SCOPE.cutoff, "", "a" * 64)
     proof = CompanyFinancialRevisionProof(original, report_date, report_date, _SCOPE.cutoff, "b" * 64, b"c" * 32)
-    runtime, _, transport, physical = _runtime(tmp_path, admit_observations=True, financial_revision_proofs=(proof,))
+    runtime, _, transport, physical = _runtime(tmp_path, financial_revision_proofs=(proof,))
     with transport:
         runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
         partition = DisclosurePartition("sse", _SCOPE.cutoff.date(), _SCOPE.cutoff.date())

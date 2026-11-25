@@ -14,6 +14,7 @@ from trader.download.application.company_source_ports import (
     CompanyAnnualIncomeSource, CompanyFinancialObservationSource, CompanyOfficialDocumentSource, CompanyRatioSource,
 )
 from trader.download.application.company_sync import CompanySyncProducer, ResumeCompanySyncPendingStep, RunCompanySyncRound
+from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview
 from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy
 from trader.download.domain.company_evidence import (
     CompanyDatabaseIncompatibleError, CompanyDownloadStore, CompanyDocumentPolicies, CompanyRatio, CompanySyncConfiguration, EvidenceMarket, StructuredCompanyQuery,
@@ -29,6 +30,7 @@ from trader.download.domain.company_sync import (
     CompanySyncInterrupted, CompanySyncPhasePlan, CompanySyncPhaseState,
     CompanySyncRebuildActiveRound, CompanySyncRoundResult, CompanySyncRoundScope, CompanySyncStepResult, CompanySourceCancelled,
 )
+from trader.download.domain.company_unlock_notice import IsCompanyUnlockListingNotice
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_document_link_rows import ReadCompanyDocumentLinks
 from trader.download.infra.company_facts_index import CompanyPublicationIdentity, ReadCompanyPublicationIdentity, SQLiteCompanyFactsIndex
@@ -72,7 +74,6 @@ class CompanySyncRuntime:
         observe_financial_scoring: Callable[[CompanySyncRoundScope], None] | None = None,
         activity: Callable[[CompanySyncFamily], AbstractContextManager[None]] | None = None,
         source_ready: Callable[[], bool] | None = None,
-        admit_observations: bool = False,
         financial_revision_proofs: tuple[CompanyFinancialRevisionProof, ...] = (),
     ) -> None:
         paths = (material.path, facts.path, journal.path)
@@ -94,7 +95,6 @@ class CompanySyncRuntime:
         self._observe_financial_scoring = observe_financial_scoring
         self._activity = activity
         self._source_ready = source_ready
-        self._admit_observations = admit_observations
         self._financial_revision_proofs = financial_revision_proofs
         self._execution_scope: CompanySyncRoundScope | None = None
         self._execution_round_id = ""
@@ -249,7 +249,7 @@ class CompanySyncRuntime:
         announcements = CompanyAnnouncementProducer(self.inputs, self.material, self._official_source, scope,
             sqlite_policy=self._sqlite_policy, extraction_hash=self.facts.extraction_hash, io_budget=self._io_budget,
             current_codes=eligible_codes, configuration=self._document_configuration, policies=self._document_policies,
-            wall_clock=self._wall_clock, admit_observations=self._admit_observations, observe_download=self._observe_download)
+            wall_clock=self._wall_clock, observe_download=self._observe_download)
         producers: tuple[CompanySyncProducer, ...] = (
             CompanyFinancialProducer(self.normalized, self._financial_source, query, qualification_gaps=(
                 "latest_financial_population_unverified", "financial_first_disclosure_revision_unverified"),
@@ -343,7 +343,9 @@ class CompanySyncRuntime:
         with self._session(self.facts.path, check=check, read_only=True) as formal, SqliteTransaction(formal):
             facts = ReadCompanyFactRows(formal, eligible_codes)
             publication = ReadCompanyPublicationIdentity(formal)
-        financial_proofs = self._financial_revision_proofs if self._admit_observations else ()
+        unlock_open = eligible.difference(fact.code for fact in facts if fact.unlock_state is CompanyDataState.COMPLETE)
+        retained_unlock_codes: set[str] = set()
+        financial_proofs = self._financial_revision_proofs
         identities = tuple(sorted({identity for fact in facts for event in fact.risk_events + fact.positive_events for identity in event.evidence_ids}
             | {review.evidence_id for fact in facts for review in fact.review_reasons if review.evidence_id is not None}
             | {proof.original.identity for proof in financial_proofs if proof.original.codes[0] in eligible}))
@@ -356,13 +358,19 @@ class CompanySyncRuntime:
             for offset in range(0, len(eligible_codes), 128):
                 check()
                 codes = eligible_codes[offset:offset + 128]
-                for row in raw.run("""SELECT c.code,d.source,d.source_key,d.record_hash,d.body_hash,d.body_checked,d.body_retained
+                for row in raw.run("""SELECT c.code,d.source,d.source_key,d.record_hash,d.body_hash,d.body_checked,d.body_retained,d.title,
+                    CASE WHEN d.source='cninfo' AND d.body_checked=1 AND d.body_retained=1 THEN
+                      EXISTS(SELECT 1 FROM document_extractions x WHERE x.disclosure_id=d.id AND x.record_hash=d.record_hash)
+                      AND NOT EXISTS(SELECT 1 FROM disclosure_codes m WHERE m.disclosure_id=d.id AND m.code<>c.code)
+                    ELSE 0 END
                     FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id
                     JOIN company_document_requirements required ON required.disclosure_id=d.id
                     WHERE d.kind='announcement' AND d.published_at>=? AND d.published_at<=?
                     AND c.code IN (""" + ",".join("?" for _ in codes) + ") ORDER BY c.code,d.source,d.source_key",
                     ((scope.cutoff.date() - timedelta(days=365)).isoformat(), scope.cutoff.isoformat(), *codes)):
                     material.append((row[0], row[1], row[2], row[3], row[4].hex() if isinstance(row[4], bytes) else None, row[5], row[6]))
+                    if row[8] and row[0] in unlock_open and IsCompanyUnlockListingNotice(row[7]) and not CompanyDocumentNeedsReview(row[7]):
+                        retained_unlock_codes.add(row[0])
             for offset in range(0, len(identities), 512):
                 check()
                 batch = identities[offset:offset + 512]
@@ -372,8 +380,10 @@ class CompanySyncRuntime:
         inputs: tuple[object, ...] = (self.inputs.field_input_identity(scope.identity), coverage,
             tuple(sorted(set(material), key=lambda row: (str(row[0]), str(row[1]), str(row[2])))),
             publication.content_hash.hex() if publication is not None else None)
-        if self._admit_observations:
-            inputs += (self.inputs.ratios(scope.identity, "unlock"),)
+        if retained_unlock_codes:
+            unlock_observations = self._unlock_observations(scope, frozenset(retained_unlock_codes))
+            if unlock_observations:
+                inputs += (unlock_observations,)
         if financial_proofs:
             query = financial_query or BuildCompanyFinancialRoundQuery(scope.cutoff)
             inputs += (
@@ -382,6 +392,14 @@ class CompanySyncRuntime:
                     proof.source_record_hash, proof.authority_evidence_hash.hex()) for proof in financial_proofs),
             )
         return CanonicalDigest(inputs)
+
+    def _unlock_observations(self, scope: CompanySyncRoundScope, codes: frozenset[str]) -> tuple[CompanyRatio, ...]:
+        start = scope.cutoff.date()
+        end = start + timedelta(days=min(180, self._event_policy.unlock_days))
+        return tuple(
+            ratio for ratio in self.inputs.ratios(scope.identity, "unlock")
+            if ratio.code in codes and ratio.ratio_pct > 0 and start <= ratio.day <= end
+        )
 
     @contextmanager
     def _session(self, path: Path, *, check: Callable[[], None], read_only: bool) -> Iterator[SqliteConnection]:
@@ -416,10 +434,10 @@ class CompanySyncRuntime:
         annuals = self.inputs.annuals(scope.identity)
         unlock_by_code: dict[str, list[CompanyRatio]] = defaultdict(list)
         observations: tuple[CompanyFinancialSourceObservation, ...] = ()
-        if self._admit_observations:
-            for ratio in self.inputs.ratios(scope.identity, "unlock"):
-                unlock_by_code[ratio.code].append(ratio)
-        if self._admit_observations and self._financial_revision_proofs:
+        eligible = frozenset(eligible_codes)
+        for ratio in self._unlock_observations(scope, eligible):
+            unlock_by_code[ratio.code].append(ratio)
+        if self._financial_revision_proofs:
             observations = self.normalized.latest_financial_observations(financial_query, scope.codes, scope.cutoff)
         with (
             self._session(self.material.path, check=check, read_only=True) as raw,
@@ -436,7 +454,6 @@ class CompanySyncRuntime:
             links_by_code: dict[str, list[CompanyPublishedEvidenceLink]] = defaultdict(list)
             for link in ReadCompanyDocumentLinks(formal, all_codes):
                 links_by_code[link.code].append(link)
-            eligible = frozenset(eligible_codes)
             admissions: dict[str, CompanyFinancialAdmission] = {}
             if observations:
                 for admission in PrepareCompanyFinancialAdmissions(raw,

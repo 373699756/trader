@@ -141,7 +141,7 @@ class CompanyAnnouncementProducer:
         source: CompanyOfficialDocumentSource, scope: CompanySyncRoundScope, *, sqlite_policy: SqliteIoPolicy, extraction_hash: bytes,
         io_budget: CompanySyncIoBudget | None = None, current_codes: tuple[str, ...] | None = None,
         configuration: CompanySyncConfiguration | None = None, policies: CompanyDocumentPolicies | None = None,
-        wall_clock: Callable[[], datetime] | None = None, admit_observations: bool = False,
+        wall_clock: Callable[[], datetime] | None = None,
         observe_download: Callable[[CompanySourceDownloadProgress], None] | None = None,
     ) -> None:
         self._inputs, self._material, self._source, self._sqlite_policy = inputs, material, source, sqlite_policy
@@ -149,7 +149,6 @@ class CompanyAnnouncementProducer:
         self._current_codes = scope.codes if current_codes is None else current_codes
         self._io_budget = io_budget
         self._configuration, self._policies, self._wall_clock = configuration, policies, wall_clock
-        self._admit_observations = admit_observations
         self._observe_download = observe_download
         markets = tuple(sorted({EvidenceMarket(code) for code in scope.codes}))
         self._partitions = tuple(DisclosurePartition(market, start, end)
@@ -457,8 +456,6 @@ class CompanyAnnouncementProducer:
                 if not is_risk and (risk_only or other is not None):
                     continue
                 if IsCompanyUnlockListingNotice(title) and not CompanyDocumentNeedsReview(title):
-                    if not self._admit_observations:
-                        continue
                     if unlock_codes is None:
                         unlock_codes = frozenset(item.code for item in self._inputs.ratios(scope.identity, "unlock")
                             if item.ratio_pct > 0 and item.day >= scope.cutoff.date())

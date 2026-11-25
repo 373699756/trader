@@ -837,8 +837,9 @@ def _coverage_rows(coverage: CompanyFormalCoverage) -> tuple[ProgressRow, ...]:
                 f"有质押{coverage.pledge_with_value}股，已核无质押{coverage.pledge_without_event}股"),
         )),
         ProgressRow("未来解禁", (
-            ProgressField(f"已核覆盖{_rate(stocks - unlock_missing, stocks)}股，待核{_rate(unlock_missing, stocks)}，"
-                f"有解禁{coverage.unlock_with_event}股，已核无解禁{coverage.unlock_without_event}股"),
+            ProgressField(f"完整覆盖{_rate(stocks - unlock_missing, stocks)}股，覆盖待核{_rate(unlock_missing, stocks)}，"
+                f"完整窗有解禁{coverage.unlock_with_event}股，已核无解禁{coverage.unlock_without_event}股，"
+                f"部分覆盖已核有解禁{coverage.unlock_partial_with_event}股"),
         )),
         ProgressRow("公告风险覆盖", (
             ProgressField(f"完整覆盖{_rate(coverage.announcement_complete, stocks)}股，"

@@ -247,7 +247,7 @@ class SQLiteCompanyEvidenceReader:
         target_day = EncodeCompanyDate(as_of.date())
         horizon = EncodeCompanyDate(as_of.date() + timedelta(days=self._unlock_days))
         cutoff = EncodeCompanyTime(as_of)
-        totals = [0] * (9 + len(_FINANCIAL_FIELDS))
+        totals = [0] * (10 + len(_FINANCIAL_FIELDS))
         other_totals: dict[CompanyFieldName, list[int]] = {}
         reduction_totals: dict[CompanyFieldName, list[int]] = {}
         for offset in range(0, len(requested), 512):
@@ -264,6 +264,7 @@ class SQLiteCompanyEvidenceReader:
                       l.parent_profit AS latest_parent_profit, l.core_profit AS latest_core_profit,
                       f.pledge_state=? AND f.pledge_date<=? AS pledge, f.pledge_pct,
                       f.unlock_state=? AND f.unlock_checked_at<=? AND f.unlock_end_date>=? AS unlock,
+                      f.unlock_state=? AND f.published_at<=? AS unlock_partial,
                       EXISTS(SELECT 1 FROM company_unlock u WHERE u.code=f.code
                         AND u.unlock_date BETWEEN ? AND ?) AS scheduled,
                       f.announcement_state=? AS announcement_complete, f.announcement_state=? AS announcement_partial,
@@ -285,6 +286,7 @@ class SQLiteCompanyEvidenceReader:
                   COUNT(CASE WHEN announcement_complete THEN 1 END),
                   COUNT(CASE WHEN announcement_partial THEN 1 END),
                   COUNT(CASE WHEN risk THEN 1 END),
+                  COUNT(CASE WHEN unlock_partial AND scheduled THEN 1 END),
                   COUNT(CASE WHEN scoring_report THEN eps END), COUNT(CASE WHEN scoring_report THEN bps END),
                   COUNT(CASE WHEN scoring_report THEN revenue_growth_pct END),
                   COUNT(CASE WHEN scoring_report THEN profit_growth_pct END),
@@ -293,7 +295,7 @@ class SQLiteCompanyEvidenceReader:
                 FROM visible
                 """, (
                     complete, cutoff, target_day, cutoff, target_day, complete, target_day,
-                    complete, cutoff, horizon, target_day, horizon, complete, partial, cutoff, *batch,
+                    complete, cutoff, horizon, partial, cutoff, target_day, horizon, complete, partial, cutoff, *batch,
                 )).require_one()
             for index, value in enumerate(row):
                 totals[index] += CompanyInteger(value)
@@ -340,7 +342,7 @@ class SQLiteCompanyEvidenceReader:
 
         (financial_complete, latest_profit_values, pledge_with_value, pledge_without_event,
          unlock_with_event, unlock_without_event, announcement_complete, announcement_partial,
-         verified_risk_stocks, *financial_counts) = totals
+         verified_risk_stocks, unlock_partial_with_event, *financial_counts) = totals
         financial_scoring_stocks = CountCompanyFinancialScoringObservations(
             connection, requested, scoring_as_of, self._extraction_hash,
         ) if scoring_as_of is not None else None
@@ -353,6 +355,7 @@ class SQLiteCompanyEvidenceReader:
             pledge_without_event=pledge_without_event,
             unlock_with_event=unlock_with_event,
             unlock_without_event=unlock_without_event,
+            unlock_partial_with_event=unlock_partial_with_event,
             announcement_complete=announcement_complete,
             announcement_partial=announcement_partial,
             verified_risk_stocks=verified_risk_stocks,

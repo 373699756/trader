@@ -49,14 +49,16 @@ def _run(runtime, transport, *, steps=80):
             cancel_requested=lambda: False, monotonic=lambda: 0)
 
 
-@pytest.mark.parametrize("scenario", ("verified", "active_default", "source_only", "scoped_denominator", "wrong_date", "wrong_ratio", "later_revision", "prior_complete"))
+@pytest.mark.parametrize("scenario", (
+    "verified", "source_only", "scoped_denominator", "wrong_issuer", "wrong_date", "wrong_ratio", "zero_ratio",
+    "later_revision", "prior_complete",
+))
 def test_unlock_admits_exact_issuer_event_without_completing_the_window(tmp_path, scenario):
-    admit = scenario != "active_default"
-    runtime, reader, transport, physical = _runtime(tmp_path, admit_observations=admit)
+    runtime, reader, transport, physical = _runtime(tmp_path)
     runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
     observed_at = _SCOPE.cutoff.date()
     day = observed_at + timedelta(days=10)
-    observation = CompanyRatio(_SCOPE.codes[0], day, 0.0242738391)
+    observation = CompanyRatio(_SCOPE.codes[0], day, 0 if scenario == "zero_ratio" else 0.0242738391)
     if scenario == "prior_complete":
         prior, = reader.read(_SCOPE.codes)
         prior = replace(prior, unlock_checked_at=_SCOPE.cutoff, unlock_coverage_end=observed_at + timedelta(days=180),
@@ -68,6 +70,8 @@ def test_unlock_admits_exact_issuer_event_without_completing_the_window(tmp_path
         body = _UNLOCK
         if scenario == "scoped_denominator":
             body = body.replace("公司总股本", "公司流通股本")
+        elif scenario == "wrong_issuer":
+            body = body.replace("600001", "600002")
         elif scenario == "wrong_date":
             body = body.replace("11月27日", "11月28日")
         elif scenario == "wrong_ratio":
@@ -79,7 +83,9 @@ def test_unlock_admits_exact_issuer_event_without_completing_the_window(tmp_path
     before = runtime.field_watermark(_SCOPE, _SCOPE.codes, lambda: None)
     runtime.inputs.accept_ratios(_SCOPE.identity, StructuredCompanyQuery("unlock", observed_at, day),
         StructuredCompanyPage("unlock", 1, 1, 1, ratios=(observation,)), _SCOPE.cutoff)
-    assert (runtime.field_watermark(_SCOPE, _SCOPE.codes, lambda: None) != before) is admit
+    assert (runtime.field_watermark(_SCOPE, _SCOPE.codes, lambda: None) != before) is (
+        scenario not in {"source_only", "prior_complete", "zero_ratio"}
+    )
     if scenario == "verified":
         _run(runtime, transport)
     else:
@@ -113,6 +119,15 @@ def test_unlock_admits_exact_issuer_event_without_completing_the_window(tmp_path
     runtime._read_document = lambda digest: pytest.fail("proved_unlock_original_must_not_be_read_again")
     _run(runtime, transport)
     assert reader.publication_identity() == head and physical == []
+
+    runtime.material.register_disclosures((replace(
+        notice, identity="later-correction", title=f"{_UNLOCK_TITLE}的更正公告",
+        published_at=_SCOPE.cutoff - timedelta(days=1), digest="c" * 64,
+    ),))
+    _run(runtime, transport)
+    after_correction, = reader.read(_SCOPE.codes)
+    assert after_correction.unlock_schedule == fact.unlock_schedule
+    assert after_correction.unlock_state is CompanyDataState.PARTIAL and physical == []
 
 
 def test_retained_new_original_reaches_normal_formal_reader_without_a_source_budget(tmp_path):
@@ -361,6 +376,61 @@ def test_risk_originals_across_the_population_precede_positive_material_without_
     assert calls == [
         "reduction-ended", first_partition, "investigation", producer._partitions[1], "commitment", "positive",
     ]
+
+
+def test_supplemental_unlock_original_dispatch_requires_the_same_scope_issuer_observation(tmp_path):
+    runtime, reader, transport, physical = _runtime(tmp_path)
+    scope = _SCOPE
+    runtime.initialize(scope.codes, scope.cutoff)
+    notice = Disclosure(
+        "cninfo", "supplemental-unlock", scope.codes, _UNLOCK_TITLE, scope.cutoff - timedelta(days=1),
+        "https://example.test/unlock.PDF", "b" * 64,
+    )
+    calls = []
+
+    class Source:
+        def document_payload_hash(self, disclosure):
+            return None
+
+        def document_ready(self, disclosure):
+            return False
+
+        def download_document(self, disclosure, *, attempt_limit):
+            assert attempt_limit == 1
+            calls.append(disclosure.identity)
+
+        def extract_document(self, disclosure, **kwargs):
+            return CompanyDocumentExtraction(_UNLOCK, "text", b"p" * 32, "test_text")
+
+    configuration = CompanySyncConfigurationFixture()
+    policies = BuildCompanyDocumentPolicies(configuration, "ocr-test", text_identity="text-test")
+    producer = CompanyAnnouncementProducer(
+        runtime.inputs, runtime.material, Source(), scope,
+        sqlite_policy=SqlitePolicyFixture(), extraction_hash=runtime.facts.extraction_hash,
+        configuration=configuration, policies=policies, wall_clock=lambda: scope.cutoff,
+    )
+    producer.advance(scope, cancel_requested=lambda: False, deadline=100)
+    for partition in producer._partitions:
+        rows = (notice,) if partition.start <= notice.published_at.date() <= partition.end else ()
+        runtime.material.commit_page(partition, DisclosurePage(rows, len(rows), False), scope.cutoff)
+    assert not producer.state(scope).source_required
+
+    day = scope.cutoff.date() + timedelta(days=10)
+    observation = CompanyRatio(scope.codes[0], day, 0.0242738391)
+    runtime.inputs.accept_ratios(
+        scope.identity, StructuredCompanyQuery("unlock", scope.cutoff.date(), day),
+        StructuredCompanyPage("unlock", 1, 1, 1, ratios=(observation,)), scope.cutoff,
+    )
+    assert producer.state(scope).identity == CanonicalDigest((notice, policies))
+    result = producer.advance(scope, cancel_requested=lambda: False, deadline=100)
+    assert result.source_calls == 1 and calls == [notice.identity]
+
+    _run(runtime, transport)
+    fact, = reader.read(scope.codes)
+    assert fact.unlock_state is CompanyDataState.PARTIAL
+    assert fact.unlock_schedule == (replace(observation, ratio_pct=0.024),)
+    assert fact.unlock_checked_at is None and fact.unlock_coverage_end is None
+    assert physical == []
 
 
 @pytest.mark.parametrize(
