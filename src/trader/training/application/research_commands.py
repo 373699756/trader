@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from trader.training.application.capability_completion import CapabilityExecution
+    from trader.training.application.company_replay import CompanyReplayReport
     from trader.training.application.cross_strategy_conclusion import CrossStrategyConclusion
     from trader.training.application.selection_execution import SelectionResearchExecution
     from trader.training.domain.evaluation.historical_industry_facts import HistoricalIndustryDatasetReport
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
 
     ResearchEvidenceResult = (
         CapabilityExecution
+        | CompanyReplayReport
         | CrossStrategyConclusion
         | HistoricalIndustryDatasetReport
         | PointInTimeDataQualificationReport
@@ -59,6 +61,11 @@ class SelectionCommand:
     evidence_dir: Path
 
 
+@dataclass(frozen=True)
+class CompanyReplayCommand:
+    evidence_dir: Path
+
+
 ResearchEvidenceCommand = (
-    CapabilityCommand | QualificationCommand | IndustryAuditCommand | HoldoutCommand | SelectionCommand
+    CapabilityCommand | CompanyReplayCommand | QualificationCommand | IndustryAuditCommand | HoldoutCommand | SelectionCommand
 )

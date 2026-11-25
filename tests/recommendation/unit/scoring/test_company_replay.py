@@ -1,0 +1,125 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from datetime import timedelta
+
+import pytest
+
+from tests.helpers.recommendation.company_replay_fixture import BuildCompanyReplayCase
+from tests.helpers.recommendation.publication.tomorrow_projection import EVALUATED_AT, _native_input, _verified_feature
+from tests.helpers.recommendation.runtime.input_runtime import _policy
+from trader.recommendation.application.pipeline.final_selection.company_replay import (
+    CompanyReplayInputs,
+    CompanyReplayPublication,
+    ProjectCompanyReplayDecision,
+    ReplayCompanyDecisions,
+)
+from trader.recommendation.application.pipeline.final_selection.freeze_projection import BuildScoredLocal, ScoredProjectionInputs
+from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
+from trader.recommendation.application.pipeline.local_score.tomorrow_probability import TomorrowProbabilityCapability
+from trader.recommendation.application.tomorrow.v2.plan import V2_TOMORROW_PLAN
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
+from trader.recommendation.domain.publication.models import ScoredDisposition, Strategy
+
+
+@pytest.fixture
+def company_replay_case(application_feature_factory):
+    return BuildCompanyReplayCase(application_feature_factory)
+
+
+@pytest.mark.parametrize("profile", ("v2", "v3"))
+def test_company_replay_compares_fixed_seats_and_rebuilds_risk_denominator(application_feature_factory, profile):
+    inputs, policy, runtime, observed = BuildCompanyReplayCase(application_feature_factory, profile=profile)
+    report = ReplayCompanyDecisions(inputs, policy, runtime=runtime)
+    baseline, risk, financial, combined = report.arms
+    assert report.profile == profile
+    assert report.strategy is Strategy.D25
+    assert report.prediction_target_bps == 100
+    assert baseline.decision == inputs.expected_baseline
+    assert len(observed.stages.entries) == 6
+    assert tuple((row.code, row.rank, row.action, row.action_reason) for row in baseline.seats) == tuple(
+        (entry.code, entry.rank, entry.action, entry.action_reason) for entry in observed.stages.entries
+    )
+    risk_rows = {row.code: row for row in risk.decision.rows}
+    assert risk_rows["600000"].disposition is ScoredDisposition.REJECT
+    assert risk_rows["600000"].filter_reasons == ("latest_disclosed_report_loss",)
+    assert risk_rows["600000"].rank is None
+    assert risk.decision.cost_reference != baseline.decision.cost_reference
+    assert len(risk.seats) == 6 and "688000" in {row.code for row in risk.seats}
+    assert risk_rows["600001"].company_coverage.announcements == "unknown"
+    assert risk_rows["688002"].disposition is ScoredDisposition.PASS
+    assert risk_rows["688002"].selection_reason == "candidate_input_unavailable"
+    assert risk_rows["688002"].rank is None and risk_rows["688002"].action is None
+
+    assert financial.seats[0].code == "600001"
+    assert financial.seats[0].company_coverage.announcements == "known_clear"
+    assert financial.seats[0].local_score > risk_rows["600001"].local_score
+    assert "600000" in {row.code for row in financial.seats}
+    assert financial.decision.cost_reference == baseline.decision.cost_reference
+    assert combined.decision.cost_reference == risk.decision.cost_reference
+    assert {row.code for row in combined.seats} == {row.code for row in risk.seats}
+    assert combined.seats[0].local_score == financial.seats[0].local_score
+    assert tuple(row.code for row in combined.decision.rows) == tuple(row.code for row in baseline.decision.rows)
+    assert inputs.baseline.market_features[0].values.get("latest_disclosed_report_loss") != 1.0
+
+
+def test_company_replay_rejects_decision_drift_foreknowledge_and_quote_change(company_replay_case):
+    inputs, policy, runtime, _observed = company_replay_case
+    altered = replace(inputs.expected_baseline, freeze_content_hash="different-content")
+    with pytest.raises(ValueError, match="baseline differs"):
+        ReplayCompanyDecisions(replace(inputs, expected_baseline=altered), policy, runtime=runtime)
+    future = replace(inputs.candidate_company, published_at=EVALUATED_AT - timedelta(seconds=1))
+    with pytest.raises(ValueError, match="publication is unavailable"):
+        ReplayCompanyDecisions(replace(inputs, candidate_company=future), policy, runtime=runtime)
+    candidate = inputs.candidate_company_features
+    first, *remaining = candidate.market_features
+    changed_quote = replace(first, quote=replace(first.quote, price=13.0))
+    altered = replace(candidate, market_features=(changed_quote, *remaining))
+    with pytest.raises(ValueError, match="matching quote rows"):
+        ReplayCompanyDecisions(replace(inputs, candidate_company_features=altered), policy, runtime=runtime)
+
+
+def test_company_replay_same_publication_requires_same_facts(company_replay_case):
+    inputs, policy, runtime, _observed = company_replay_case
+    with pytest.raises(ValueError, match="facts changed without a new publication identity"):
+        ReplayCompanyDecisions(replace(inputs, candidate_company=inputs.current_company), policy, runtime=runtime)
+    report = ReplayCompanyDecisions(
+        replace(inputs, candidate_company=inputs.current_company, candidate_company_features=inputs.baseline),
+        policy,
+        runtime=runtime,
+    )
+    assert all(arm.decision == inputs.expected_baseline for arm in report.arms)
+
+
+def test_tomorrow_financial_arm_keeps_probability_decisions(application_feature_factory):
+    class Predictor:
+        identity = "a" * 64
+
+        def predict_probabilities(self, rows):
+            return tuple(0.60 for _ in rows)
+
+    observed_at = EVALUATED_AT - timedelta(seconds=10)
+    feature = _verified_feature(application_feature_factory("600000", observed_at))
+    feature = replace(feature, quote=replace(feature.quote, volume=1_000_000.0))
+    baseline = _native_input((feature,))
+    changed = replace(feature, values={**feature.values, "quality_score": 100.0})
+    candidate = _native_input((changed,))
+    capability = TomorrowProbabilityCapability(V2_TOMORROW_PLAN, Predictor(), PredictionTarget(Strategy.TOMORROW, 500))
+    runtime = ScoredProjectionInputs(model_scoring=ModelScoringRouter(
+        "v2", {Strategy.TOMORROW: capability},
+    ))
+    policy = _policy()
+    expected = ProjectCompanyReplayDecision(BuildScoredLocal(baseline, policy, sequence=1, runtime=runtime))
+    inputs = CompanyReplayInputs(
+        baseline,
+        candidate,
+        CompanyReplayPublication("company-current", observed_at - timedelta(days=2)),
+        CompanyReplayPublication("company-candidate", observed_at - timedelta(days=1)),
+        expected,
+    )
+    report = ReplayCompanyDecisions(inputs, policy, runtime=runtime)
+    assert report.prediction_target_bps == 500
+    seat, = report.arms[0].seats
+    assert seat.ranking_score == 60.0
+    assert report.arms[2].decision == report.arms[0].decision
+    assert report.arms[3].decision == report.arms[1].decision

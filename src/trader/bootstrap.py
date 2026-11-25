@@ -499,6 +499,16 @@ def ExecuteResearchEvidence(
     from trader.training.infra.research_settings import LoadResearchPlan
     from trader.training.infra.research import command_evidence
 
+    if isinstance(command, research_commands.CompanyReplayCommand):
+        from trader.recommendation.infra.settings.loading import LoadPredictionTargets
+        from trader.training.application.company_replay import ExecuteCompanyReplay
+        from trader.training.infra.research.company_replay_evidence import CompanyReplayEvidenceReader
+
+        return ExecuteCompanyReplay(
+            CompanyReplayEvidenceReader(command.evidence_dir, cancel_requested=cancel_requested),
+            LoadPredictionTargets(strategy_config_path),
+            evaluation_at=ShanghaiClock(_utc_now).now(),
+        )
     if isinstance(command, research_commands.SelectionCommand):
         from trader.training.application.selection_execution import ExecuteSelectionResearch
         from trader.training.infra.research.selection_evidence import SelectionEvidenceReader

@@ -15,6 +15,7 @@ from trader.infra.http_contracts import HttpError, HttpTimeout
 
 from trader.training.application.research_commands import (
     CapabilityCommand,
+    CompanyReplayCommand,
     HoldoutCommand,
     IndustryAuditCommand,
     QualificationCommand,
@@ -28,6 +29,7 @@ COMMAND_SCHEMAS = {
     "research-industry-audit": ("historical_industry_dataset", "audit_failed"),
     "research-terminal-holdout": ("terminal_holdout_execution", "execution_failed"),
     "research-selection": ("full_population_selection_validation", "execution_failed"),
+    "research-company-replay": ("company_replay", "execution_failed"),
 }
 
 
@@ -44,6 +46,7 @@ def AddResearchEvidenceParsers(subparsers: argparse._SubParsersAction) -> None:
             "research-selection",
             "Validate the full-population eleven-layer selection study from external sealed evidence; offline.",
         ),
+        ("research-company-replay", "Compare four fixed company inputs from sealed offline evidence."),
     )
     for name, description in descriptions:
         parser = subparsers.add_parser(name, help=description, description=description)
@@ -68,6 +71,13 @@ def AddResearchEvidenceParsers(subparsers: argparse._SubParsersAction) -> None:
             parser.add_argument(
                 "--evidence-dir", type=Path, required=True, help="external plan.json and rows.jsonl directory"
             )
+        elif name == "research-company-replay":
+            parser.add_argument(
+                "--evidence-dir",
+                type=Path,
+                required=True,
+                help="External directory with plan.json, qualification.json, replays.jsonl, and outcomes.jsonl.",
+            )
         else:
             parser.add_argument("--history-root", type=Path, required=True, help="explicit read-only history root")
         if name == "research-industry-audit":
@@ -91,6 +101,8 @@ def ParseEvidenceCommand(args: argparse.Namespace, *, project_root: Path) -> Res
         return SelectionCommand(
             ExternalPath(args.evidence_dir, project_root=project_root, option="--evidence-dir")
         )
+    if args.command == "research-company-replay":
+        return CompanyReplayCommand(ExternalPath(args.evidence_dir, project_root=project_root, option="--evidence-dir"))
     if args.command in {"research-h1-capability", "research-data-qualification"}:
         from trader.training.domain.evaluation.h1_point_in_time import H1_SOURCE_CUTOFF
 
@@ -157,7 +169,7 @@ def RunResearchEvidence(
             sqlite_policy=sqlite_policy, cancel_requested=cancel_requested,
         )
         payload, exit_code = ProjectEvidenceResult(report, include_details=include_details)
-        if args.command == "research-selection" and output is not None:
+        if args.command in {"research-selection", "research-company-replay"} and output is not None:
             from trader.training.infra.research.selection_reports import PublishSelectionReport
 
             PublishSelectionReport(output, payload)
@@ -166,7 +178,7 @@ def RunResearchEvidence(
         return exit_code
     except (OSError, RuntimeError, TypeError, ValueError, HttpError) as exc:
         from trader.training.application.terminal_holdout_execution import ResearchCancelledError
-        schema, status = COMMAND_SCHEMAS[args.command]
+        _schema, status = COMMAND_SCHEMAS[args.command]
         payload = {
             "status": "cancelled" if isinstance(exc, ResearchCancelledError) else status,
             "error_code": _error_code(exc, args.command),
@@ -187,7 +199,7 @@ def _validate_output_separation(command: ResearchEvidenceCommand, summary: Path 
             raise ValueError("H1 input and artifact directories must be separate")
     elif isinstance(command, HoldoutCommand):
         roots = (command.parent_artifact_dir, command.evidence_dir, command.output_dir)
-    elif isinstance(command, SelectionCommand):
+    elif isinstance(command, (SelectionCommand, CompanyReplayCommand)):
         roots = (command.evidence_dir,)
     else:
         roots = (command.history_root,)
@@ -230,6 +242,7 @@ def _error_code(exc: BaseException, command: str) -> str:
         "research-h1-capability",
         "research-terminal-holdout",
         "research-selection",
+        "research-company-replay",
     }:
         return "artifact_conflict"
     return {
@@ -238,4 +251,5 @@ def _error_code(exc: BaseException, command: str) -> str:
         "research-industry-audit": "invalid_industry_evidence",
         "research-terminal-holdout": "invalid_parent_artifacts",
         "research-selection": "invalid_selection_evidence",
+        "research-company-replay": "invalid_company_replay_evidence",
     }[command]

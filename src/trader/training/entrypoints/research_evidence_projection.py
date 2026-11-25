@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from trader.training.application.capability_completion import CapabilityExecution, CapabilityPublication
+from trader.training.application.company_replay import CompanyReplayReport
 from trader.training.application.cross_strategy_conclusion import CrossStrategyConclusion
 from trader.training.application.h1_point_in_time_completion import H1ResearchCompletion
 from trader.training.application.selection_execution import SelectionResearchExecution
@@ -15,6 +16,7 @@ from trader.training.domain.evaluation.historical_industry_facts import (
 )
 from trader.training.domain.evaluation.point_in_time_data_qualification import PointInTimeDataQualificationReport
 from trader.training.domain.evaluation.terminal_holdout import TerminalHoldoutReport
+from trader.training.entrypoints.company_replay_projection import ProjectCompanyReplayReport
 from trader.training.entrypoints.selection_projection import ProjectSelectionValidation
 
 if TYPE_CHECKING:
@@ -26,6 +28,8 @@ def ProjectEvidenceResult(
 ) -> tuple[dict[str, object], int]:
     if isinstance(report, SelectionResearchExecution):
         return ProjectSelectionValidation(report), 0 if report.report.status == "historical_experiment_completed" else 1
+    if isinstance(report, CompanyReplayReport):
+        return ProjectCompanyReplayReport(report), 0 if report.status == "fixture_diagnostics_completed" else 1
     if isinstance(report, CapabilityExecution):
         return ProjectCapability(report.capability, report.completion, report.publication), 1
     if isinstance(report, PointInTimeDataQualificationReport):
