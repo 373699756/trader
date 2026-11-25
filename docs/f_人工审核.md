@@ -209,3 +209,24 @@ SQLite、按年价格分区、Company 来源／正式事实／请求账本分离
 问题：工作树保留的三处财报修改是否必要。回答：保留并单独提交。`pdftotext -layout`将ROE行拆成数值、变动和单位三行时，旧解析漏掉累计值；两份缩减排版夹具中，已提交代码均无ROE，新解析分别取得11.66和16.41，保留原文三行。仅接受列交替和单位均明确的布局，缺值、错位、重复行及明确无意义说明仍拒绝数值。复核时加严了重复标签含单空格或括号内空格时的歧义检查，未改财务评分、来源准入或活动资料。
 
 证据：解析、准入及发布三组61项中60项通过，受影响Ruff、解析器mypy和完整diff空白检查通过，回执`/tmp/trader-financial-roe-final.xml`。其中一项原有发行人凭据审计测试在`AuditCompanyFields`的SQLite `ATTACH ... ?mode=ro`报无法打开数据库；移除这三处修改的隔离基线同样失败，沙箱外复验亦相同，不能归因于本批或签成通过。基线与外部复验回执分别为`/tmp/trader-financial-roe-admission-{baseline,unsandboxed}.xml`。该连接问题原因待定位；本批不扩为审计连接修复，未运行真实补库或全库字段质量验收。
+
+## 17. 11月25日代码与问题闭合复核
+
+审查范围为上海时间2026-11-25的 `Afuture`，当日首个提交的父版本为 `1eb149e1`，末提交为 `1aa70f9e`，共19个提交、236个变更文件。以下为当前源码的隔离复现。表中P1至P3表示审查严重度，与施工台账第4.5节的性能项目编号分别使用。
+
+| 优先级及原问题 | 触发条件、实际结果和修复验收 |
+| --- | --- |
+| P1 · 单策略模型发布恢复（385） | 用可加载的V3 Tomorrow工件，在移走旧策略目录与移入新目录之间让发布子进程硬退出。旧文件仍在 `.v3.tomorrow.replaced.*`，恢复看到档位目录存在即返回，正式路径仍缺模型。D25共用该切换。应在发布锁内识别并验证唯一的策略备份，覆盖上述中断点并确认相邻策略身份。 [目录切换](../src/trader/training/infra/model_bundles/profile_publication.py#L304) [恢复](../src/trader/training/infra/model_bundles/profile_publication.py#L77) |
+| P1 · 看板正式冻结与重连（387） | 缓存序号4时发起当前批HTTP请求，期间先收到重播草稿5，随后返回正式冻结6。浏览器因为缓存已变丢弃整个HTTP响应，仍显示草稿5。收盘无正式冻结时，HTTP返回 `not_ready` 后重播盘中草稿又能显示 `ready`。同序号重播还会抹掉HTTP的 `retained/scoring_failed` 提示。应核两种到达顺序、正式状态和失败提示，并保持整批一致。反例涉及页面显示，持久冻结记录未被写入。 [HTTP整批响应](../src/trader/web/static/dashboard.js#L684) [事件判断](../src/trader/web/static/dashboard_patches.js#L27) [收盘读用例](../src/trader/recommendation/application/pipeline/freeze_publish/read_only_queries.py#L449) |
+| P1 · D25公司财务回放归因（380） | 固定行情、模型、公司风险和席位输入，只给600001增加当时可用的供应商财务三项评分。V3夹具中基线／风险／财务／组合四组的本地分依次为83.00／66.32／83.00／66.32。财务分随风险组变化，使两类贡献的解释颠倒。回放按是否启用风险选择整个公司上下文，而正式D25评分从该上下文取财务分。应按组独立选择财务来源，验收仅财务变更、仅风险变更及两者同时变更。 [回放](../src/trader/recommendation/application/pipeline/final_selection/company_replay.py#L341) [正式评分](../src/trader/recommendation/domain/scoring/scoring.py#L468) |
+| P2 · D25模型重启提示（387） | 配置100bp而磁盘概率工件为200bp时，生产读取器拒绝加载，观察器仍报告磁盘概率就绪、需要重启。应在观察时核对D25目标，让重复重启能如实显示仍缺匹配工件。相同目标下变更概率及Tomorrow变更目标的现有回归通过。 [观察](../src/trader/training/infra/history/history_training_due.py#L699) [加载](../src/trader/training/infra/d25/artifact.py#L230) |
+| P2 · 非交易日预览重启（387） | 新预览进程从序号1开始。旧预览序号9、新预览时间更晚且序号1时，页面仍保留9。应使用已有预览运行身份区分序号所属进程，并复验旧进程迟到事件。 [预览分配](../src/trader/recommendation/application/runtime/run_scope.py#L95) [页面比较](../src/trader/web/static/dashboard_patches.js#L27) |
+| P2 · 历史月行情的目录枚举（387） | 逐日冻结读取可跨轮恢复。枚举目录时，四档、双策略、双月的16次 `list_dates` 调用均在检查前执行。各调用推进注入时钟4秒时，10秒配置对应64秒模拟耗时。首个调用触发停止后仍调用15次。应给目录进度也设截止和取消检查。 [月份扫描](../src/trader/recommendation/application/history_quotes.py#L206) |
+| P2 · 明确财报更正的目录保留（332／362） | 在同一发行人、保留窗口内放入季报和《关于更正合并利润表的公告》。普通清理后只剩季报。准入会把该标题认作更正并拦截，清理却删除了这条线索。应使明确报表更正经过清理后仍可追溯，并保持原准入结果。此次复现只验证目录丢失。 [保留与准入](../src/trader/download/infra/company_financial_publication.py#L38) |
+| P2 · 第16章的ROE歧义 | 合法三行ROE后再放一条9.99的冲突行，仅将该行的“加权平均净资产收益率”标签拆成两行或插入空格，实际仍取11.66。完整连续标签的重复行已能拒绝。应让重复检查与字段解析识别相同的标签排版，并保留两份原三行样例的累计值回归。 [重复标签判断](../src/trader/download/domain/company_financial_report.py#L186) |
+| P2 · 第16章的SQLite回执红测 | 测试以默认可写模式打开正式库，公共连接只在只读模式启用SQLite URI，本机在 `ATTACH file:…?mode=ro` 时报错。仅给审计传入按生产方式打开的只读连接，原用例后续断言全部通过。生产式只读组件用例也通过。原测试仍红，修复应覆盖写入准备和只读审计两个阶段。 [测试连接](../tests/download/unit/company/test_company_financial_admission.py#L180) [生产入口](../scripts/download/company/company_publication_audit.py#L212) |
+| P3 · Company行业进度（387） | Company跳过行业网络刷新后返回缓存的全部证券，当期可投总体变化时仍按两组的行数相减。在1只当前证券、2条缓存记录的夹具中显示“准备完成 2/1 股，缺分类 -1 股”。应按当前证券代码交集计数。 [缓存回调](../src/trader/bootstrap.py#L311) [进度计算](../src/trader/download/application/prepare_reference.py#L94) |
+
+第15章的SSE名额泄漏、同目标概率身份变动、普通已就绪批次拒绝较低序号，以及逐日冻结扫描续传均有通过的定向回归。原生SQLite调用的架构检查在当前提交通过。第15.3节的26处是原基线结果。多档共享已解析的运行／策略配置，已清除独立 `sync company fill` 入口和未使用的overlay回调。Company组件去重、概率矩阵及目录封签已有实现，原队列仍需验证整轮耗时及资源。组合根进一步拆分、按证券局部复核、账本索引、结算批读、历史页面缓存和训练并行仍未全部交付。
+
+按原台账，29项财务原件值的发行人版本、质押分母及总体、解禁完整窗口继续待证。隔离候选已识别6只有解禁事件，完整覆盖仍为0／4,401。384断点为359／512次请求、下一步158。当前八组模型采用、V5 D25概率校准、四档双策略同窗成熟收益及整轮性能仍开放。本次未运行真实同步、训练、服务切换或收益验收。 [施工进度](g_施工进度.md#1-待完成任务)
