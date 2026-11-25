@@ -27,6 +27,11 @@ _YTD_COLUMN = r"年初至报告期(?:末(?!比)|(?=\s{2,}|$))"
 _INVALID_UNITS = r"美元|港元|欧元|万元|亿元|千元"
 _INCOME_SECTION = r"合并\s*利润表([\s\S]{0,4500}?)\n\s*二[、．]营业总成本"
 _INCOME_AMOUNT = r"[-+]?[0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?"
+_ROE_ANCHOR = r"(?m)^\s*加权平均净资产收益率(?=\s|[（(]|$)"
+_WRAPPED_ROE_DELTA = r"(?:增加|减少)\s*[-+]?[0-9]+(?:\.[0-9]+)?\s*个"
+_WRAPPED_ROE_HEAD = r"\s*加权平均净资产收益率\s{2,}(" + _WRAPPED_ROE_DELTA + r")\s{2,}(" + _WRAPPED_ROE_DELTA + r")\s*"
+_WRAPPED_ROE_VALUES = r"\s*([-+]?[0-9]+(?:\.[0-9]+)?[%％]?)\s{2,}([-+]?[0-9]+(?:\.[0-9]+)?[%％]?)\s*"
+_WRAPPED_ROE_UNITS = r"\s*[（(][%％][）)]\s{2,}(百分点)\s{2,}(百分点)\s*"
 _LABELS: tuple[tuple[CompanyFinancialReportField, str, int], ...] = (
     ("revenue_growth_pct", r"(?<!占)营业(?:总)?收入(?:[（(]元[）)])?", 3),
     ("core_profit_growth_pct", r"归属于上市公司股东的扣除非经常性损益的净利润(?:[（(]元[）)])?", 3),
@@ -35,7 +40,8 @@ _LABELS: tuple[tuple[CompanyFinancialReportField, str, int], ...] = (
 )
 COMPANY_FINANCIAL_REPORT_DIGEST = hashlib.sha256(
     repr((_TITLE, _HEADING, _END, _CELL, _LABELS, _EXPLANATION, _CURRENT_COLUMN, _YTD_COLUMN,
-          _INVALID_UNITS, _INCOME_SECTION, _INCOME_AMOUNT)).encode(),
+          _INVALID_UNITS, _INCOME_SECTION, _INCOME_AMOUNT, _ROE_ANCHOR,
+          _WRAPPED_ROE_HEAD, _WRAPPED_ROE_VALUES, _WRAPPED_ROE_UNITS)).encode(),
 ).digest()
 
 
@@ -103,8 +109,10 @@ def ExtractCompanyFinancialReport(document: CompanyDocument) -> CompanyFinancial
     labels: list[str] = []
     label_lines: list[int] = []
     first_values = None
+    metric_end = len(lines)
     for index, line in enumerate(lines):
         if first_values is not None and ("本报告期末" in "".join(line.split()) or "上年度末" in "".join(line.split())):
+            metric_end = index
             break
         line = re.sub(r"(?<=[0-9%％]) (?=[-+]?[0-9][0-9,.]*[%％](?:\s|$))", "  ", line)
         parts = tuple(part.strip() for part in re.split(r"\s{2,}", line.strip()) if part.strip())
@@ -174,6 +182,13 @@ def ExtractCompanyFinancialReport(document: CompanyDocument) -> CompanyFinancial
         else:
             continue
         cells.append(CompanyFinancialReportCell(field, value, state, raw, statement, basis))
+    wrapped_roe = _wrapped_roe(lines[:metric_end])
+    if len(tuple(re.finditer(_ROE_ANCHOR, "\n".join(lines[:metric_end])))) > 1 or (
+        wrapped_roe is not None and any(cell.field == "roe_pct" for cell in cells)
+    ):
+        cells = [cell for cell in cells if cell.field != "roe_pct"]
+    elif wrapped_roe is not None:
+        cells.append(wrapped_roe)
     if explanation is not None:
         # A printed positive ROE can be explicitly declared economically meaningless.
         # Preserve that statement rather than promoting it to usable numeric evidence.
@@ -186,6 +201,29 @@ def ExtractCompanyFinancialReport(document: CompanyDocument) -> CompanyFinancial
                 previous.raw_value if previous is not None else "未披露", statement,
             ))
     return CompanyFinancialReport(document.disclosure.codes[0], period, tuple(cells))
+
+
+def _wrapped_roe(lines: list[str]) -> CompanyFinancialReportCell | None:
+    candidates: list[CompanyFinancialReportCell] = []
+    for index, line in enumerate(lines[:-2]):
+        head = re.fullmatch(_WRAPPED_ROE_HEAD, line)
+        if head is None:
+            continue
+        values = re.fullmatch(_WRAPPED_ROE_VALUES, lines[index + 1])
+        units = re.fullmatch(_WRAPPED_ROE_UNITS, lines[index + 2])
+        if values is None or units is None:
+            continue
+        # The two rates and their change columns must alternate horizontally.
+        if not (values.end(1) < head.start(1) < head.end(1) < values.start(2)
+                and values.end(2) < head.start(2)
+                and all(head.start(column) <= units.start(column) < head.end(column) for column in (1, 2))):
+            continue
+        statement = "\n".join(lines[index:index + 3])
+        raw = values[2]
+        value = float(raw.rstrip("%％"))
+        if len(statement) <= 1000 and math.isfinite(value):
+            candidates.append(CompanyFinancialReportCell("roe_pct", value, "numeric", raw, statement))
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _total_revenue_basis(text: str, year: int, cumulative: str) -> str | None:

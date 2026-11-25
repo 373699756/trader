@@ -5,7 +5,9 @@ from datetime import date
 
 import pytest
 
-from tests.helpers.download.company.company_financial_report import BODY, AT, ReportDocument
+from tests.helpers.download.company.company_financial_report import (
+    BODY, AT, ReportDocument, WRAPPED_ROE, WRAPPED_ROE_ALTERNATE, WrappedRoeDocument,
+)
 from trader.download.domain.company_financial_report import ExtractCompanyFinancialReport, CompanyFinancialReportRequest
 
 
@@ -89,3 +91,52 @@ def test_revenue_basis_is_an_actual_independent_statement_and_zero_denominator_r
     body = BODY.replace("300.00", "0.00").replace("247.93", "0.00").replace("21.00%", "不适用")
     cell = next(cell for cell in ExtractCompanyFinancialReport(ReportDocument(body)).cells if cell.field == "revenue_growth_pct")
     assert cell.value is None and cell.state == "not_applicable" and cell.basis_statement in body
+
+
+@pytest.mark.parametrize("frame,expected", ((WRAPPED_ROE, 11.66), (WRAPPED_ROE_ALTERNATE, 16.41),
+    (WRAPPED_ROE.replace("11.66", "-0.00"), 0.0), (WRAPPED_ROE.replace("11.66", "-6.21"), -6.21)))
+def test_wrapped_roe_binds_the_cumulative_value_and_preserves_the_actual_three_line_statement(frame, expected):
+    document = WrappedRoeDocument(frame)
+    parsed = ExtractCompanyFinancialReport(document)
+    cell = next(cell for cell in parsed.cells if cell.field == "roe_pct")
+    assert cell.value == expected and cell.state == "numeric" and cell.statement == frame
+    assert cell.statement in document.text and len(parsed.cells) == 4
+
+
+@pytest.mark.parametrize("old,new", (
+    ("11.66", "--"), ("（%）", "单位待核"), ("百分点", "亿元"),
+    ("11.66", "11.66  9.99"),
+    ("                               减少 1.35 个", "  减少 1.35 个"),
+    ("（%）                                     百分点", "（%）  百分点"),
+    ("\n                            5.21", "\n另一页表头\n                            5.21"),
+))
+def test_wrapped_roe_rejects_missing_units_extra_values_column_drift_and_intervening_headers(old, new):
+    parsed = ExtractCompanyFinancialReport(WrappedRoeDocument(WRAPPED_ROE.replace(old, new)))
+    assert "roe_pct" not in {cell.field for cell in parsed.cells}
+
+
+def test_duplicate_or_outside_main_table_roe_cannot_supply_a_current_cumulative_value():
+    duplicate = WrappedRoeDocument(WRAPPED_ROE + "\n" + WRAPPED_ROE_ALTERNATE)
+    assert "roe_pct" not in {cell.field for cell in ExtractCompanyFinancialReport(duplicate).cells}
+    mixed = ReportDocument(BODY.replace("              本报告期末", WRAPPED_ROE + "\n              本报告期末"))
+    assert "roe_pct" not in {cell.field for cell in ExtractCompanyFinancialReport(mixed).cells}
+    later = WrappedRoeDocument("").text.replace("（二）非经常性损益项目和金额", WRAPPED_ROE + "\n（二）非经常性损益项目和金额")
+    assert "roe_pct" not in {cell.field for cell in ExtractCompanyFinancialReport(ReportDocument(later)).cells}
+
+
+@pytest.mark.parametrize("label", (
+    "加权平均净资产收益率 （%）  9.99",
+    "加权平均净资产收益率（ % ）  9.99",
+    "加权平均净资产收益率 9.99",
+))
+def test_duplicate_roe_label_still_rejects_ambiguity_when_its_unit_or_spacing_is_unsupported(label):
+    parsed = ExtractCompanyFinancialReport(WrappedRoeDocument(WRAPPED_ROE + "\n" + label))
+    assert "roe_pct" not in {cell.field for cell in parsed.cells}
+
+
+def test_meaningless_roe_note_still_overrides_a_wrapped_positive_numeric_value():
+    document = WrappedRoeDocument(WRAPPED_ROE.replace("11.66", "121.93"))
+    note = "注：由于公司净资产为负数，加权平均净资产收益率为正值，不具备参考性。"
+    document = replace(document, text=document.text.replace("（二）非经常性损益项目和金额", note + "\n（二）非经常性损益项目和金额"))
+    cell = next(cell for cell in ExtractCompanyFinancialReport(document).cells if cell.field == "roe_pct")
+    assert cell.state == "not_meaningful" and cell.value is None and cell.raw_value == "121.93"
