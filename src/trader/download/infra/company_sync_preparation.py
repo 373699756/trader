@@ -39,11 +39,13 @@ def PrepareCompanyIssuerInputs(
     recovered: tuple[CompanyRecoveredInput, ...] = (),
     annual_incomes: tuple[CompanyAnnualIncome, ...] = (),
     unlock_observations: tuple[CompanyRatio, ...] = (),
+    field_rules_hash: bytes | None = None,
 ) -> CompanyIssuerPreparation:
     """Use the sole field proofer and only valid-backed exact bodies for corrections."""
+    rules_hash = CompanyFieldProofRulesHash() if field_rules_hash is None else field_rules_hash
     original = previous
     announcement = PrepareCompanyAnnouncements(collected, formal, previous, cutoff=cutoff, extraction_hash=extraction_hash,
-        rule_identity=CompanyFieldProofRulesHash(), event_policy=event_policy, read_document=read_document, check=check,
+        rule_identity=rules_hash, event_policy=event_policy, read_document=read_document, check=check,
         unlock_observations=unlock_observations) if include_new_announcements and correct_measurements else None
     if announcement is not None:
         previous = announcement.facts
@@ -133,7 +135,8 @@ def PrepareCompanyIssuerInputs(
             and item.body_hash == hashlib.sha256(document.text.encode()).digest() for item in recovered))
         facts = RefineCompanyIsolatedPositiveMeasurements(facts, fresh, cutoff, event_policy)
     prepared = PrepareCompanyFieldResults(collected, formal, facts, tuple(documents), observed_at=cutoff,
-        extraction_hash=extraction_hash, event_policy=event_policy, read_document=read_document, revalidate=revalidate)
+        extraction_hash=extraction_hash, event_policy=event_policy, read_document=read_document, revalidate=revalidate,
+        field_rules_hash=rules_hash)
     corrected = tuple(item.event_id for item in facts.positive_events if item not in original.positive_events)
     return CompanyIssuerPreparation(facts, prepared.results, (*prepared.receipts, *directory_receipts), tuple(links), corrected,
         announcement.pending_retained if announcement is not None else 0)

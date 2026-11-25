@@ -69,6 +69,7 @@ def PrepareCompanyFieldResults(
     event_policy: CompanyEventPolicy,
     read_document: Callable[[bytes], str],
     revalidate: bool = False,
+    field_rules_hash: bytes | None = None,
 ) -> CompanyFieldPublication:
     """Reuse current proofs; inspect an unchanged old input once per field rule.
 
@@ -76,7 +77,7 @@ def PrepareCompanyFieldResults(
     receipt commits with the facts and conclusions, so interruption cannot make
     a failed attempt complete or force another download of a retained body.
     """
-    rules_hash = CompanyFieldProofRulesHash()
+    rules_hash = CompanyFieldProofRulesHash() if field_rules_hash is None else field_rules_hash
     saved_rules = formal.run("SELECT rules_hash FROM company_field_proof_rule WHERE singleton=1").fetchone()
     revalidate = revalidate or saved_rules is None or saved_rules[0] != rules_hash
     baseline = tuple(CompanyFieldConclusion(

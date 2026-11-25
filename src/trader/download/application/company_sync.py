@@ -141,8 +141,12 @@ def RunCompanySyncRound(
             current=journal.family(round_id,family)
             if current is not None:
                 item.result=current
-            refresh=(current is not None and producer.plan.refresh_on_input_change
-                and journal.completed_state(round_id,family)!=producer.state(scope))
+            state = None
+            refresh = False
+            if current is not None and producer.plan.refresh_on_input_change:
+                completed = journal.completed_state(round_id, family)
+                state = producer.state(scope)
+                refresh = completed != state
             if current is not None and not current.result.can_continue and not refresh and family is not pending_family:
                 if "source_budget_exhausted" in current.result.gaps:
                     pause_reason = "request_limit"
@@ -151,7 +155,8 @@ def RunCompanySyncRound(
                 pause_reason = "step_limit"
                 stopped=True
                 break
-            state=producer.state(scope)
+            if state is None:
+                state = producer.state(scope)
             outstanding=journal.outstanding(round_id,family)
             reconciled=outstanding is not None and (outstanding.source_required or state.source_required
                 or outstanding.identity!=state.identity)

@@ -536,8 +536,18 @@ def test_new_local_rules_and_input_watermark_reopen_only_fields_and_clear_resolv
         first = RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: False)
         assert len(physical) == 2 and not first.business_complete
         fields.plan = replace(fields.plan, request_hash=CanonicalDigest("new_actual_field_rules"))
-        fields.state = lambda scope: CompanySyncPhaseState(CanonicalDigest((fields.plan, "recovered_material")), False)
-        fields.advance = lambda scope, **kwargs: CompanySyncStepResult(True, False, pending_count=0)
+        state_checks = []
+
+        def recovered_state(scope):
+            state_checks.append(scope)
+            return CompanySyncPhaseState(CanonicalDigest((fields.plan, "recovered_material")), False)
+
+        def confirm_material(_scope, **_kwargs):
+            assert state_checks == [_SCOPE]
+            return CompanySyncStepResult(True, False, pending_count=0)
+
+        fields.state = recovered_state
+        fields.advance = confirm_material
         final = RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: False)
     assert final.round_id == first.round_id and len(physical) == 2 and final.business_complete
     assert final.families[-1].result.changed_codes == ("600001",)

@@ -430,7 +430,8 @@ class CompanySyncRuntime:
                     extraction_hash=self.facts.extraction_hash, event_policy=self._event_policy,
                     read_document=self._read_document, check=check, revalidate=revalidate or needs_recovery_reproof, correct_measurements=code in eligible,
                     include_new_announcements=True, published_links=tuple(links_by_code.get(code, ())), recovered=recovered,
-                    annual_incomes=annuals, unlock_observations=tuple(unlock_by_code.get(code, ())))
+                    annual_incomes=annuals, unlock_observations=tuple(unlock_by_code.get(code, ())),
+                    field_rules_hash=rules_hash)
                 if proof is not None and admitted != fact:
                     receipts = CompanyFinancialAdmissionReceipts(proof, extraction_hash=self.facts.extraction_hash, published_at=scope.cutoff)
                     item = replace(item, receipts=(*item.receipts, *receipts))
