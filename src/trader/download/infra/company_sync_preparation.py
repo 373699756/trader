@@ -15,7 +15,7 @@ from trader.download.domain.company_field_results import CompanyFieldConclusion
 from trader.download.domain.company_measurement_corrections import CorrectCompanyRepurchaseDisposalMeasurements, RefineCompanyIsolatedPositiveMeasurements
 from trader.download.infra.company_sync_inputs import CompanyRecoveredInput
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash, PrepareCompanyFieldResults
-from trader.download.infra.company_announcement_preparation import PrepareCompanyAnnouncements
+from trader.download.infra.company_announcement_preparation import CompanyAnnouncementCoverage, PrepareCompanyAnnouncements
 from trader.download.infra.company_facts_index import CompanyInputReceipt
 from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
 from trader.infra.sqlite_connection import SqliteConnection
@@ -40,13 +40,14 @@ def PrepareCompanyIssuerInputs(
     annual_incomes: tuple[CompanyAnnualIncome, ...] = (),
     unlock_observations: tuple[CompanyRatio, ...] = (),
     field_rules_hash: bytes | None = None,
+    announcement_coverage: CompanyAnnouncementCoverage | None = None,
 ) -> CompanyIssuerPreparation:
     """Use the sole field proofer and only valid-backed exact bodies for corrections."""
     rules_hash = CompanyFieldProofRulesHash() if field_rules_hash is None else field_rules_hash
     original = previous
     announcement = PrepareCompanyAnnouncements(collected, formal, previous, cutoff=cutoff, extraction_hash=extraction_hash,
         rule_identity=rules_hash, event_policy=event_policy, read_document=read_document, check=check,
-        unlock_observations=unlock_observations) if include_new_announcements and correct_measurements else None
+        unlock_observations=unlock_observations, coverage=announcement_coverage) if include_new_announcements and correct_measurements else None
     if announcement is not None:
         previous = announcement.facts
     annual_receipts: list[CompanyInputReceipt] = []

@@ -1,6 +1,7 @@
 """Read exact retained official documents before the sole normalized publication."""
 
 import hashlib
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -31,14 +32,62 @@ class CompanyAnnouncementPreparation:
     pending_retained: int
 
 
+@dataclass(frozen=True, slots=True)
+class CompanyAnnouncementCoverage:
+    pending: int
+    directory_complete: bool
+    has_retained_material: bool
+
+
+def ReadCompanyAnnouncementCoverage(
+    collected: SqliteConnection, codes: tuple[str, ...], cutoff: datetime, check: Callable[[], None],
+) -> dict[str, CompanyAnnouncementCoverage]:
+    """Count required missing bodies per issuer and reuse the market's exact range union in this transaction."""
+    start = cutoff.date() - timedelta(days=365)
+    markets = {code: EvidenceMarket(code) for code in codes}
+    covered = {}
+    for market in sorted(set(markets.values())):
+        check()
+        ranges = collected.run("SELECT start_date,end_date FROM coverage WHERE market=? ORDER BY start_date,end_date",
+            (market,)).fetchall()
+        covered[market] = CompanyCoverageComplete(ranges, start, cutoff.date())
+    pending: Counter[str] = Counter()
+    retained: set[str] = set()
+    for offset in range(0, len(codes), 128):
+        check()
+        batch = codes[offset:offset + 128]
+        slots = ",".join("?" for _ in batch)
+        # Link candidates may predate the current annual window and do not require a document task.
+        retained.update(row[0] for row in collected.run(f"""SELECT DISTINCT c.code FROM disclosure_codes c
+            CROSS JOIN disclosures d ON d.id=c.disclosure_id
+            WHERE c.code IN ({slots}) AND d.body_checked=1 AND d.body_retained=1 AND d.published_at<=?""",
+            (*batch, cutoff.isoformat())))
+        for code, title in collected.run(f"""SELECT c.code,d.title FROM disclosure_codes c
+            CROSS JOIN disclosures d ON d.id=c.disclosure_id
+            JOIN company_document_requirements required ON required.disclosure_id=d.id
+            WHERE c.code IN ({slots}) AND d.kind='announcement' AND d.published_at>=? AND d.published_at<=?
+            AND (d.body_checked=0 OR d.body_retained=0)""", (*batch, start.isoformat(), cutoff.isoformat())):
+            if CompanyDocumentNeedsReview(title) or not (IsCompanyUnlockListingNotice(title) or IsCompanyUnlockListingRevision(title)):
+                pending[code] += 1
+    return {code: CompanyAnnouncementCoverage(pending[code], covered[market], code in retained) for code, market in markets.items()}
+
+
 def PrepareCompanyAnnouncements(
     collected: SqliteConnection, formal: SqliteConnection, previous: CompanyFacts, *, cutoff: datetime,
     extraction_hash: bytes, rule_identity: bytes, event_policy: CompanyEventPolicy,
     read_document: Callable[[bytes], str], check: Callable[[], None],
     unlock_observations: tuple[CompanyRatio, ...] = (),
+    coverage: CompanyAnnouncementCoverage | None = None,
 ) -> CompanyAnnouncementPreparation:
     """A source receipt validates its exact body, not risk population completeness."""
     check()
+    if coverage is None:
+        coverage = ReadCompanyAnnouncementCoverage(collected, (previous.code,), cutoff, check)[previous.code]
+    if not coverage.has_retained_material:
+        normalized = NormalizeCompanyAnnouncementFacts(previous, (), cutoff, event_policy, candidates=(),
+            pending_count=coverage.pending, directory_complete=coverage.directory_complete,
+            input_identity=CanonicalDigest(((), cutoff)))
+        return CompanyAnnouncementPreparation(normalized.facts, (), (), (), 0)
     start = cutoff.date() - timedelta(days=365)
     documents: list[CompanyDocument] = []
     unlock_documents: list[CompanyDocument] = []
@@ -53,8 +102,8 @@ def PrepareCompanyAnnouncements(
     ) if previous.unlock_state is not CompanyDataState.COMPLETE else ()
     revision = _latest_unlock_revision(collected, previous.code, start.isoformat(), cutoff.isoformat()) if unlock_observations else None
     unlock_policy = CanonicalDigest((rule_id, unlock_observations, revision)) if unlock_observations else None
-    rows = collected.run("""SELECT d.*,c.code,x.payload_hash FROM disclosures d
-        JOIN disclosure_codes c ON c.disclosure_id=d.id
+    rows = collected.run("""SELECT d.*,c.code,x.payload_hash FROM disclosure_codes c
+        CROSS JOIN disclosures d ON d.id=c.disclosure_id
         JOIN company_document_requirements required ON required.disclosure_id=d.id
         JOIN document_extractions x ON x.disclosure_id=d.id AND x.record_hash=d.record_hash
         WHERE c.code=? AND d.source='cninfo' AND d.kind='announcement'
@@ -106,14 +155,6 @@ def PrepareCompanyAnnouncements(
             raise ValueError("company_announcement_body_hash_mismatch")
         selected.append(CompanyDocument(item, text, True))
         identities.append((item.source, item.identity, item.digest, body_hash, proof_policy))
-    pending = sum(CompanyDocumentNeedsReview(row[0]) or not (IsCompanyUnlockListingNotice(row[0]) or IsCompanyUnlockListingRevision(row[0]))
-        for row in collected.run("""SELECT d.title FROM disclosures d
-        JOIN disclosure_codes c ON c.disclosure_id=d.id
-        JOIN company_document_requirements required ON required.disclosure_id=d.id
-        WHERE c.code=? AND d.kind='announcement' AND d.published_at>=? AND d.published_at<=?
-        AND (d.body_checked=0 OR d.body_retained=0)""", (previous.code, start.isoformat(), cutoff.isoformat())))
-    ranges = collected.run("SELECT start_date,end_date FROM coverage WHERE market=? ORDER BY start_date,end_date",
-        (EvidenceMarket(previous.code),)).fetchall()
     candidates = []
     verified_candidate_ids = []
     for row in collected.run("""SELECT link.payload,d.source,d.source_key,d.record_hash,d.body_hash,d.published_at FROM document_link_candidates link
@@ -132,7 +173,7 @@ def PrepareCompanyAnnouncements(
             verified_candidate_ids.append(candidate.evidence_id)
     linked_candidates = LinkCompanyAnnouncementNumbers(collected, previous.code, tuple(candidates))
     normalized = NormalizeCompanyAnnouncementFacts(previous, tuple(documents), cutoff, event_policy,
-        candidates=linked_candidates, pending_count=pending + pending_retained, directory_complete=CompanyCoverageComplete(ranges, start, cutoff.date()),
+        candidates=linked_candidates, pending_count=coverage.pending + pending_retained, directory_complete=coverage.directory_complete,
         input_identity=CanonicalDigest((tuple((source, key, record, body.hex()) for source, key, record, body, policy in identities if policy == rule_id), cutoff)),
         revision_reviews=tuple(reviews), verified_candidate_ids=tuple(verified_candidate_ids))
     facts, unlock_ids = _prepare_unlock_events(normalized.facts, unlock_documents, unlock_observations, cutoff)
@@ -151,8 +192,8 @@ def PrepareCompanyAnnouncements(
 
 
 def _latest_unlock_revision(collected: SqliteConnection, code: str, start: str, cutoff: str) -> str | None:
-    rows = collected.run("""SELECT d.title,d.published_at FROM disclosures d
-        JOIN disclosure_codes c ON c.disclosure_id=d.id
+    rows = collected.run("""SELECT d.title,d.published_at FROM disclosure_codes c
+        CROSS JOIN disclosures d ON d.id=c.disclosure_id
         JOIN company_document_requirements required ON required.disclosure_id=d.id
         WHERE c.code=? AND d.source='cninfo' AND d.kind='announcement' AND d.published_at>=? AND d.published_at<=?
         ORDER BY d.published_at DESC""", (code, start, cutoff))
@@ -177,4 +218,6 @@ def _prepare_unlock_events(
         published_at=cutoff), tuple(evidence for evidence, _ in accepted)
 
 
-__all__ = ["CompanyAnnouncementPreparation", "PrepareCompanyAnnouncements"]
+__all__ = [
+    "CompanyAnnouncementCoverage", "CompanyAnnouncementPreparation", "PrepareCompanyAnnouncements", "ReadCompanyAnnouncementCoverage",
+]

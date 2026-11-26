@@ -30,7 +30,13 @@ def NormalizeCompanyAnnouncementFacts(
     unresolved = any(review.evidence_id in verified_candidate_ids and review.reason_code in {
         "progress_unlinked", "resolution_unlinked", "cancellation_unlinked",
     } for review in previous.review_reasons)
-    if not documents and not revision_reviews and not unresolved and pending_count == previous.pending_document_count:
+    window_start = cutoff.date() - timedelta(days=365)
+    window_newly_covered = directory_complete and (
+        previous.announcement_coverage_start is None or previous.announcement_coverage_start > window_start
+        or previous.announcement_coverage_end is None or previous.announcement_coverage_end < cutoff.date()
+    )
+    if (not documents and not revision_reviews and not unresolved and not window_newly_covered
+        and pending_count == previous.pending_document_count):
         return CompanyAnnouncementNormalization(previous, ())
     eligible: list[CompanyDocument] = []
     reviews = list(revision_reviews)
@@ -46,7 +52,7 @@ def NormalizeCompanyAnnouncementFacts(
         eligible.append(document)
         if ExtractCompanyEvents((document,), cutoff, policy).checked_documents == 1:
             verified_ids.append(item.identity)
-    snapshot = CompanyEvidenceInput(previous.code, cutoff, cutoff.date() - timedelta(days=365), cutoff.date(),
+    snapshot = CompanyEvidenceInput(previous.code, cutoff, window_start, cutoff.date(),
         input_identity, tuple(eligible), False, (), None, (), False, (), False,
         ("announcements:initial_risk_state_unverified",))
     reviewed_previous = replace(previous, review_reasons=(*previous.review_reasons, *revision_reviews))

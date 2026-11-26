@@ -17,6 +17,7 @@ from trader.download.domain.company_evidence import BuildCompanyDocumentPolicies
 from trader.download.domain.company_events import CompanyDataState, CompanyEventStatus, CompanyRiskType
 from trader.download.domain.company_sync import CompanySyncBudget, CompanySyncFamily, CompanySyncStepResult
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
+from trader.download.infra.company_announcement_preparation import ReadCompanyAnnouncementCoverage
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
 from trader.download.infra.company_sync_producers import CompanyAnnouncementProducer
@@ -47,6 +48,49 @@ def _run(runtime, transport, *, steps=80):
     with transport:
         return runtime.run(_SCOPE.codes, _SCOPE.cutoff, CompanySyncBudget(100, 0, steps, 10),
             cancel_requested=lambda: False, monotonic=lambda: 0)
+
+
+def test_batched_announcement_inputs_keep_market_window_and_issuer_membership(tmp_path):
+    runtime, _, _, _ = _runtime(tmp_path)
+    codes = ("000001", "600001", "600002")
+    cutoff = _SCOPE.cutoff
+    runtime.initialize(codes, cutoff)
+    old = _material(runtime, _INVESTIGATION, days=370)
+    shared = replace(old, identity="shared", codes=("600001", "600002"), published_at=cutoff, digest="a" * 64)
+    unlock = replace(shared, identity="unlock-only", codes=("000001",), title=_UNLOCK_TITLE, digest="b" * 64)
+    runtime.material.register_disclosures((shared, unlock))
+    with SqliteSession(runtime.material.path, sqlite_policy=SqlitePolicyFixture()) as raw:
+        raw.run("INSERT INTO coverage VALUES(?,?,?,?)", ("sse", (cutoff.date() - timedelta(days=365)).isoformat(),
+            cutoff.date().isoformat(), cutoff.isoformat()))
+        coverage = ReadCompanyAnnouncementCoverage(raw, codes, cutoff, lambda: None)
+    assert [coverage[code].pending for code in codes] == [0, 1, 1]
+    assert [coverage[code].directory_complete for code in codes] == [False, True, True]
+    # An older retained body may still participate in an announcement-number link.
+    assert [coverage[code].has_retained_material for code in codes] == [False, True, False]
+
+
+def test_directory_closure_alone_publishes_window_and_preserves_unverified_initial_risk(tmp_path):
+    runtime, reader, _, physical = _runtime(tmp_path)
+    cutoff = _SCOPE.cutoff
+    start = cutoff.date() - timedelta(days=365)
+    runtime.initialize(_SCOPE.codes, cutoff)
+    def prepare():
+        runtime.prepare_local(_SCOPE, check=lambda: None, cancel_requested=lambda: False, eligible_codes=_SCOPE.codes,
+            financial_query=BuildCompanyFinancialRoundQuery(cutoff))
+        return reader.read(_SCOPE.codes)[0]
+
+    with SqliteSession(runtime.material.path, sqlite_policy=SqlitePolicyFixture()) as raw:
+        raw.run("INSERT INTO coverage VALUES(?,?,?,?)", ("sse", start.isoformat(), (cutoff.date() - timedelta(days=1)).isoformat(), cutoff.isoformat()))
+    assert prepare().announcement_coverage_end is None
+    with SqliteSession(runtime.material.path, sqlite_policy=SqlitePolicyFixture()) as raw:
+        raw.run("INSERT INTO coverage VALUES(?,?,?,?)", ("sse", cutoff.date().isoformat(), cutoff.date().isoformat(), cutoff.isoformat()))
+    fact = prepare()
+    assert (fact.announcement_coverage_start, fact.announcement_coverage_end) == (start, cutoff.date())
+    assert fact.announcement_state is CompanyDataState.PARTIAL
+    assert any(reason.reason_code == "initial_risk_state_unverified" for reason in fact.review_reasons)
+    assert fact.pending_document_count == 0 and not fact.risk_events and not fact.positive_events
+    identity = reader.publication_identity()
+    assert prepare() == fact and reader.publication_identity() == identity and physical == []
 
 
 @pytest.mark.parametrize("scenario", (

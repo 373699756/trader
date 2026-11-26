@@ -32,6 +32,7 @@ from trader.download.domain.company_sync import (
 )
 from trader.download.domain.company_unlock_notice import IsCompanyUnlockListingNotice
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
+from trader.download.infra.company_announcement_preparation import ReadCompanyAnnouncementCoverage
 from trader.download.infra.company_document_link_rows import ReadCompanyDocumentLinks
 from trader.download.infra.company_facts_index import CompanyPublicationIdentity, ReadCompanyPublicationIdentity, SQLiteCompanyFactsIndex
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
@@ -472,6 +473,7 @@ class CompanySyncRuntime:
                     tuple(item for item in observations if item.financial.code in eligible), scope.cutoff,
                     read_document=self._read_document, check=check, revision_proofs=self._financial_revision_proofs):
                     admissions[admission.report.code] = admission
+            announcement_coverage = ReadCompanyAnnouncementCoverage(raw, eligible_codes, scope.cutoff, check)
             prepared = []
             for code in all_codes:
                 check()
@@ -489,7 +491,7 @@ class CompanySyncRuntime:
                     read_document=self._read_document, check=check, revalidate=revalidate or needs_recovery_reproof, correct_measurements=code in eligible,
                     include_new_announcements=True, published_links=tuple(links_by_code.get(code, ())), recovered=recovered,
                     annual_incomes=annuals, unlock_observations=tuple(unlock_by_code.get(code, ())),
-                    field_rules_hash=rules_hash)
+                    field_rules_hash=rules_hash, announcement_coverage=announcement_coverage.get(code))
                 if proof is not None and admitted != fact:
                     receipts = CompanyFinancialAdmissionReceipts(proof, extraction_hash=self.facts.extraction_hash, published_at=scope.cutoff)
                     item = replace(item, receipts=(*item.receipts, *receipts))
