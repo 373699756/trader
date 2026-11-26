@@ -464,8 +464,7 @@ def ScoreBoardStrategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy) -
 
 
 def _strategy_scoring_values(snapshot: FeatureSnapshot, strategy: Strategy) -> Mapping[str, float | None]:
-    context = snapshot.company_context
-    scores = context.d25_financial_scores if context is not None else None
+    scores = snapshot.d25_financial_scores
     if strategy is not Strategy.D25 or scores is None or scores.available_at > snapshot.observed_at:
         return snapshot.values
     return {

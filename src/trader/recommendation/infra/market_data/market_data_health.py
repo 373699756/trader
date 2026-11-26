@@ -22,6 +22,7 @@ from trader.recommendation.infra.market_data.vendor_routing import RouteOutcome
 
 
 _COMPANY_ERROR_CODES = frozenset({
+    "company_financial_scoring_read_failed",
     "company_not_loaded",
     "company_population_unavailable",
     "company_preload_cancelled",
@@ -93,6 +94,7 @@ class MarketDataHealth:
             "restart_required": research.restart_required,
             "publication_observation_failure": research.publication_observation_failure,
             "planned_count": research.planned_count,
+            "financial_scoring_observation_count": research.financial_scoring_observation_count,
             "success_count": research.success_count,
             "error_count": research.error_count,
             "timeout_count": research.timeout_count,

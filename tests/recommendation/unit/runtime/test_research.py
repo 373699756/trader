@@ -166,8 +166,8 @@ def test_supplier_financial_observation_scores_only_d25_after_actual_availabilit
         values={**snapshot.values, **dict.fromkeys(missing_fields)},
         missing_fields=missing_fields,
     )
-    company = CompanyScoringContext(CompileCompanyFacts(_snapshot(), CompanyEventPolicy()), (), False, scores)
-    supplied = replace(original, company_context=company)
+    company = CompanyScoringContext(CompileCompanyFacts(_snapshot(), CompanyEventPolicy()), (), False)
+    supplied = replace(original, company_context=company, d25_financial_scores=scores)
     settings = StrategySettingsFixture()
     for strategy in (Strategy.TOMORROW, Strategy.D25):
         policy = BoardStrategyPolicy(

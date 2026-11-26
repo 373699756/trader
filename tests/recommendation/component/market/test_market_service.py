@@ -409,7 +409,8 @@ def test_company_preload_failure_reaches_http_as_a_finite_error_code(failure_typ
         company_evidence_reader=FailedPublishedEvidence(),
     )
     status = service.research.status()
-    assert status.entries == status.planned_count == status.error_count == 0
+    assert status.planned_count == status.unavailable_count == 1
+    assert status.entries == status.error_count == 0
     assert status.last_error == f"company_snapshot:{failure_type.__name__}"
     clock = Mock()
     clock.now.return_value = NOW
@@ -429,6 +430,7 @@ def test_company_preload_failure_reaches_http_as_a_finite_error_code(failure_typ
     assert response.status_code == 200
     source = response.get_json()["market_data"]["sources"]["company_evidence"]
     assert source["last_error_code"] == expected
+    assert source["planned_count"] == 1 and source["success_count"] == 0
     assert source["error_count"] == 0
     assert "last_error" not in source
     assert "private-company-payload" not in response.get_data(as_text=True)
@@ -513,6 +515,7 @@ def test_company_preload_cancellation_is_not_logged_as_a_read_failure(caplog) ->
     ("company_preload_deadline", "company_preload_deadline"),
     ("company_preload_capacity", "company_preload_capacity"),
     ("company_publication_changed", "company_publication_changed"),
+    ("company_financial_scoring_read_failed", "company_financial_scoring_read_failed"),
     ("company_snapshot:missing", "company_snapshot:missing"),
     ("company_snapshot:sqlite_schema_unsupported", "company_snapshot:sqlite_schema_unsupported"),
     ("company_snapshot:sqlite_required_row_missing", "company_snapshot:sqlite_required_row_missing"),
@@ -526,12 +529,13 @@ def test_company_health_exposes_only_known_preload_error_codes(reason, expected,
         StaticHistoryClient(),
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
     )
-    status = replace(service.research.status(), last_error=reason)
+    status = replace(service.research.status(), last_error=reason, financial_scoring_observation_count=2)
     monkeypatch.setattr(service.research, "status", lambda: status)
 
     source = service.health()["sources"]["company_evidence"]
 
     assert source["last_error_code"] == expected
+    assert source["financial_scoring_observation_count"] == 2
     assert "last_error" not in source
 
 

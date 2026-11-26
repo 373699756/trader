@@ -128,7 +128,6 @@ class _AllowAllEligibility:
 
     def status(self) -> IssuerEligibilitySnapshot:
         return IssuerEligibilitySnapshot(
-            "issuer_eligibility_registry",
             0,
             0,
             (),

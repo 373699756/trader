@@ -86,12 +86,6 @@ class CompanyScoringContext:
     facts: CompanyFacts
     windows: tuple[CompanyEventWindow, ...]
     coverage_current: bool
-    d25_financial_scores: D25FinancialScores | None = None
-
-    def __post_init__(self) -> None:
-        scores = self.d25_financial_scores
-        if scores is not None and scores.source.observation.financial.code != self.facts.code:
-            raise ValueError("d25_financial_scoring_security_mismatch")
 
 
 @dataclass(frozen=True, slots=True)

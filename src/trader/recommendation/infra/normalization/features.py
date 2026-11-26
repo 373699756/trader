@@ -358,12 +358,11 @@ class FeatureBuilder:
                 )
             )
             company_context = observation.company_context
+            financial_scores = None
             if company_context is not None:
                 financial_scores = DeriveD25FinancialScores(
                     observation, quote.price, self._long_research_policy, observed_at=observed_at,
                 )
-                if financial_scores is not None:
-                    company_context = replace(company_context, d25_financial_scores=financial_scores)
             snapshots.append(
                 FeatureSnapshot(
                     quote=quote,
@@ -390,6 +389,7 @@ class FeatureBuilder:
                         if quote.code in basis_failures else {}
                     ),
                     company_context=company_context,
+                    d25_financial_scores=financial_scores,
                     preview_context=options.get("preview_context"),
                 )
             )

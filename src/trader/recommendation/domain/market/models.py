@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from trader.recommendation.domain.evidence.review import RiskFact
     from trader.recommendation.domain.market.research import ResearchComponentCoverage
     from trader.recommendation.domain.publication.preview import PreviewContext
-    from trader.recommendation.domain.scoring.company import CompanyScoringContext
+    from trader.recommendation.domain.scoring.company import CompanyScoringContext, D25FinancialScores
 
 
 class Board(str, Enum):
@@ -248,8 +248,12 @@ class FeatureSnapshot:
     model_history_quality: ModelHistoryQuality | None = None
     preview_context: PreviewContext | None = field(default=None, kw_only=True)
     company_context: CompanyScoringContext | None = field(default=None, kw_only=True)
+    d25_financial_scores: D25FinancialScores | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
+        scores = self.d25_financial_scores
+        if scores is not None and scores.source.observation.financial.code != self.quote.code:
+            raise ValueError("d25_financial_scoring_security_mismatch")
         object.__setattr__(self, "values", MappingProxyType(dict(self.values)))
         object.__setattr__(self, "normalization", MappingProxyType(dict(self.normalization)))
         object.__setattr__(self, "missing_reasons", MappingProxyType(dict(self.missing_reasons)))

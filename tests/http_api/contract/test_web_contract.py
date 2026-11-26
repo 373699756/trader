@@ -862,12 +862,14 @@ def test_observation_failures_are_public_and_clear_on_recovery_without_io(monkey
     }
     company = {
         "loaded_identity": "old-company", "disk_identity": "same-company", "restart_required": False,
+        "financial_scoring_observation_count": 12,
         "publication_observation_failure": failures["company"], "private_path": "must-not-leak",
     }
     market = {
         "published_history_snapshot_hash": "a" * 64,
         "published_history_observation_failure": failures["history"],
-        "reference_publication": reference, "sources": {"company_evidence": company},
+        "reference_publication": reference,
+        "sources": {"company_evidence": company, "sina": {"financial_scoring_observation_count": 12}},
     }
     runtime = {
         "market_data": market,
@@ -902,6 +904,8 @@ def test_observation_failures_are_public_and_clear_on_recovery_without_io(monkey
         assert observed["published_history_snapshot_hash"] == "a" * 64
         assert observed["reference_publication"]["loaded_identity"] == "old-reference"
         assert observed["sources"]["company_evidence"]["loaded_identity"] == "old-company"
+        assert observed["sources"]["company_evidence"]["financial_scoring_observation_count"] == 12
+        assert "financial_scoring_observation_count" not in observed["sources"]["sina"]
         market["published_history_observation_failure"] = None
         for item in (maintenance, reference, company):
             item["publication_observation_failure"] = None

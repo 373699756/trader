@@ -601,6 +601,9 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
                 projected_source.pop("last_error_code", None)
             if name == "company_evidence":
                 projected_source.update(_observation_failure(value, "publication_observation_failure", "company"))
+                count = value.get("financial_scoring_observation_count")
+                if type(count) is int and count >= 0:
+                    projected_source["financial_scoring_observation_count"] = count
             safe_sources[str(name)[:32]] = projected_source
         result["sources"] = safe_sources
     if changes := _market_changes(raw.get("market_changes")):

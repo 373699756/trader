@@ -120,6 +120,31 @@ def test_link_cache_is_included_in_preload_reservation(tmp_path):
     assert research.document_links(link.code, (link.link.evidence_id,)) == ()
 
 
+@pytest.mark.parametrize("read_failure", (False, True))
+def test_scoring_read_failure_and_missing_issuers_are_visible_without_losing_formal_facts(
+    tmp_path, monkeypatch, read_failure,
+):
+    _, reader, _, link = _publication(tmp_path)
+    if read_failure:
+        def failed_read(*args, **kwargs):
+            raise RuntimeError("unreadable scoring observations")
+
+        monkeypatch.setattr(reader, "read_financial_scoring_observations", failed_read)
+    research = PublishedCompanyResearchFixture(
+        reader, wall_clock=lambda: _AT, open_dates=lambda: _DATES, monotonic=time.monotonic,
+        financial_scoring_reader=reader,
+    )
+    research.initialize((link.code, "600002", link.code, "600003"), cancelled=lambda: False)
+    status = research.status()
+    assert (status.planned_count, status.entries, status.success_count) == (3, 1, 1)
+    assert status.verified_count + status.partial_count + status.unavailable_count == 3
+    assert status.unavailable_count >= 2
+    assert status.last_error == ("company_financial_scoring_read_failed" if read_failure else "")
+    assert status.financial_scoring_observation_count == 0
+    assert research.cached((link.code,), include_structured=True)[link.code].corporate_risk_facts
+    assert research.document_links(link.code, (link.link.evidence_id,))
+
+
 def test_scoring_receipt_is_only_available_after_sealed_adoption(tmp_path):
     snapshot = _snapshot()
     financial = snapshot.financials[0]
@@ -155,6 +180,7 @@ def test_scoring_receipt_is_only_available_after_sealed_adoption(tmp_path):
     assert current.financial_scoring_observation.observation == supplier
     assert current.financial_scoring_observation.available_at == receipt_at
     assert current.financial_scoring_adopted_at == adopted_at
+    assert research.status().financial_scoring_observation_count == 1
     assert current.loaded_at == receipt_at
     assert current.financial is None and not current.financial_history_complete
     assert current.financial_history == ()

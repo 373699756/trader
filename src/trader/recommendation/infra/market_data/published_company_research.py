@@ -210,6 +210,7 @@ class PublishedCompanyResearch:
         self._disk_version = ""
         self._publication_observation_failure: str | None = None
         self._initialized = False
+        self._planned_count = 0
         self._document_links: Mapping[str, tuple[CompanyDocumentReference, ...]] = MappingProxyType({})
 
     def document_links(self, code: str, evidence_ids: tuple[str, ...]) -> tuple[CompanyDocumentReference, ...]:
@@ -232,7 +233,8 @@ class PublishedCompanyResearch:
             if self._initialized:
                 return
             self._initialized = True
-        requested = tuple(sorted(set(codes)))
+            requested = tuple(sorted(set(codes)))
+            self._planned_count = len(requested)
         if not requested or len(requested) > 12_000:
             self._last_error = "company_population_unavailable"
             return
@@ -243,7 +245,7 @@ class PublishedCompanyResearch:
                 self._last_error = "company_preload_cancelled" if cancelled() else "company_preload_deadline"
                 return
             try:
-                before, rows = self._capture_publication(requested, observed_at, cancelled, deadline)
+                before, rows, scoring_failed = self._capture_publication(requested, observed_at, cancelled, deadline)
                 after = _observe_snapshot_read("after", self._reader.publication_version)
             except InterruptedError:
                 self._last_error = "company_preload_cancelled" if cancelled() else "company_preload_deadline"
@@ -270,13 +272,13 @@ class PublishedCompanyResearch:
                 return
             if links.publication_hash != after:
                 continue
-            self._adopt_projection(rows, links, observed_at, after, cancelled, deadline)
+            self._adopt_projection(rows, links, observed_at, after, cancelled, deadline, scoring_failed=scoring_failed)
             return
         self._last_error = "company_publication_changed"
 
     def _capture_publication(
         self, requested: tuple[str, ...], observed_at: datetime, cancelled: Callable[[], bool], deadline: float
-    ) -> tuple[str, dict[str, ResearchObservation]]:
+    ) -> tuple[str, dict[str, ResearchObservation], bool]:
         before = _observe_snapshot_read("before", self._reader.publication_version)
         calendar = _observe_snapshot_read("before", lambda: CompanyScoringCalendar(self._open_dates()))
         rows: dict[str, ResearchObservation] = {}
@@ -293,7 +295,7 @@ class PublishedCompanyResearch:
                 rows[snapshot.code] = _observation(
                     snapshot, observed_at, before, calendar, self._company_policy,
                     financial_max_age_days=self._financial_max_age_days,
-                    financial_scoring_observation=scoring.get(snapshot.code),
+                    financial_scoring_observation=scoring.get(snapshot.code) if scoring is not None else None,
                 )
 
         _observe_snapshot_read(
@@ -302,14 +304,14 @@ class PublishedCompanyResearch:
                 requested, capture, cancel_requested=preload_stopped,
             ),
         )
-        return before, rows
+        return before, rows, scoring is None
 
     def _read_financial_scoring(
         self,
         codes: tuple[str, ...],
         observed_at: datetime,
         cancelled: Callable[[], bool],
-    ) -> dict[str, CompanyFinancialScoringObservation]:
+    ) -> dict[str, CompanyFinancialScoringObservation] | None:
         reader = self._financial_scoring_reader
         if reader is None:
             return {}
@@ -322,7 +324,7 @@ class PublishedCompanyResearch:
             raise
         except (OSError, RuntimeError, ValueError, TypeError):
             # The formal path still checks its own seal and publication identity.
-            return {}
+            return None
         return {
             item.observation.financial.code: item for item in observations
             if item.available_at <= observed_at
@@ -336,6 +338,8 @@ class PublishedCompanyResearch:
         publication: str,
         cancelled: Callable[[], bool],
         deadline: float,
+        *,
+        scoring_failed: bool,
     ) -> None:
         # Conservative retained-size reservation: fixed observations/lineage plus bounded event strings.
         size_bytes = sum(8192 + _event_reservation(row) for row in rows.values())
@@ -393,6 +397,8 @@ class PublishedCompanyResearch:
             })
             self._publication_version = self._disk_version = publication
             self._last_error = "" if rows else "company_snapshot:missing"
+            if scoring_failed:
+                self._last_error = "company_financial_scoring_read_failed"
 
     @property
     def loaded_identity(self) -> str:
@@ -474,6 +480,7 @@ class PublishedCompanyResearch:
         required = self._required_coverage(now)
         with self._lock:
             epoch = self._epoch
+            planned_count = self._planned_count
             last_error = self._last_error
             publication_version = self._publication_version
             disk_version = self._disk_version
@@ -492,7 +499,7 @@ class PublishedCompanyResearch:
             entries=len(rows),
             success_count=len(rows),
             error_count=sum(bool(item.source_errors) for item in rows),
-            planned_count=len(rows),
+            planned_count=planned_count,
             timeout_count=0,
             consecutive_failures=0,
             circuit_open=False,
@@ -505,7 +512,8 @@ class PublishedCompanyResearch:
             corporate_risk_evidence_versions=tuple(sorted({item.corporate_risk_evidence_version for item in rows})),
             verified_count=verified,
             partial_count=partial,
-            unavailable_count=len(rows) - verified - partial,
+            unavailable_count=planned_count - verified - partial,
+            financial_scoring_observation_count=sum(item.financial_scoring_observation is not None for item in rows),
             financial_covered_count=covered[0],
             announcements_covered_count=covered[1],
             pledge_covered_count=covered[2],

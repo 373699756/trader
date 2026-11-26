@@ -5,9 +5,13 @@ from datetime import timedelta
 
 import pytest
 
+from tests.helpers.download.company.company_startup import _AT, _snapshot
 from tests.helpers.recommendation.company_replay_fixture import BuildCompanyReplayCase
 from tests.helpers.recommendation.publication.tomorrow_projection import EVALUATED_AT, _native_input, _verified_feature
 from tests.helpers.recommendation.runtime.input_runtime import _policy
+from trader.download.domain.company_source_records import (
+    CompanyFinancialScoringObservation, CompanyFinancialSourceObservation, CompanyFinancialSourceRecordHash,
+)
 from trader.recommendation.application.pipeline.final_selection.company_replay import (
     CompanyReplayInputs,
     CompanyReplayPublication,
@@ -20,6 +24,7 @@ from trader.recommendation.application.pipeline.local_score.tomorrow_probability
 from trader.recommendation.application.tomorrow.v2.plan import V2_TOMORROW_PLAN
 from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.publication.models import ScoredDisposition, Strategy
+from trader.recommendation.domain.scoring.company import D25FinancialScores
 
 
 @pytest.fixture
@@ -61,6 +66,31 @@ def test_company_replay_compares_fixed_seats_and_rebuilds_risk_denominator(appli
     assert combined.seats[0].local_score == financial.seats[0].local_score
     assert tuple(row.code for row in combined.decision.rows) == tuple(row.code for row in baseline.decision.rows)
     assert inputs.baseline.market_features[0].values.get("latest_disclosed_report_loss") != 1.0
+
+
+def test_only_financial_replay_arms_receive_supplier_scores(application_feature_factory):
+    inputs, policy, runtime, _ = BuildCompanyReplayCase(application_feature_factory, evaluated_at=_AT + timedelta(days=1))
+    report = _snapshot().financials[0]
+    issuer = f"{report.code}.SH"
+    source = CompanyFinancialSourceObservation(
+        report, issuer, _AT, None, _AT, "CNY", CompanyFinancialSourceRecordHash(report, issuer, _AT, None, "CNY"), (),
+    )
+    scores = D25FinancialScores(CompanyFinancialScoringObservation(source, _AT), 10.0, 10.0, 10.0, _AT)
+    baseline = inputs.baseline
+
+    def overlay(rows):
+        return tuple(replace(row, d25_financial_scores=scores) if row.quote.code == report.code else row for row in rows)
+
+    candidate = replace(
+        baseline, market_features=overlay(baseline.market_features), candidate_features=overlay(baseline.candidate_features),
+    )
+    original, risk, financial, combined = ReplayCompanyDecisions(
+        replace(inputs, candidate_company_features=candidate), policy, runtime=runtime,
+    ).arms
+    assert original.decision == risk.decision
+    assert financial.decision == combined.decision
+    assert report.code in {row.code for row in original.seats}
+    assert report.code not in {row.code for row in financial.seats}
 
 
 def test_company_replay_rejects_decision_drift_foreknowledge_and_quote_change(company_replay_case):

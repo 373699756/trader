@@ -290,8 +290,12 @@ def _replay_arm(
     fields = (_RISK_FIELDS if use_risk else frozenset()) | (_FINANCIAL_FIELDS if financial else frozenset())
     if not fields:
         return inputs.expected_baseline
-    market = _overlay_features(baseline.market_features, candidate.market_features, fields, use_risk=use_risk)
-    directed = _overlay_features(baseline.candidate_features, candidate.candidate_features, fields, use_risk=use_risk)
+    market = _overlay_features(
+        baseline.market_features, candidate.market_features, fields, use_risk=use_risk, use_financial=financial,
+    )
+    directed = _overlay_features(
+        baseline.candidate_features, candidate.candidate_features, fields, use_risk=use_risk, use_financial=financial,
+    )
     if (
         inputs.current_company.identity == inputs.candidate_company.identity
         and (market != baseline.market_features or directed != baseline.candidate_features)
@@ -319,6 +323,7 @@ def _overlay_features(
     fields: frozenset[str],
     *,
     use_risk: bool,
+    use_financial: bool,
 ) -> tuple[FeatureSnapshot, ...]:
     result = []
     for current, candidate in zip(current_rows, candidate_rows, strict=True):
@@ -339,6 +344,7 @@ def _overlay_features(
             missing_reasons=reasons,
             research_components=candidate.research_components if use_risk else current.research_components,
             company_context=_risk_context(current, candidate) if use_risk else current.company_context,
+            d25_financial_scores=candidate.d25_financial_scores if use_financial else current.d25_financial_scores,
         ))
     return tuple(result)
 

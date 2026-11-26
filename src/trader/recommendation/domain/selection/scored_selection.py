@@ -755,8 +755,7 @@ def ApplySelectionRisks(
                 original.features.optional_value("growth_score"),
             ),
         )
-        context = original.features.company_context
-        financial_scores = context.d25_financial_scores if context is not None else None
+        financial_scores = original.features.d25_financial_scores
         if strategy is Strategy.D25 and financial_scores is not None:
             available_at = financial_scores.available_at
             if available_at <= original.features.observed_at:
