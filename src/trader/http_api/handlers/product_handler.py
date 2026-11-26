@@ -483,7 +483,8 @@ def _observation_failure(raw: Mapping[object, object], field: str, source: str) 
         return {field: None}
     if not isinstance(value, str) or len(value) > 128:
         return {}
-    if source != "model" and value == f"{source}_publication_unavailable":
+    if (source == "model" and value == "d25_probability_target_mismatch"
+            or source != "model" and value == f"{source}_publication_unavailable"):
         return {field: value}
     prefix = f"{source}_observation:"
     name = value.removeprefix(prefix)

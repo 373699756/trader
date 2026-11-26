@@ -576,8 +576,9 @@
         stateRenderer.renderMissingHistoricalDate(strategy, selectedDate);
         return;
       }
-      if (cached) {
-        state.payload = cached;
+      const latest = displayableCachedPayload(key, strategy, selectedDate, view) || cached;
+      if (latest) {
+        state.payload = latest;
         stateRenderer.setNotice("后台刷新失败，显示最近已加载快照", "warn");
       } else if (strategy === "long" && !selectedDate) {
         const fallback = longGroups.staticFallbackPayload("long_api_unavailable");
@@ -666,6 +667,7 @@
       const profiles = Object.entries(raw.profiles);
       if (!completeBatchProfiles(raw.profiles)) throw new Error("整批推荐档位不匹配");
       const replacements = new Map();
+      let confirmNotReady = false;
       for (const [profile, pair] of profiles) {
         for (const strategy of ["tomorrow", "d25"]) {
           const value = pair[strategy];
@@ -677,22 +679,53 @@
           if (value.freeze_version !== null && (!Number.isSafeInteger(value.publication_sequence)
             || value.publication_sequence < 1)) throw new Error("整批推荐发布序号缺失");
           const cacheKey = `${profile}:${strategy}:current`;
-          replacements.set(cacheKey, normalizeFreezePayload(value, strategy, "", "current"));
+          const next = normalizeFreezePayload(value, strategy, "", "current");
+          const current = state.payloads.get(cacheKey);
+          const decision = patches.currentHeadDecision(current, next, true);
+          if (decision === "identity_mismatch") throw new Error("整批推荐发布身份冲突");
+          if (decision !== "apply") continue;
+          if (current && current !== before.get(cacheKey)) {
+            if (next.status === "not_ready" && current.status === "ready") confirmNotReady = true;
+            if (next.status === "ready" && next.snapshot_id === current.snapshot_id && next.frozen === current.frozen
+              && current.projection_version !== current.snapshot_id && current.projection_version !== next.projection_version) {
+              // Retain an overlay delivered in flight while applying HTTP's per-head health.
+              replacements.set(cacheKey, { ...current, head_availability: next.head_availability || null });
+              continue;
+            }
+          }
+          replacements.set(cacheKey, next);
         }
       }
-      // An SSE update received during the request wins for the whole batch.
-      if (state.inflight.get(key) !== request
-        || [...replacements.keys()].some((cacheKey) => state.payloads.get(cacheKey) !== before.get(cacheKey))) return;
-      state.payloads = new Map([...state.payloads, ...replacements]);
+      if (state.inflight.get(key) !== request) return;
+      if (replacements.size) state.payloads = new Map([...state.payloads, ...replacements]);
       for (const cacheKey of replacements.keys()) state.etags.delete(cacheKey);
       diagnostics.recommendationFullResponses += 1;
       diagnostics.fullResponseBytes += formatters.utf8Bytes(JSON.stringify(raw));
+      if (confirmNotReady) confirmCurrentBatch("unsequenced_current");
     })();
     state.inflight.set(key, request);
     try {
       return await request;
     } finally {
       if (state.inflight.get(key) === request) state.inflight.delete(key);
+    }
+  }
+
+  let confirmationPending = null;
+  function confirmCurrentBatch(reason) {
+    const pending = state.inflight.get("current_batch");
+    if (pending) {
+      if (pending === confirmationPending) return;
+      confirmationPending = pending;
+      const retry = () => {
+        if (confirmationPending !== pending) return;
+        confirmationPending = null;
+        confirmCurrentBatch(reason);
+      };
+      pending.then(retry, retry);
+    } else if (!state.releaseMismatch) {
+      if (state.date || state.strategy === "long") requestCurrentBatch().catch(() => {});
+      else requestRecommendationResync(reason);
     }
   }
 
@@ -1188,7 +1221,7 @@
   function connectStream() { streamController.connect(); }
 
   function applyRecommendationBatch(batch) {
-    if (!Number.isInteger(batch.round_sequence)
+    if (!batch || !Number.isInteger(batch.round_sequence)
       || batch.round_sequence < 1 || !batch.profiles || typeof batch.profiles !== "object"
       || !completeBatchProfiles(batch.profiles) || !batch.published_strategies
       || !completeBatchProfiles(batch.published_strategies)) {
@@ -1197,14 +1230,13 @@
     }
     if (batch.round_head_gaps && Object.keys(batch.round_head_gaps).length > 0) {
       // The complete read carries original identity and availability for retained heads.
-      state.inflight.delete("current_batch");
-      if (state.date || state.strategy === "long") requestCurrentBatch().catch(() => {});
-      else requestRecommendationResync("round_head_gap");
+      confirmCurrentBatch("round_head_gap");
       return false;
     }
     const replacements = new Map();
     const etags = new Map(state.etags);
     let tradeDate = null;
+    let confirmNotReady = false;
     for (const [profile, pair] of Object.entries(batch.profiles)) {
       const strategies = batch.published_strategies[profile];
       if (!pair || typeof pair !== "object" || !Array.isArray(strategies)
@@ -1225,31 +1257,42 @@
         }
         tradeDate = patch.trade_date;
         const cached = state.payloads.get(key);
-        if (cached && cached.trade_date > tradeDate) return false;
         const current = cached && cached.trade_date === tradeDate ? cached : null;
         const verdict = patches.recommendationPatchFreeze(
           patch, current, patches.projectionVersion(current), strategy, "current",
         );
-        if (["ignore_late_draft", "ignore_stale_publication"].includes(verdict)) return false;
-        if (verdict !== "apply" || !patches.topKValid(patch.upserts, strategy)) {
-          requestRecommendationResync(verdict === "apply" ? "topk_mismatch" : verdict);
+        if (!patches.topKValid(patch.upserts, strategy)) {
+          requestRecommendationResync("topk_mismatch");
+          return false;
+        }
+        const decision = verdict === "apply" && cached && !current ? patches.currentHeadDecision(cached, patch, false) : verdict;
+        if (["ignore_late_draft", "ignore_stale_publication"].includes(decision)) continue;
+        if (decision === "confirm_current_batch") {
+          confirmNotReady = true;
+          continue;
+        }
+        if (decision !== "apply") {
+          requestRecommendationResync(decision);
           return false;
         }
         replacements.set(key, {
           ...patches.replacementPayload(current || {}, patch, patch.upserts),
           round_sequence: batch.round_sequence,
-          head_availability: null,
         });
         etags.delete(key);
       }
     }
     // Validate the whole event before replacing any strategy cache or painting.
+    if (!replacements.size) {
+      if (confirmNotReady) confirmCurrentBatch("unsequenced_current");
+      return false;
+    }
     state.payloads = new Map([...state.payloads, ...replacements]);
     state.etags = etags;
     diagnostics.recommendationPatchesApplied += replacements.size;
+    if (confirmNotReady) confirmCurrentBatch("unsequenced_current");
     const visible = !state.date && replacements.get(recommendationKey(state.strategy, "", state.view));
     if (!visible) return false;
-    state.requestSequence += 1;
     state.payload = visible;
     state.projectionVersion = patches.projectionVersion(visible);
     els.refreshButton.classList.remove("is-busy");
@@ -1261,6 +1304,10 @@
     const currentVersion = state.projectionVersion || patches.projectionVersion(state.payload);
     const freeze = patches.recommendationPatchFreeze(patch, state.payload, currentVersion, state.strategy, state.view);
     if (["ignore_late_draft", "ignore_stale_publication"].includes(freeze)) return false;
+    if (freeze === "confirm_current_batch") {
+      confirmCurrentBatch("unsequenced_current");
+      return false;
+    }
     if (freeze !== "apply") {
       requestRecommendationResync(freeze);
       return false;
@@ -1369,6 +1416,10 @@
   }
 
   function requestRecommendationResync(reason) {
+    if (!state.date && state.strategy !== "long" && state.inflight.has("current_batch")) {
+      confirmCurrentBatch(reason);
+      return;
+    }
     diagnostics.resyncRequests += 1;
     diagnostics.resyncReasons[reason] = (diagnostics.resyncReasons[reason] || 0) + 1;
     loadRecommendations(`resync_${reason}`);
@@ -1381,6 +1432,7 @@
 
   function fallbackDashboardPatches() {
     return Object.freeze({
+      currentHeadDecision: () => "apply",
       emptyRecommendationMessage: () => "当前没有达到正式推荐条件的股票",
       frozenEmptyMessage: () => "正式冻结结果为空；观察池已关闭且未保存",
       mergePatchItems: (items) => items || [],

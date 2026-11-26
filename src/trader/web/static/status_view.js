@@ -215,8 +215,15 @@
     renderPublicationStatus(els, payload, statusPayload);
     if (payload && payload.historical !== true && statusPayload) {
       const maintenance = statusPayload.scoring_profile && statusPayload.scoring_profile.maintenance;
-      const modelChanged = Array.isArray(maintenance)
-        && maintenance.some((head) => head && head.restart_required === true);
+      const heads = Array.isArray(maintenance) ? maintenance : [];
+      const mismatch = heads.find((head) => head && head.owned === true && head.strategy === "d25"
+        && head.publication_observation_failure === "d25_probability_target_mismatch");
+      if (mismatch) {
+        els.publicationMeta.textContent += mismatch.restart_required
+          ? " · D25 磁盘模型与当前目标不符，重启后该模型将不可用"
+          : " · D25 缺少与当前目标匹配的模型";
+      }
+      const modelChanged = heads.some((head) => head && head !== mismatch && head.restart_required === true);
       if (modelChanged || statusPayload.market_data && statusPayload.market_data.restart_required === true) {
         els.publicationMeta.textContent += " · 本地资料或模型已有更新，重启后采用";
       }

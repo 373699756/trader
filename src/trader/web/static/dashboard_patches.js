@@ -8,6 +8,42 @@
     );
   }
 
+  function currentHeadDecision(current, next, fromHttp) {
+    if (typeof next.trade_date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(next.trade_date)) return "identity_mismatch";
+    if (next.run_mode === "preview" && (!next.input_versions?.preview_run_id
+      || typeof next.generated_at !== "string" || !Number.isFinite(Date.parse(next.generated_at)) || next.frozen)) {
+      return "identity_mismatch";
+    }
+    if (!current) return "apply";
+    // A weekend preview can refer to Friday's market while being generated on Saturday.
+    const day = (value) => value.run_mode === "preview" && value.generated_at
+      ? value.generated_at.slice(0, 10) : value.head_availability?.trade_date || value.trade_date;
+    if (day(current) !== day(next)) return day(next) < day(current) ? "ignore_stale_publication" : "apply";
+    if (current.frozen && (!next.frozen || next.snapshot_id !== current.snapshot_id)) return "ignore_late_draft";
+    if (next.frozen && !current.frozen) return "apply";
+    if (next.status === "not_ready") return "apply";
+    if (current.status === "not_ready") return fromHttp ? "apply" : "confirm_current_batch";
+
+    if (current.run_mode === "preview" && next.run_mode === "preview") {
+      const previousRun = current.input_versions?.preview_run_id;
+      const nextRun = next.input_versions?.preview_run_id;
+      if (previousRun !== nextRun) {
+        const previousTime = Date.parse(current.generated_at), nextTime = Date.parse(next.generated_at);
+        if (nextTime === previousTime) return fromHttp ? "apply" : "confirm_current_batch";
+        return nextTime > previousTime ? "apply" : "ignore_stale_publication";
+      }
+    }
+    if (Number.isSafeInteger(current.publication_sequence)) {
+      if (next.publication_sequence < current.publication_sequence) return "ignore_stale_publication";
+      if (next.publication_sequence === current.publication_sequence) {
+        if (current.snapshot_id !== next.snapshot_id) return "identity_mismatch";
+        // A replay of the same publication carries neither HTTP availability nor later quote overlays.
+        if (!fromHttp && (next.replace === true || current.head_availability)) return "ignore_stale_publication";
+      }
+    }
+    return "apply";
+  }
+
   function recommendationPatchFreeze(patch, payload, currentVersion, strategy, view) {
     if (!patchVersionValid(patch) || !Array.isArray(patch.upserts)
       || !Number.isSafeInteger(patch.publication_sequence) || patch.publication_sequence < 1
@@ -21,19 +57,12 @@
       || patch.view !== (patch.frozen ? "official" : "live")) return "identity_mismatch";
     const expectedDate = payload && (payload.current_trade_date || payload.trade_date);
     if (expectedDate && patch.trade_date !== expectedDate) return "identity_mismatch";
-    if (["current", "official"].includes(view) && payload && payload.frozen === true && patch.frozen !== true) {
-      return "ignore_late_draft";
-    }
-    if (payload && patch.frozen !== true && Number.isInteger(payload.publication_sequence)
-      && (patch.publication_sequence < payload.publication_sequence
-        || (patch.publication_sequence === payload.publication_sequence
-          && Date.parse(patch.published_at) < Date.parse(payload.observed_at)))) {
-      return "ignore_stale_publication";
-    }
+    if (!patchItemsValid(patch.upserts, patch.removed_codes, patch.removals)) return "topk_mismatch";
+    const decision = currentHeadDecision(payload, patch, false);
+    if (decision !== "apply") return decision;
     const baseVersion = patch.base_projection_version;
     if (baseVersion && baseVersion !== currentVersion) return "base_mismatch";
     if (!baseVersion && patch.replace !== true && payload && payload.status !== "not_ready") return "base_mismatch";
-    if (!patchItemsValid(patch.upserts, patch.removed_codes, patch.removals)) return "topk_mismatch";
     return "apply";
   }
 
@@ -90,6 +119,7 @@
       market_as_of: patch.market_as_of,
       generated_at: patch.generated_at,
       degraded_reasons: patch.degraded_reasons || [],
+      head_availability: null,
       coverage,
       selection_diagnostics: patch.selection_diagnostics || {},
       pipeline: patch.pipeline || null,
@@ -522,6 +552,7 @@
   }
 
   window.TraderDashboardPatches = Object.freeze({
+    currentHeadDecision,
     emptyRecommendationMessage,
     frozenEmptyMessage,
     mergePatchItems,

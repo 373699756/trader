@@ -15,7 +15,7 @@
 | P2 · 模型加载与预测有可定位的重复工作 | 四档启动各登记一次模型维护，四个观察器都完整检查V2、V3的D25工件。V1 D25在生产预测中还运行旧收益排序树，事件头随后覆盖其排序值。优先复用同一发布代的验读结果，对照已有仅计算净效用与事件排序的回放实现，核候选概率、净效用、排名和席位一致，再计启动I/O与盘中预测耗时。[维护枚举](../src/trader/training/infra/history/history_training_due.py#L499) [档位范围](../src/trader/training/infra/history/history_training_due.py#L609) [V1预测](../src/trader/training/infra/d25/artifact.py#L121) |
 | P2 · 看板状态请求重复遍历全体公司 | 正常四档轮次共用原始市场报价。看板另每15秒请求状态，每次在请求线程重新核全体公司覆盖、解禁及财务时效，再多次汇总。应按资料身份和下个失效时点在轮外更新摘要，验证跨日、多标签页及正常评分并发时的状态一致性、接口延迟和整轮耗时。[共享采集](../src/trader/recommendation/infra/market_data/market_feature_service.py#L259) [页面轮询](../src/trader/web/static/dashboard.js#L222) [状态计算](../src/trader/recommendation/infra/market_data/published_company_research.py#L478) |
 
-以上反例验证到各自的评分、凭据或投影边界。真实六席、成熟收益和整轮性能仍按原安排分别验证。D25磁盘目标观察与实际加载的差异沿第17章跟踪。
+11月26日复验上述反例。D25 收盘财务采用覆盖晚封签、晚进入缓存及恰好 15:00。HTTP 与 SSE 乱序、跨日保留、预览重启和同序号重播已做定向回归。公司事件按决策时刻判断，覆盖与实际风险分别展示。四档 H1 点时审计各为 0 股、0 日，现有 H1 只覆盖 15:00。Tomorrow 已区分盘中预估和收盘概率，盘中校准仍需同时段样本。公司覆盖摘要、启动模型验读及 V1 单树候选的对照结果分别见[阶段387](g_施工进度.md#阶段387落实全仓工程审查)。真实六席、成熟收益和全负载性能另验。
 
 ## 17. 11月25日代码与问题闭合复核
 

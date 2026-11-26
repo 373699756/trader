@@ -73,7 +73,7 @@ vm.runInNewContext(streamSource, sandbox, { filename: streamPath });
 vm.runInNewContext(source.replace(suffix, `
   window.TraderDashboardTest = Object.freeze({
     normalizeFreezePayload, configuredScoringProfile, state,
-    applyRecommendationBatch, requestRecommendations,
+    applyRecommendationBatch, requestRecommendations, loadRecommendations,
     selectCurrentDate, toggleDateCalendar, updateDatePickerButton,
     renderSettlementTest(payload) {
       const elements = { sixSeatStatus: {}, sixSeatMeta: {}, outcomeSummary: {} };
@@ -93,7 +93,8 @@ vm.runInNewContext(source.replace(suffix, `
     configureBatchTest(paint, resync) {
       renderPayload = paint;
       requestRecommendationResync = resync;
-      els.refreshButton = { classList: { remove() {} } };
+      els.refreshButton = { classList: { add() {}, remove() {} } };
+      stateRenderer = { renderTableState() {}, setNotice() {} };
     },
   });
 })();`), sandbox, { filename: dashboardPath });
@@ -306,9 +307,10 @@ assert.strictEqual(sandbox.window.TraderRender.scorePresentation({
 }).shadow, false, "profile name must not reinterpret historical V5 authority");
 const nextCloseSnapshot = {
   strategy: "tomorrow",
+  trade_date: "2026-08-14", observed_at: "2026-08-14T15:00:05+08:00",
   scoring_profile: "v2",
   prediction_target: { strategy: "tomorrow", threshold_bps: 500, identity: "next_close_gain_at_least_500_bps" },
-  input_versions: { score_scale: "tomorrow_close_gain_probability_0_100" },
+  input_versions: { score_scale: "tomorrow_close_gain_probability_0_100", tomorrow_close_evidence: "official-close:fixture" },
 };
 const targetItem = {
   ...v5Item,
@@ -324,17 +326,27 @@ const nextCloseItem = { ...targetItem, scores: { ...targetItem.scores,
 const nextCloseRow = state.tableRows([nextCloseItem], nextCloseSnapshot);
 const nextCloseScore = nextCloseRow.match(/class="score-stack"[\s\S]*?<\/div>/)[0];
 const nextCloseHeading = sandbox.window.TraderRender.tableDefinition(nextCloseSnapshot).head;
-assert.match(nextCloseHeading, /模型排序分 \/ 达标概率/);
-assert.match(nextCloseScore, /<span><b title="模型排序分为达标概率换算成0–100分">模型 64\.32<\/b> · <b>达标 64\.32%<\/b><\/span>/);
+assert.match(nextCloseHeading, /模型排序分 \/ 收盘达标概率/);
+assert.match(nextCloseScore, /<span><b title="模型排序分为达标预估值换算成0–100分">模型 64\.32<\/b> · <b>收盘达标概率 64\.32%<\/b><\/span>/);
 assert.match(nextCloseScore, /<b>本地 81\.00<\/b> · 基础 83\.00 · \+2\.00 −4\.00<\/span>/);
 assert.strictEqual((nextCloseScore.match(/<span\b/g) || []).length, 2);
 assert.match(nextCloseScore, /title="本地评分 81\.00 · 基础分 83\.00 · 加分 \+2\.00 · 扣分 −4\.00"/);
 assert.doesNotMatch(nextCloseHeading + nextCloseScore, /≥|实际涨幅/);
 const nextCloseDrawer = state.drawer(nextCloseItem, nextCloseSnapshot);
-assert.match(nextCloseDrawer, /达标概率<\/span><strong>64\.32%/);
+assert.match(nextCloseDrawer, /收盘达标概率<\/span><strong>64\.32%/);
 assert.doesNotMatch(nextCloseDrawer, /涨幅目标|≥5%/);
 const missingTomorrowScore = { ...nextCloseItem, scores: { ...nextCloseItem.scores, final_score: null } };
-assert.match(state.tableRows([missingTomorrowScore], nextCloseSnapshot), /模型 -<\/b> · <b>达标 -<\/b>/);
+assert.match(state.tableRows([missingTomorrowScore], nextCloseSnapshot), /模型 -<\/b> · <b>收盘达标概率 -<\/b>/);
+const unconfirmedSnapshot = { ...nextCloseSnapshot, input_versions: { score_scale: "tomorrow_close_gain_probability_0_100" } };
+const intradayItem = { ...nextCloseItem, anchor_source_time: "2026-08-14T06:59:59Z",
+  source_time: "2026-08-14T15:00:10+08:00" };
+assert.match(state.tableRows([intradayItem], unconfirmedSnapshot), /盘中达标预估 64\.32%/);
+assert.match(state.drawer(intradayItem, unconfirmedSnapshot), /盘中达标预估[\s\S]*缺少同时段历史校准证据/);
+assert.match(state.drawer(nextCloseItem, unconfirmedSnapshot), /达标预估（时点待核）/);
+assert.match(state.drawer({ ...intradayItem, anchor_source_time: "2026-08-13T10:00:00+08:00" }, unconfirmedSnapshot),
+  /达标预估（时点待核）/);
+assert.match(state.drawer(nextCloseItem, { ...unconfirmedSnapshot, run_mode: "preview",
+  market_trade_date: "2026-08-14", market_as_of: "2026-08-14T15:00:00+08:00" }), /收盘达标概率/);
 
 const d25Target = { strategy: "d25", threshold_bps: 125 };
 for (const [profile, scale, finalScore, scoreLabel, visibleLabel] of [
@@ -425,6 +437,16 @@ state.renderSummary(
   {},
 );
 assert.strictEqual(scoreOnlySummary.inputQualityScoreTime.textContent, "评分于 19:53:30 完成");
+for (const restart of [false, true]) {
+  const summary = summaryFixture();
+  const payload = { status: "ready", strategy: "d25", trade_date: "2026-10-20", items: [] };
+  const status = { scoring_profile: { maintenance: [{
+    strategy: "d25", owned: true, restart_required: restart, publication_observation_failure: "d25_probability_target_mismatch",
+  }] } };
+  state.renderSummary(summary, payload, [], "closed", null, sandbox.window.TraderSelection, sandbox.window.TraderRender, status);
+  assert(summary.publicationMeta.textContent.includes(restart ? "重启后该模型将不可用" : "缺少与当前目标匹配的模型"));
+  assert(!summary.publicationMeta.textContent.includes("重启后采用"));
+}
 for (const historical of [false, true]) {
   for (const status of [
     { market_data: { restart_required: true } },
@@ -1653,10 +1675,10 @@ for (const payload of [getPayload, patchPayload]) {
   assert.match(detail, /预测成本后净超额<\/span><strong>\+1\.25%/);
   assert.match(detail, /研究证据<\/span><strong>3 条/);
   assert.match(detail, /结构化风险事实<\/span><strong>1 条/);
-  assert.match(detail, /财务数据<\/span><strong>已核：未见风险/);
-  assert.match(detail, /公司公告 \/ 减持<\/span><strong>已过期/);
+  assert.match(detail, /财务数据<\/span><strong>资料已获取/);
+  assert.match(detail, /公司公告 \/ 减持<\/span><strong>资料已过期/);
   assert.match(detail, /股权质押<\/span><strong>未获取/);
-  assert.match(detail, /限售解禁<\/span><strong>已核：有风险/);
+  assert.match(detail, /限售解禁<\/span><strong>已确认风险/);
   assert.match(detail, /限售股解禁风险/);
   assert.match(detail, /DeepSeek · 已生效否决/);
   assert.doesNotMatch(detail, /未知风险|扣分 -|财务数据<\/span><strong>未获取/);
@@ -1668,6 +1690,15 @@ for (const payload of [getPayload, patchPayload]) {
   assert.match(budgetElements.budgetMeta.textContent, /复核 1\/1/);
   assert.strictEqual(payload.top_scores[0].scores.model_signal_score, 82.5);
 }
+const populatedRatios = state.drawer({ ...patchItem,
+  research_coverage: { ...patchItem.research_coverage, components: {
+    ...patchItem.research_coverage.components, pledge: "known_clear", unlock: "known_clear" } },
+  risks: [{ risk_code: "pledge_risk", origin: "local" }, { risk_code: "unlock_risk", origin: "local" }],
+}, getPayload);
+assert.match(populatedRatios, /股权质押<\/span><strong>资料已获取/);
+assert.match(populatedRatios, /限售解禁<\/span><strong>资料已获取/);
+assert.match(populatedRatios, /实际风险[\s\S]*质押[\s\S]*限售股解禁风险/);
+assert.doesNotMatch(populatedRatios, /未见风险/);
 const observedReview = { ...patchItem, code: "600002", action: "observe", review_outcome: "applied" };
 const budgetWithObservation = { budgetStatus: {}, budgetMeta: {} };
 sandbox.window.TraderStatusView.renderBudgetSummary(
@@ -1723,7 +1754,7 @@ assert.doesNotMatch(unknownRow, /<td class="action-cell">/);
 const classifiedRow = state.tableRows([{ ...unknownResearchItem,
   classified_industry: "D44电力、热力生产和供应业" }], getPayload);
 assert.match(classifiedRow, /<td class="board-industry-cell"><span class="stock-name">主板<\/span><span class="stock-code">中上协行业 D44电力、热力生产和供应业/);
-assert.doesNotMatch(state.drawer(unknownResearchItem, getPayload), /公司风险研究|风险研究：/);
+assert.match(state.drawer(unknownResearchItem, getPayload), /公司风险研究[\s\S]*四项资料待获取/);
 assert.match(state.drawer(unknownResearchItem, getPayload), /未进入本次 DeepSeek 复核候选/);
 assert.match(state.tableRows([{ ...unknownResearchItem, pct_change: -1.2 }], getPayload),
   /<td class="negative">-1\.20%<\/td>/);
@@ -2504,7 +2535,8 @@ async function verifyAtomicBatchCache() {
   assert.strictEqual(ui.payloads.get("v1:d25:current").snapshot_id, "v1-d25-1");
   assert.strictEqual(ui.payloads.get("v5:d25:current").scoring_profile, "v5");
   const firstBatch = ui.payloads;
-  assert.strictEqual(dashboard.applyRecommendationBatch(batch(1)), true);
+  assert.strictEqual(dashboard.applyRecommendationBatch(batch(1)), false);
+  assert.strictEqual(ui.payloads, firstBatch, "an identical replay leaves all projections and overlays intact");
   assert.strictEqual(dashboard.applyRecommendationBatch(batch(2)), true);
   const newerBatch = ui.payloads;
   assert.strictEqual(dashboard.applyRecommendationBatch(batch(1)), false);
@@ -2569,9 +2601,9 @@ async function verifyAtomicBatchCache() {
   assert.strictEqual(ui.etags.has("v1:d25:current"), false);
   const protectedCache = ui.payloads;
   ui.payloads.set("v1:d25:current", { ...returned, frozen: true });
-  assert.strictEqual(dashboard.applyRecommendationBatch(batch(5)), false);
-  assert.strictEqual(ui.payloads, protectedCache, "late draft batch must not replace a formal freeze");
-  assert.strictEqual(ui.payload.snapshot_id, "v1-tomorrow-4");
+  assert.strictEqual(dashboard.applyRecommendationBatch(batch(5)), true);
+  assert.strictEqual(ui.payloads.get("v1:d25:current"), protectedCache.get("v1:d25:current"));
+  assert.strictEqual(ui.payload.snapshot_id, "v1-tomorrow-5", "other eligible heads advance in the same commit");
   const nextDay = batch(6);
   for (const pair of Object.values(nextDay.profiles)) {
     for (const item of Object.values(pair)) item.trade_date = "2026-07-24";
@@ -2611,6 +2643,101 @@ async function verifyAtomicBatchCache() {
   delete responseBatch.profiles.v5.d25;
   await assert.rejects(dashboard.requestRecommendations("tomorrow", "", "current"));
   assert.strictEqual(ui.payloads, completeCache, "malformed HTTP batch must not replace any cache");
+
+  const httpBatch = (sequence) => {
+    const result = batch(sequence);
+    for (const pair of Object.values(result.profiles)) {
+      for (const lane of Object.values(pair)) {
+        Object.assign(lane, {
+          view: "current", status: "ready", freeze_version: lane.snapshot_id, items: [],
+          observed_at: lane.published_at, stage: lane.phase, score_status: "scored",
+        });
+      }
+    }
+    return result;
+  };
+  const complete = (profiles) => ({ ok: true, json: async () => profiles });
+  ui.payloads.clear();
+  dashboard.applyRecommendationBatch(batch(4));
+  sandbox.fetch = () => new Promise((resolve) => { resolveResponse = resolve; });
+  const waiting = dashboard.loadRecommendations("manual");
+  dashboard.applyRecommendationBatch(batch(5));
+  const mixed = httpBatch(5);
+  mixed.profiles.v1.tomorrow = { ...httpBatch(6).profiles.v1.tomorrow, frozen: true };
+  mixed.profiles.v1.d25 = httpBatch(4).profiles.v1.d25;
+  const retained = { status: "retained", reason: "scoring_failed", failed_at: "2026-07-23T14:33:00+08:00" };
+  mixed.profiles.v5.d25.head_availability = retained;
+  resolveResponse(complete(mixed));
+  await waiting;
+  assert.strictEqual(ui.payload.snapshot_id, "v1-tomorrow-6");
+  assert.strictEqual(painted.at(-1).frozen, true, "late formal HTTP response must reach the visible screen");
+  assert.strictEqual(ui.payloads.get("v1:d25:current").publication_sequence, 5);
+  assert.strictEqual(ui.payloads.get("v5:d25:current").head_availability.reason, "scoring_failed");
+  dashboard.applyRecommendationBatch(batch(5));
+  assert.strictEqual(ui.payloads.get("v5:d25:current").head_availability.reason, "scoring_failed");
+  dashboard.applyRecommendationBatch(batch(7));
+  assert.strictEqual(ui.payload.snapshot_id, "v1-tomorrow-6");
+  assert.strictEqual(ui.payloads.get("v5:d25:current").head_availability, null);
+  const conflicting = httpBatch(8);
+  conflicting.profiles.v1.tomorrow.frozen = true;
+  sandbox.fetch = async () => complete(conflicting);
+  await dashboard.loadRecommendations("manual");
+  assert.strictEqual(ui.payload.snapshot_id, "v1-tomorrow-6", "first formal freeze wins even over a later formal identity");
+
+  const nextSession = httpBatch(6);
+  nextSession.profiles.v1.tomorrow.head_availability = { ...retained, trade_date: "2026-07-24" };
+  sandbox.fetch = async () => complete(nextSession);
+  await dashboard.loadRecommendations("manual");
+  assert.strictEqual(ui.payload.head_availability.trade_date, "2026-07-24");
+  dashboard.applyRecommendationBatch(batch(9));
+  assert.strictEqual(ui.payload.head_availability.trade_date, "2026-07-24", "prior-day replay must preserve the next session's failure");
+
+  const empty = httpBatch(5);
+  for (const pair of Object.values(empty.profiles)) {
+    for (const lane of Object.values(pair)) Object.assign(lane, {
+      status: "not_ready", freeze_version: null, publication_sequence: null, observed_at: null,
+      snapshot_id: null, projection_version: null, publication_id: null, stage: null,
+    });
+  }
+  ui.payloads.clear();
+  ui.payload = null;
+  sandbox.fetch = async () => complete(empty);
+  await dashboard.loadRecommendations("manual");
+  let confirmation;
+  dashboard.configureBatchTest((value) => painted.push(value), () => {
+    confirmation = dashboard.loadRecommendations("resync_test");
+  });
+  assert.strictEqual(dashboard.applyRecommendationBatch(batch(5)), false);
+  await confirmation;
+  assert.strictEqual(ui.payload.status, "not_ready", "unpublished close must survive a replayed intraday round");
+  sandbox.fetch = async () => complete(httpBatch(7));
+  assert.strictEqual(dashboard.applyRecommendationBatch(batch(7)), false);
+  await confirmation;
+  assert.strictEqual(ui.payload.snapshot_id, "v1-tomorrow-7", "real intraday readiness is recovered by the same HTTP query");
+
+  function preview(generation, publication, stamp, useHttp) {
+    const value = useHttp ? httpBatch(publication) : batch(publication);
+    for (const pair of Object.values(value.profiles)) {
+      for (const lane of Object.values(pair)) Object.assign(lane, {
+        run_mode: "preview", input_versions: { preview_run_id: generation }, generated_at: stamp,
+        observed_at: stamp, published_at: stamp,
+      });
+    }
+    return value;
+  }
+  ui.payloads.clear();
+  const oldRun = preview("preview-a", 9, "2026-07-25T08:01:00+08:00", false);
+  const newRun = preview("preview-b", 1, "2026-07-25T10:01:00+08:00", false);
+  assert.strictEqual(dashboard.applyRecommendationBatch(oldRun), true);
+  assert.strictEqual(dashboard.applyRecommendationBatch(newRun), true);
+  assert.strictEqual(dashboard.applyRecommendationBatch(oldRun), false);
+  sandbox.fetch = async () => complete(preview("preview-a", 10, "2026-07-25T08:30:00+08:00", true));
+  await dashboard.loadRecommendations("manual");
+  assert.strictEqual(ui.payload.input_versions.preview_run_id, "preview-b");
+  sandbox.fetch = async () => complete(preview("preview-c", 1, "2026-07-25T11:01:00+08:00", true));
+  await dashboard.loadRecommendations("manual");
+  assert.strictEqual(ui.payload.input_versions.preview_run_id, "preview-c", "new preview process resets its own counter");
+  assert.strictEqual(dashboard.applyRecommendationBatch(newRun), false);
 }
 
 async function verifyLongCurrentQuote() {
@@ -2674,7 +2801,7 @@ function verifyTodayNavigation() {
 }
 
 function verifyClosedStreamCannotDeliverOrDisconnectItsReplacement() {
-  const streams = [], applied = [];
+  const streams = [], applied = [], resyncs = [];
   const streamState = { strategy: "tomorrow", profile: "v1", lastEventId: 0 };
   sandbox.EventSource = class {
     constructor() { this.events = {}; streams.push(this); }
@@ -2683,11 +2810,16 @@ function verifyClosedStreamCannotDeliverOrDisconnectItsReplacement() {
   };
   sandbox.performance = { now: () => 0 };
   sandbox.window.requestAnimationFrame = () => {};
+  sandbox.window.setInterval = () => 1;
+  sandbox.window.clearInterval = () => {};
+  sandbox.window.setTimeout = () => 2;
+  sandbox.window.clearTimeout = () => {};
   const controller = sandbox.window.TraderDashboardStream.create({
     state: streamState, els: { streamStatus: {} }, patches: {},
     diagnostics: { incrementalSseBytes: 0 }, patchToPaintSamples: [],
     formatters: { utf8Bytes: () => 2 }, applyRecommendationBatch: (payload) => applied.push(payload),
-    requestRecommendationResync: () => assert.fail("closed stream cannot resync"),
+    loadStatus: () => Promise.resolve(null), loadRecommendations() {},
+    requestRecommendationResync: (reason) => resyncs.push(reason),
     recordBrowserError: () => assert.fail("closed stream cannot report errors"),
   });
   controller.connect();
@@ -2697,9 +2829,17 @@ function verifyClosedStreamCannotDeliverOrDisconnectItsReplacement() {
   assert.strictEqual(streamState.stream, streams[1]);
   assert.strictEqual(streamState.lastEventId, 0);
   assert.strictEqual(applied.length, 0);
+  streams[1].onopen();
+  assert.strictEqual(resyncs.length, 0);
   streams[1].events.batch({ lastEventId: "1", data: "{}" });
   assert.strictEqual(streamState.lastEventId, 1);
   assert.strictEqual(applied.length, 1);
+  streams[1].onerror();
+  controller.connect();
+  streams[1].onopen();
+  assert.strictEqual(resyncs.length, 0);
+  streams[2].onopen();
+  assert.deepStrictEqual(resyncs, ["stream_reconnected"], "refetch the official batch after reconnecting");
 }
 
 verifyAtomicBatchCache().then(verifyLongCurrentQuote).then(() => {

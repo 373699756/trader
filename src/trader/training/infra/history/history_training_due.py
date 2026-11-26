@@ -10,6 +10,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
+from functools import partial
 from pathlib import Path
 
 from trader.download.domain.history_control import HistoryPublishedControlState, HistorySnapshot
@@ -24,13 +25,14 @@ from trader.download.infra.history_snapshot_reader import (
     HistorySnapshotReadError,
     RouteHistoryMonths,
 )
-from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget, PredictionTargets
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 from trader.training.domain.training_input_identity import BuildTrainingInputHash
 from trader.training.infra.history.history_training_expectation import HistoryTrainingExpectation
-from trader.training.domain.model_publication import HeadTrainingStatus, ModelPublicationIdentity
+from trader.training.infra.history.profile_inspection import StartupProfileInspections
+from trader.training.domain.model_publication import D25_PROBABILITY_TARGET_MISMATCH, HeadTrainingStatus, ModelPublicationIdentity
 from trader.training.domain.training_due import (
     CalculateTrainingCacheInvalidationDates,
     CalculateTrainingDue,
@@ -38,6 +40,7 @@ from trader.training.domain.training_due import (
     TrainingDueState,
 )
 from trader.training.infra.d25.contracts import StandardD25Profile
+from trader.training.infra.d25.model_document import ReadD25MetadataDocument
 from trader.training.infra.history.training_maintenance_index import TrainingMaintenanceError, TrainingMaintenanceIndex
 from trader.training.infra.model_bundles.bundle_codec import ModelBundleContractError, ModelBundleIntegrityError
 from trader.training.infra.model_bundles.bundle_snapshot import (
@@ -47,6 +50,7 @@ from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 from trader.training.infra.model_bundles.profile_publication import (
     InspectPublishedProfileBundles,
     ProfilePublicationBusyError,
+    ProfilePublicationLock,
     ReadPublishedProfileIdentities,
 )
 from trader.training.infra.research.close_return.selection import ResearchCloseReturnProfile
@@ -433,9 +437,10 @@ class PublishedTrainingState:
         wall_clock: Callable[[], datetime], sqlite_policy: SqliteIoPolicy,
         metadata_cache: BoundedCache[object] | None = None,
         d25_only: bool = False,
-        tomorrow_target: PredictionTarget | None = None,
+        prediction_targets: PredictionTargets | None = None,
+        startup_inspections: StartupProfileInspections | None = None,
     ) -> None:
-        if tomorrow_target is not None and (not d25_only or tomorrow_target.strategy is not Strategy.TOMORROW):
+        if prediction_targets is not None and not d25_only:
             raise ValueError("training_publication_requires_current_scoring_targets")
         self._sqlite_policy = sqlite_policy
         self._metadata_cache = metadata_cache
@@ -445,7 +450,12 @@ class PublishedTrainingState:
         self._loaded = loaded
         self._owned_profile = owned_profile
         self._strategies = (Strategy.D25,) if d25_only else (Strategy.TOMORROW, Strategy.D25)
-        self._tomorrow_target = tomorrow_target
+        self._targets = prediction_targets
+        self._inspect = _inspect_profile if startup_inspections is None else partial(
+            _inspect_profile, startup_inspections=startup_inspections,
+        )
+        self._observed_d25_targets: dict[ScoringProfileId, tuple[str, PredictionTarget]] = {}
+        self._tomorrow_target = prediction_targets.for_profile(owned_profile, Strategy.TOMORROW) if prediction_targets else None
         self._load_expectation = load_expectation
         self._clock = wall_clock
         self._lock = threading.Lock()
@@ -467,7 +477,7 @@ class PublishedTrainingState:
             )
             for profile_id in profile_ids
             for strategy in self._strategies
-        ) + ((self._tomorrow_status(None, "publication_not_observed"),) if tomorrow_target is not None else ())
+        ) + ((self._tomorrow_status(None, "publication_not_observed"),) if self._tomorrow_target is not None else ())
 
     def initialize(self, cancel_requested: Callable[[], bool] | None = None) -> None:
         cancelled = cancel_requested if cancel_requested is not None else lambda: False
@@ -499,12 +509,11 @@ class PublishedTrainingState:
         for profile in self._profiles():
             if cancelled():
                 return
-            heads, failure = _inspect_profile(self._training_root, profile)
+            heads, failure = self._inspect(self._training_root, profile)
             declared: tuple[ModelPublicationIdentity, ...] | None = None
-            if self._tomorrow_target is not None and failure is None:
+            publication_failure = None
+            if self._targets is not None and failure is None:
                 declared, publication_failure = self._read_publications(profile, cancelled)
-                if publication_failure is not None:
-                    failure = publication_failure
             if cancelled():
                 return
             try:
@@ -580,6 +589,7 @@ class PublishedTrainingState:
                         else failure or ("training_due_unavailable" if due is None else None),
                         loaded,
                         profile.profile_id == self._owned_profile,
+                        publication_failure,
                     )
                 )
         if self._owned_profile == "v1":
@@ -617,11 +627,14 @@ class PublishedTrainingState:
         from trader.training.infra.d25.v1.models import ReadV1PublicationIdentities
 
         try:
-            return ReadV1PublicationIdentities(
+            identities = ReadV1PublicationIdentities(
                 self._training_root, cancel_requested=cancelled, strategies=self._strategies,
-            ), None
+            )
+        except FileNotFoundError as exc:
+            return (), None if self._targets is not None else f"model_observation:{type(exc).__name__}"
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             return (), f"model_observation:{type(exc).__name__}"
+        return self._check_d25_target("v1", identities, cancelled)
 
     def observe_publication(self, cancelled: Callable[[], bool]) -> None:
         """Read publication metadata only; never replace predictors or recompute samples."""
@@ -651,15 +664,46 @@ class PublishedTrainingState:
         self, profile: TrainedProfileContract, cancelled: Callable[[], bool],
     ) -> tuple[tuple[ModelPublicationIdentity, ...], str | None]:
         try:
-            return ReadPublishedProfileIdentities(
+            identities = ReadPublishedProfileIdentities(
                 self._training_root / profile.output_directory,
                 profile,
                 cancel_requested=cancelled,
                 metadata_cache=self._metadata_cache,
                 observed_at=self._clock(),
-            ), None
+            )
+        except FileNotFoundError as exc:
+            return (), None if self._targets is not None else f"model_observation:{type(exc).__name__}"
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             return (), f"model_observation:{type(exc).__name__}"
+        return self._check_d25_target(profile.profile_id, identities, cancelled)
+
+    def _check_d25_target(
+        self, profile: ScoringProfileId, identities: tuple[ModelPublicationIdentity, ...], cancelled: Callable[[], bool],
+    ) -> tuple[tuple[ModelPublicationIdentity, ...], str | None]:
+        if self._targets is None:
+            return identities, None
+        identity = next((item for item in identities if item.strategy is Strategy.D25), None)
+        if identity is None or not identity.probability_ready:
+            return identities, None
+        known = self._observed_d25_targets.get(profile)
+        if known is None or known[0] != identity.metadata_hash:
+            root = self._training_root / profile
+            try:
+                with ProfilePublicationLock(root, 1.0, cancel_requested=cancelled):
+                    directory = root / Strategy.D25.value
+                    if root.is_symlink() or directory.is_symlink():
+                        raise ValueError("d25_probability_directory_invalid")
+                    metadata = ReadD25MetadataDocument(directory / "metadata.json")
+                    event = metadata.probability_publication
+                    if metadata.content_hash != identity.metadata_hash or event is None or event.model_hash != identity.probability_hash:
+                        raise ValueError("d25_publication_changed_during_observation")
+                    known = identity.metadata_hash, event.target
+                    self._observed_d25_targets[profile] = known
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                return (), f"model_observation:{type(exc).__name__}"
+        if known[1] != self._targets.for_profile(profile, Strategy.D25):
+            return (), D25_PROBABILITY_TARGET_MISMATCH
+        return identities, None
 
     def _read_tomorrow(self, cancelled: Callable[[], bool]) -> tuple[ModelPublicationIdentity | None, str | None]:
         target = self._tomorrow_target
@@ -699,7 +743,7 @@ class PublishedTrainingState:
                     disk=next((identity for identity in identities if identity.strategy is item.strategy and (
                         self._tomorrow_target is None or identity.probability_ready
                     )), None)
-                    if failure is None else item.disk,
+                    if failure in {None, D25_PROBABILITY_TARGET_MISMATCH} else item.disk,
                     publication_observation_failure=failure,
                 )
                 if item.profile_id == profile_id and item.strategy in self._strategies else item
@@ -724,9 +768,11 @@ def _publication_identity(profile: TrainedProfileContract, bundle: PublishedHead
 
 
 def _inspect_profile(
-    training_root: Path, profile: TrainedProfileContract
+    training_root: Path, profile: TrainedProfileContract, *, startup_inspections: StartupProfileInspections | None = None,
 ) -> tuple[tuple[PublishedHeadBundle, ...], str | None]:
     try:
+        if startup_inspections is not None:
+            return startup_inspections.inspect(training_root / profile.output_directory, profile), None
         return InspectPublishedProfileBundles(training_root / profile.output_directory, profile), None
     except FileNotFoundError:
         return (), "missing"

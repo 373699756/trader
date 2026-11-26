@@ -25,6 +25,7 @@ from tests.helpers.download.company.company_startup import (
 )
 
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from trader.recommendation.infra.market_data import published_company_research
 
@@ -212,7 +213,13 @@ def test_cancelled_company_preload_does_not_visit_evidence():
 
 @pytest.mark.parametrize("blocked_operation", ("status", "cached"))
 def test_company_qualification_does_not_hold_the_publication_lock(monkeypatch, blocked_operation):
-    research = _research(_Reader(_snapshot()), _AT)
+    def now():
+        if blocked_operation == "status" and threading.current_thread().name.startswith("company-heavy"):
+            return _AT + timedelta(days=1)
+        return _AT
+
+    research = PublishedCompanyResearch(_Reader(_snapshot()), wall_clock=now, open_dates=lambda: _DATES,
+                                        monotonic=time.monotonic)
     research.initialize(("600001",), cancelled=lambda: False)
     expected_status = research.status()
     expected_rows = research.cached(("600001",), include_structured=True)
@@ -245,4 +252,64 @@ def test_company_qualification_does_not_hold_the_publication_lock(monkeypatch, b
             assert status == expected_status
         finally:
             release.set()
-        assert pending.result(timeout=1) == (expected_status if blocked_operation == "status" else expected_rows)
+        result = pending.result(timeout=1)
+        if blocked_operation == "status":
+            assert result.entries == expected_status.entries == 1
+            assert result.unlock_covered_count == 0 < expected_status.unlock_covered_count
+        else:
+            assert result == expected_rows
+
+
+def test_company_status_reuses_summary_and_refreshes_at_next_shanghai_date(monkeypatch):
+    at = [_AT]
+    reader = _Reader(_snapshot())
+    research = PublishedCompanyResearch(reader, wall_clock=lambda: at[0], open_dates=lambda: _DATES,
+                                        monotonic=time.monotonic)
+    qualified = published_company_research._qualified
+    calls = []
+
+    def count(*args):
+        calls.append(args[1])
+        return qualified(*args)
+
+    monkeypatch.setattr(published_company_research, "_qualified", count)
+    monkeypatch.setattr(reader, "publication_identity", lambda **kwargs: "next-publication", raising=False)
+    research.initialize(("600001",), cancelled=lambda: False)
+    assert calls == [_AT]
+    assert research.status().unlock_covered_count == 1
+    research.observe_publication(lambda: False)
+    assert research.status().restart_required
+    assert calls == [_AT]
+    at[0] += timedelta(days=1)
+    research.observe_publication(lambda: False)
+    assert calls == [_AT, at[0]]
+    assert research.status().unlock_covered_count == 0
+    assert len(calls) == 2 and reader.visits == 1
+
+
+def test_concurrent_status_reads_share_one_new_day_scan(monkeypatch):
+    at = [_AT]
+    research = PublishedCompanyResearch(_Reader(_snapshot()), wall_clock=lambda: at[0], open_dates=lambda: _DATES,
+                                        monotonic=time.monotonic)
+    research.initialize(("600001",), cancelled=lambda: False)
+    at[0] += timedelta(days=1)
+    qualified = published_company_research._qualified
+    started, release = threading.Event(), threading.Event()
+    calls = []
+
+    def qualify(*args):
+        calls.append(args[1])
+        started.set()
+        assert release.wait(5)
+        return qualified(*args)
+
+    monkeypatch.setattr(published_company_research, "_qualified", qualify)
+    with ThreadPoolExecutor(max_workers=2) as readers:
+        first = readers.submit(research.status)
+        try:
+            assert started.wait(1)
+            second = readers.submit(research.status)
+        finally:
+            release.set()
+        assert first.result(timeout=2) is second.result(timeout=2)
+        assert calls == [at[0]]

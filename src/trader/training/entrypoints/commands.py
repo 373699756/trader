@@ -350,7 +350,7 @@ def _tomorrow_research_result_payload(
 
 
 def _tomorrow_research_prerequisite(research_root: Path, *, sqlite_policy: SqliteIoPolicy) -> TomorrowLabelReadinessInspector:
-    snapshot = SQLiteH1PointInTimeSnapshot(research_root / "experiments/h1_point_in_time", sqlite_policy=sqlite_policy)
+    snapshot = SQLiteH1PointInTimeSnapshot(research_root, sqlite_policy=sqlite_policy)
     return TomorrowLabelReadinessInspector(HistoricalLabelPreregistrationService(snapshot))
 
 

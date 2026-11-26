@@ -20,6 +20,7 @@ from trader.infra.regular_file import ReadRegularFile
 from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.market.v1.features import LEARNED_RANK_FEATURE_IDS
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.infra.settings.loading import LoadPredictionTargets
 from trader.training.infra.research.close_return.scoring import LoadDiagnosticScoringProfile
 from trader.training.domain.final_fit import BuildFinalFitDatePlan
 from trader.training.domain.training_input_identity import BuildTrainingInputHash
@@ -42,6 +43,7 @@ from trader.training.infra.model_bundles.profile_publication import (
 from trader.training.infra.d25.v1 import models as v1_models
 from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
 from trader.training.infra.history.history_training_due import PublishedTrainingState
+from trader.training.infra.history.profile_inspection import StartupProfileInspections
 from trader.training.infra.d25.artifact import (
     D25ProbabilityArtifact, D25ProbabilityBinding, LoadD25ScoringProfile, StageD25Probability,
 )
@@ -49,6 +51,50 @@ from trader.training.infra.d25.contracts import StandardD25Profile
 from trader.training.infra.d25.v3.probability import D25LogisticModel
 from trader.training.infra.d25.model_document import D25_MAXIMUM_METADATA_BYTES
 from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
+
+
+@pytest.mark.skipif(os.name != "posix", reason="sharing requires POSIX change-time semantics")
+def test_shared_startup_inspects_one_generation_once_and_rechecks_changed_files(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from trader.training.infra.d25 import model_document
+
+    profile = StandardD25Profile("v3")
+    _publish_profile(tmp_path, profile)
+    root = tmp_path / "v3"
+    cache = StartupProfileInspections()
+    reads = []
+
+    def read(path, *, maximum_bytes):
+        reads.append(path.name)
+        return ReadRegularFile(path, maximum_bytes=maximum_bytes)
+
+    monkeypatch.setattr(model_document, "ReadRegularFile", read)
+    ready = Barrier(4)
+
+    def inspect(_):
+        ready.wait(timeout=5)
+        return cache.inspect(root, profile)
+
+    with ThreadPoolExecutor(max_workers=4) as workers:
+        receipts = tuple(workers.map(inspect, range(4)))
+    assert len(set(receipts)) == 1
+    assert sorted(reads) == ["metadata.json", "model.json"]
+    model = root / "d25" / "model.json"
+    previous = model.read_bytes()
+    before = model.stat()
+    model.write_bytes(b"!" + previous[1:])
+    os.utime(model, ns=(before.st_atime_ns, before.st_mtime_ns))
+    with pytest.raises(ValueError):
+        cache.inspect(root, profile)
+    model.write_bytes(previous)
+    assert cache.inspect(root, profile) == receipts[0]
+    (root / "d25" / "unexpected").touch()
+    with pytest.raises(ValueError):
+        cache.inspect(root, profile)
+    model.unlink()
+    with pytest.raises(FileNotFoundError):
+        cache.inspect(root, profile)
 
 
 def test_standard_observation_matches_loaded_identity_without_reading_model_payload(tmp_path, monkeypatch):
@@ -119,12 +165,15 @@ def test_production_observation_tracks_probability_changes_and_absence_without_r
         scope.setattr("trader.training.infra.d25.artifact.LaneTrainingImplementationIdentity", lambda *_args: "f" * 64)
         with pytest.raises(ValueError, match="artifact_contract_mismatch"):
             LoadD25ScoringProfile(tmp_path, "v3", target)
-    state = PublishedTrainingState(
-        tmp_path / "history", tmp_path, loaded.publications, owned_profile="v3", d25_only=True,
-        tomorrow_target=PredictionTarget(Strategy.TOMORROW, 500),
-        maintenance_path=tmp_path / "maintenance.sqlite3", load_expectation=HistoryTrainingExpectationFixture,
-        wall_clock=lambda: datetime(2026, 11, 25, tzinfo=ZoneInfo("Asia/Shanghai")), sqlite_policy=SqlitePolicyFixture(),
-    )
+    def new_state(publications):
+        return PublishedTrainingState(
+            tmp_path / "history", tmp_path, publications, owned_profile="v3", d25_only=True,
+            prediction_targets=LoadPredictionTargets(RuntimeSettingsFixture().strategy_config_path),
+            maintenance_path=tmp_path / "maintenance.sqlite3", load_expectation=HistoryTrainingExpectationFixture,
+            wall_clock=lambda: datetime(2026, 11, 25, tzinfo=ZoneInfo("Asia/Shanghai")), sqlite_policy=SqlitePolicyFixture(),
+        )
+
+    state = new_state(loaded.publications)
     state.initialize()
     initial = next(item for item in state.status() if item.owned and item.strategy is Strategy.D25)
     assert initial.disk == initial.loaded and not initial.restart_required
@@ -133,10 +182,36 @@ def test_production_observation_tracks_probability_changes_and_absence_without_r
     updated = next(item for item in state.status() if item.owned and item.strategy is Strategy.D25)
     assert updated.loaded == initial.loaded and updated.disk != initial.disk and updated.restart_required
     assert updated.disk == LoadD25ScoringProfile(tmp_path, "v3", target).publications[0]
+    other_target = PredictionTarget(Strategy.D25, 200)
+    publish(replace(artifact, binding=replace(artifact.binding, target=other_target)))
+    state.observe_publication(lambda: False)
+    mismatch = next(item for item in state.status() if item.owned and item.strategy is Strategy.D25)
+    assert mismatch.disk is None and mismatch.loaded == initial.loaded and mismatch.restart_required
+    assert mismatch.publication_observation_failure == "d25_probability_target_mismatch"
+    state.refresh()
+    mismatch = next(item for item in state.status() if item.owned and item.strategy is Strategy.D25)
+    assert mismatch.disk is None and mismatch.restart_required
+    assert mismatch.publication_observation_failure == "d25_probability_target_mismatch"
+    with pytest.raises(ValueError, match="artifact_contract_mismatch"):
+        LoadD25ScoringProfile(tmp_path, "v3", target)
+    restarted = new_state(())
+    restarted.initialize()
+    unavailable = next(item for item in restarted.status() if item.owned and item.strategy is Strategy.D25)
+    assert unavailable.loaded is None and unavailable.disk is None and not unavailable.restart_required
+    assert unavailable.publication_observation_failure == "d25_probability_target_mismatch"
+    publish(artifact)
+    state.observe_publication(lambda: False)
+    restored = next(item for item in state.status() if item.owned and item.strategy is Strategy.D25)
+    assert restored.disk == initial.disk and restored.publication_observation_failure is None
     publish(None)
     state.observe_publication(lambda: False)
     missing = next(item for item in state.status() if item.owned and item.strategy is Strategy.D25)
     assert missing.disk is None and missing.loaded == initial.loaded and missing.restart_required
+    (root / "d25").rename(tmp_path / "withdrawn")
+    state.observe_publication(lambda: False)
+    withdrawn = next(item for item in state.status() if item.owned and item.strategy is Strategy.D25)
+    assert withdrawn.disk is None and withdrawn.loaded == initial.loaded and withdrawn.restart_required
+    assert withdrawn.publication_observation_failure is None
 
 
 def test_tomorrow_observation_uses_the_loaded_target_and_keeps_startup_model(tmp_path, monkeypatch):
@@ -158,7 +233,8 @@ def test_tomorrow_observation_uses_the_loaded_target_and_keeps_startup_model(tmp
             LoadTomorrowProbabilityModel(tmp_path, "v3", target, project_root=project)
     state = PublishedTrainingState(
         tmp_path / "history", tmp_path, (loaded.publication,), owned_profile="v3", d25_only=True,
-        tomorrow_target=target, maintenance_path=tmp_path / "maintenance.sqlite3",
+        prediction_targets=LoadPredictionTargets(RuntimeSettingsFixture().strategy_config_path),
+        maintenance_path=tmp_path / "maintenance.sqlite3",
         load_expectation=HistoryTrainingExpectationFixture,
         wall_clock=lambda: datetime(2026, 11, 25, tzinfo=ZoneInfo("Asia/Shanghai")), sqlite_policy=SqlitePolicyFixture(),
     )

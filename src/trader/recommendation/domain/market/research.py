@@ -289,17 +289,17 @@ def ResearchComponentsFromObservation(
     if any(item.startswith(("financial:", "financial_scoring:", "company_snapshot:")) for item in observation.source_errors):
         financial = "stale" if observation.financial is not None else "unknown"
     at = observed_at or observation.loaded_at or observation.snapshot_at
-    known_risk = any(at is None or _corporate_risk_is_effective(fact, at) for fact in observation.corporate_risk_facts)
+    known_risk = at is not None and any(_corporate_risk_is_effective(fact, at) for fact in observation.corporate_risk_facts)
     if observation.company_context is not None and at is not None:
         known_risk = known_risk or any(
             IsCompanyRiskEffective(event, at) for event in observation.company_context.facts.risk_events
         )
     if known_risk:
         announcements: ResearchComponentStatus = "known_risk"
-    elif not observation.announcements_available:
-        announcements = "unknown"
-    elif "risk_coverage:stale" in observation.source_errors:
+    elif observation.announcements_available and "risk_coverage:stale" in observation.source_errors:
         announcements = "stale"
+    elif not observation.announcements_available or not observation.corporate_risk_window_complete:
+        announcements = "unknown"
     else:
         announcements = "known_clear"
     pledge: ResearchComponentStatus = "known_clear" if observation.pledge_ratio_pct is not None else "unknown"
@@ -330,7 +330,7 @@ def DeriveLongResearchFeatures(
     financial = observation.financial if FinancialReportIsFresh(
         observation.financial, observed_at, maximum_age_days=policy.financial_max_age_days,
     ) else None
-    event_features = _event_features(observation, policy)
+    event_features = _event_features(observation, policy, observed_at)
     return {
         "value_score": _valuation_score(financial, inputs.price, policy),
         "growth_score": _growth_score(financial, policy),
@@ -566,24 +566,20 @@ def _quality_score(financial: FinancialReport | None, policy: LongResearchPolicy
 def _event_features(
     observation: ResearchObservation,
     policy: LongResearchPolicy,
+    observed_at: datetime,
 ) -> dict[str, float | None]:
-    if not observation.announcements_available:
-        reduction_level = None
-        negative_level = None
-    else:
-        context = observation.company_context
-        events = context.facts.risk_events if context else ()
-        at = observation.loaded_at or observation.snapshot_at
-        effective_events = tuple(event for event in events if at is not None and IsCompanyRiskEffective(event, at))
-        negative_level = float(min(3, max((event.risk_level for event in effective_events), default=0)))
-        reduction_level = (
-            3
-            if any(event.risk_type is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION for event in effective_events)
-            else 0
-        )
+    context = observation.company_context
+    events = context.facts.risk_events if context else ()
+    effective_events = tuple(event for event in events if IsCompanyRiskEffective(event, observed_at))
+    no_event = 0 if observation.announcements_available and observation.corporate_risk_window_complete else None
+    negative_level = max((min(3, event.risk_level) for event in effective_events), default=no_event)
+    reduction_level = (
+        3 if any(event.risk_type is CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION for event in effective_events)
+        else no_event
+    )
     unlock_level = _severity(observation.unlock_ratio_pct, policy.unlock_thresholds)
     return {
-        "negative_announcement_level": negative_level,
+        "negative_announcement_level": float(negative_level) if negative_level is not None else None,
         "pledge_risk": _severity(observation.pledge_ratio_pct, policy.pledge_thresholds),
         "shareholder_reduction_level": float(reduction_level) if reduction_level is not None else None,
         "unlock_risk": unlock_level,

@@ -12,6 +12,7 @@
       loadRecommendations, loadStatus, applyRecommendationPatch, applyRecommendationBatch, applyOverlayPatch,
       requestRecommendationResync, recordBrowserError,
     } = dependencies;
+    let reconnecting = false;
 
     function rememberEvent(event) {
       const parsed = Number(event.lastEventId);
@@ -59,6 +60,11 @@
         if (state.streamRetry) window.clearTimeout(state.streamRetry);
         state.streamRetry = null;
         state.streamRetryDelayMs = STREAM_RETRY_INITIAL_MS;
+        if (reconnecting) {
+          reconnecting = false;
+          // The HTTP read at disconnect may precede a formal freeze committed during backoff.
+          if (!state.date) requestRecommendationResync("stream_reconnected");
+        }
       };
       const refreshFreeze = (event) => {
         if (state.stream !== stream) return;
@@ -101,6 +107,7 @@
       stream.onerror = () => {
         if (state.stream !== stream) return;
         stream.close();
+        reconnecting = true;
         if (state.stream === stream) state.stream = null;
         els.streamStatus.textContent = "轮询";
         startPolling();

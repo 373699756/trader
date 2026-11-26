@@ -163,6 +163,7 @@ from trader.training.domain.training_reminder import TrainingReminderStatus
 from trader.training.domain.v1.learned_rank import V1TrainingSettings
 from trader.training.infra.history.history_training_due import PublishedTrainingState
 from trader.training.infra.history.history_training_expectation import HistoryTrainingExpectationReader
+from trader.training.infra.history.profile_inspection import StartupProfileInspections
 from trader.training.infra.history.training_reminder_status import ReadTrainingReminderStatus
 from trader.training.infra.training_settings import LoadProfileTrainingSettings, LoadRuntimeTrainingSettings, ProfileTrainingSettings
 from trader.training.infra.resource_settings import LoadTrainingResourceSettings
@@ -571,6 +572,7 @@ class _RecommendationConfiguration:
     strategy: StrategySettings
     watchlist: LongWatchlist
     cost_policy: ExecutionCostPolicy
+    startup_profile_inspections: StartupProfileInspections | None
 
 
 def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires runtime resource owners
@@ -715,7 +717,8 @@ def BuildSystem(  # noqa: PLR0915 - the sole composition root explicitly wires r
             *((tomorrow_predictor.publication,) if tomorrow_predictor is not None else ()),
         ), metadata_cache=workers.market_cache,
         maintenance_path=paths.training_maintenance, owned_profile=profile_id, wall_clock=ShanghaiClock(now).now,
-        sqlite_policy=sqlite_policy, d25_only=True, tomorrow_target=tomorrow_target,
+        sqlite_policy=sqlite_policy, d25_only=True, prediction_targets=targets,
+        startup_inspections=configuration.startup_profile_inspections if configuration is not None else None,
         load_expectation=HistoryTrainingExpectationReader(
             partial(ReadIndustrySnapshot, paths.reference, sqlite_policy=sqlite_policy),
             partial(LoadProfileTrainingSettings, settings.project_root),
@@ -926,6 +929,7 @@ def BuildProfiledSystem(
     configuration = _RecommendationConfiguration(
         settings, default_strategy, LoadLongWatchlist(settings.long_watchlist_path),
         LoadExecutionCostPolicy(settings.config_path.parent),
+        StartupProfileInspections() if len(profiles) > 1 else None,
     )
     publication_lock = threading.RLock()
     freeze_events = UnifiedFreezeEventStream(

@@ -166,10 +166,15 @@ def test_scoring_receipt_is_only_available_after_sealed_adoption(tmp_path):
     publication = writer.publish((facts,), {}, None, _AT, receipts=(receipt,), financial_observations=(supplier,))
     reader = SQLiteCompanyEvidenceReaderFixture(writer.path)
     assert reader.read_financial_scoring_observations((snapshot.code,), as_of=_AT) == ()
-    startup_times = iter((receipt_at, adopted_at))
+    clock = [receipt_at]
+
+    def reserve(_size):
+        clock[0] = adopted_at
+        return True
+
     research = PublishedCompanyResearchFixture(
-        reader, wall_clock=lambda: next(startup_times, adopted_at), open_dates=lambda: _DATES, monotonic=time.monotonic,
-        financial_scoring_reader=reader,
+        reader, wall_clock=lambda: clock[0], open_dates=lambda: _DATES, monotonic=time.monotonic,
+        financial_scoring_reader=reader, reserve_bytes=reserve,
     )
     research.initialize((snapshot.code,), cancelled=lambda: False)
     assert research.loaded_identity == publication.identity.content_hash.hex()

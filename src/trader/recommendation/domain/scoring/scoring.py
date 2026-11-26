@@ -27,6 +27,7 @@ from trader.recommendation.domain.publication.models import (
     BoardStrategyPolicy,
     Strategy,
 )
+from trader.recommendation.domain.scoring.company import VisibleD25FinancialScores
 from trader.recommendation.domain.scoring.scoring_calculations import (
     MAX_FALLBACK_SESSIONS,
     MIN_BOARD_SAMPLE,
@@ -464,8 +465,8 @@ def ScoreBoardStrategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy) -
 
 
 def _strategy_scoring_values(snapshot: FeatureSnapshot, strategy: Strategy) -> Mapping[str, float | None]:
-    scores = snapshot.d25_financial_scores
-    if strategy is not Strategy.D25 or scores is None or scores.available_at > snapshot.observed_at:
+    scores = VisibleD25FinancialScores(snapshot) if strategy is Strategy.D25 else None
+    if scores is None:
         return snapshot.values
     return {
         **snapshot.values,

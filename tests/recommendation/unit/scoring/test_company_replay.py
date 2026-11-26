@@ -93,6 +93,47 @@ def test_only_financial_replay_arms_receive_supplier_scores(application_feature_
     assert report.code not in {row.code for row in financial.seats}
 
 
+@pytest.mark.parametrize(("sealed_offset", "adopted_offset", "used"), [
+    (-2, -1, True), (0, 0, True), (-2, 3, False), (3, 3, False),
+])
+def test_d25_close_fallback_uses_financial_scores_available_by_close(
+    application_feature_factory, sealed_offset, adopted_offset, used,
+):
+    close = (_AT + timedelta(days=1)).replace(hour=15)
+    inputs, policy, runtime, _ = BuildCompanyReplayCase(
+        application_feature_factory, evaluated_at=close + timedelta(seconds=15),
+    )
+    report = _snapshot().financials[0]
+    issuer = f"{report.code}.SH"
+    observation = CompanyFinancialSourceObservation(
+        report, issuer, _AT, None, _AT, "CNY", CompanyFinancialSourceRecordHash(report, issuer, _AT, None, "CNY"), (),
+    )
+    scores = D25FinancialScores(
+        CompanyFinancialScoringObservation(observation, close + timedelta(seconds=sealed_offset)),
+        10.0, 10.0, 10.0, close + timedelta(seconds=adopted_offset),
+    )
+
+    def with_scores(rows):
+        return tuple(replace(row, d25_financial_scores=scores) if row.quote.code == report.code else row for row in rows)
+
+    baseline = replace(inputs.baseline, phase="close_fallback")
+    native = replace(baseline, market_features=with_scores(baseline.market_features),
+                     candidate_features=with_scores(baseline.candidate_features))
+    runtime = replace(runtime, population_qualifications=None)
+    control = BuildScoredLocal(baseline, policy, sequence=1, runtime=runtime)
+    scored = BuildScoredLocal(native, policy, sequence=1, runtime=runtime)
+    assert dict(scored.local.input_versions)["d25_close_evidence"] == f"official-close:{native.input_version}"
+    row = next(item for item in scored.selection.evaluations if item.code == report.code)
+    assert row.score_ledger is not None
+    assert any(item.code == "supplier_financial_scoring" for item in row.score_ledger.items) is used
+    base_seats = tuple(item.code for item in control.local.items)
+    seats = tuple(item.code for item in scored.local.items)
+    assert report.code in base_seats
+    assert (report.code not in seats) is used
+    if not used:
+        assert scored.local.items == control.local.items
+
+
 def test_company_replay_rejects_decision_drift_foreknowledge_and_quote_change(company_replay_case):
     inputs, policy, runtime, _observed = company_replay_case
     altered = replace(inputs.expected_baseline, freeze_content_hash="different-content")

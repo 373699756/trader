@@ -203,8 +203,11 @@ class PublishedCompanyResearch:
         self._financial_max_age_days = financial_max_age_days
         self._config_version = options.get("config_version", "company")
         self._initialization_lock = threading.Lock()
+        self._coverage_lock = threading.Lock()
         self._lock = threading.RLock()
         self._epoch: ResearchEpoch | None = None
+        self._adopted_at: datetime | None = None
+        self._coverage_status: tuple[date, date | None, ResearchLoaderStatus] | None = None
         self._last_error = "company_not_loaded"
         self._publication_version = ""
         self._disk_version = ""
@@ -365,24 +368,17 @@ class PublishedCompanyResearch:
         if cancelled() or self._monotonic() >= deadline:
             self._last_error = "company_preload_cancelled" if cancelled() else "company_preload_deadline"
             return
-        received_at = observed_at
-        if any(row.financial_scoring_observation is not None for row in rows.values()):
-            # The durable source receipt can precede a recovered seal. The first
-            # usable cache read has its own time without shifting official risk observations.
-            received_at = max(observed_at, ShanghaiNow(self._wall_clock()))
-            rows = {
-                code: replace(row, financial_scoring_adopted_at=received_at)
-                if row.financial_scoring_observation is not None else row
-                for code, row in rows.items()
-            }
         epoch = _research_epoch(
             rows,
             observed_at,
             publication,
             self._config_version,
             self._source_versions() if self._source_versions is not None else {},
-            received_at=received_at,
         )
+        document_links = MappingProxyType({
+            code: tuple(sorted(items, key=lambda item: (item.disclosed_at, item.evidence_id), reverse=True))
+            for code, items in documents.items()
+        })
         if cancelled() or self._monotonic() >= deadline:
             self._last_error = "company_preload_cancelled" if cancelled() else "company_preload_deadline"
             return
@@ -390,15 +386,16 @@ class PublishedCompanyResearch:
             self._last_error = "company_preload_capacity"
             return
         with self._lock:
+            # The projection and its capacity reservation must be complete before it can be adopted.
+            self._adopted_at = max(observed_at, ShanghaiNow(self._wall_clock()))
             self._epoch = epoch
-            self._document_links = MappingProxyType({
-                code: tuple(sorted(items, key=lambda item: (item.disclosed_at, item.evidence_id), reverse=True))
-                for code, items in documents.items()
-            })
+            self._coverage_status = None
+            self._document_links = document_links
             self._publication_version = self._disk_version = publication
             self._last_error = "" if rows else "company_snapshot:missing"
             if scoring_failed:
                 self._last_error = "company_financial_scoring_read_failed"
+        self._refresh_coverage_status(lambda: cancelled() or self._monotonic() >= deadline)
 
     @property
     def loaded_identity(self) -> str:
@@ -432,12 +429,15 @@ class PublishedCompanyResearch:
         result: dict[str, ResearchObservation] = {}
         with self._lock:
             epoch = self._epoch
+            adopted_at = self._adopted_at
         for code in codes:
             original = epoch.observations.get(code) if epoch is not None else None
             if original is not None and original.snapshot_at is not None and original.snapshot_at > now:
                 original = None
             item = (
-                _qualified(original, now, required, self._company_policy.events.unlock_days, self._financial_max_age_days)
+                _qualified(
+                    original, now, required, self._company_policy.events.unlock_days, self._financial_max_age_days, adopted_at,
+                )
                 if original is not None
                 else None
             )
@@ -469,15 +469,60 @@ class PublishedCompanyResearch:
             if not cancelled():
                 with self._lock:
                     self._publication_observation_failure = f"company_observation:{type(exc).__name__}"
-            return
-        if not cancelled():
+        else:
+            if cancelled():
+                return
             with self._lock:
                 self._disk_version = identity
                 self._publication_observation_failure = None if identity else "company_publication_unavailable"
+        self._refresh_coverage_status(cancelled)
 
     def status(self) -> ResearchLoaderStatus:
+        status = self._refresh_coverage_status()
+        assert status is not None
+        return status
+
+    def _refresh_coverage_status(
+        self, cancelled: Callable[[], bool] | None = None,
+    ) -> ResearchLoaderStatus | None:
+        if cancelled is not None and cancelled():
+            return None
         now = ShanghaiNow(self._wall_clock())
         required = self._required_coverage(now)
+        cached = self._cached_coverage(now, required)
+        if cached is not None:
+            return cached
+        if not self._coverage_lock.acquire(blocking=cancelled is None):
+            # Another refresh is already serving readers. The observer will run again.
+            return None
+        try:
+            cached = self._cached_coverage(now, required)
+            if cached is not None:
+                return cached
+            return self._build_coverage_status(now, required, cancelled)
+        finally:
+            self._coverage_lock.release()
+
+    def _cached_coverage(self, now: datetime, required: date | None) -> ResearchLoaderStatus | None:
+        # After adoption, coverage windows and report ages advance on Shanghai calendar days.
+        with self._lock:
+            cached = self._coverage_status
+            if (self._adopted_at is None or now < self._adopted_at
+                    or cached is None or cached[:2] != (now.date(), required)):
+                return None
+            summary = cached[2]
+            if (summary.disk_identity != self._disk_version
+                    or summary.publication_observation_failure != self._publication_observation_failure):
+                summary = replace(
+                    summary, disk_identity=self._disk_version, restart_required=self._publication_version != self._disk_version,
+                    publication_observation_failure=self._publication_observation_failure,
+                )
+                self._coverage_status = (now.date(), required, summary)
+            return summary
+
+    def _build_coverage_status(
+        self, now: datetime, required: date | None, cancelled: Callable[[], bool] | None,
+    ) -> ResearchLoaderStatus | None:
         with self._lock:
             epoch = self._epoch
             planned_count = self._planned_count
@@ -485,17 +530,21 @@ class PublishedCompanyResearch:
             publication_version = self._publication_version
             disk_version = self._disk_version
             observation_failure = self._publication_observation_failure
-        rows = tuple(
-            _qualified(item, now, required, self._company_policy.events.unlock_days, self._financial_max_age_days)
-            for item in (epoch.observations.values() if epoch is not None else ())
-        )
+            adopted_at = self._adopted_at
+        rows = []
+        for item in epoch.observations.values() if epoch is not None else ():
+            if cancelled is not None and cancelled():
+                return None
+            rows.append(_qualified(
+                item, now, required, self._company_policy.events.unlock_days, self._financial_max_age_days, adopted_at,
+            ))
         coverages = tuple(ResearchComponentCoverage(item) for item in rows)
         covered = tuple(sum(coverage[index] for coverage in coverages) for index in range(4))
         verified = sum(_action_ready(item) for item in rows)
         partial = sum(
             any(coverage) and not _action_ready(item) for item, coverage in zip(rows, coverages, strict=True)
         )
-        return ResearchLoaderStatus(
+        status = ResearchLoaderStatus(
             entries=len(rows),
             success_count=len(rows),
             error_count=sum(bool(item.source_errors) for item in rows),
@@ -523,6 +572,11 @@ class PublishedCompanyResearch:
             restart_required=publication_version != disk_version,
             publication_observation_failure=observation_failure,
         )
+        if adopted_at is not None and now >= adopted_at:
+            with self._lock:
+                if epoch is self._epoch:
+                    self._coverage_status = (now.date(), required, status)
+        return status
 
 
 def _research_epoch(
@@ -531,8 +585,6 @@ def _research_epoch(
     publication: str,
     config_version: str,
     versions: Mapping[str, str],
-    *,
-    received_at: datetime,
 ) -> ResearchEpoch:
     fields: dict[str, Mapping[str, FieldValue]] = {}
     for code, row in rows.items():
@@ -561,7 +613,7 @@ def _research_epoch(
         observed_at.date(),
         0,
         observed_at,
-        received_at,
+        observed_at,
         config_version,
         rows,
         {**versions, "company": publication or "company:unavailable"},
@@ -589,10 +641,13 @@ def _action_ready(item: ResearchObservation) -> bool:
     )
 
 
-def _qualified_financial(item: ResearchObservation, now: datetime, maximum_age_days: int) -> ResearchObservation:
-    source = item.financial_scoring_observation
-    if source is not None and not FinancialScoringObservationIsVisible(item, now):
-        item = replace(item, financial_scoring_observation=None, financial_scoring_adopted_at=None)
+def _qualified_financial(
+    item: ResearchObservation, now: datetime, maximum_age_days: int, adopted_at: datetime | None,
+) -> ResearchObservation:
+    if item.financial_scoring_observation is not None:
+        item = replace(item, financial_scoring_adopted_at=adopted_at)
+        if adopted_at is None or not FinancialScoringObservationIsVisible(item, now):
+            item = replace(item, financial_scoring_observation=None, financial_scoring_adopted_at=None)
     if item.financial is None or FinancialReportIsFresh(item.financial, now, maximum_age_days=maximum_age_days):
         return item
     return replace(
@@ -603,8 +658,9 @@ def _qualified_financial(item: ResearchObservation, now: datetime, maximum_age_d
 
 def _qualified(
     item: ResearchObservation, now: datetime, required: date | None, unlock_days: int, financial_max_age_days: int,
+    adopted_at: datetime | None,
 ) -> ResearchObservation:
-    item = _qualified_financial(item, now, financial_max_age_days)
+    item = _qualified_financial(item, now, financial_max_age_days, adopted_at)
     item = _qualified_unlock(item, now, unlock_days)
     fresh = (
         required is not None

@@ -170,7 +170,10 @@ def test_market_stage_health_uses_completion_time_without_accepting_future_quote
     assert batch.dynamic_stage.snapshot.source_health.state.value == expected
 
 
-def test_unknown_source_contract_fallback_uses_stable_cache_identity() -> None:
+@pytest.mark.parametrize(
+    ("source", "contract"), (("tushare", "tushare-component"), ("unconfigured-source", None)),
+)
+def test_market_cache_identity_uses_only_configured_source_contract(source, contract) -> None:
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
@@ -179,13 +182,14 @@ def test_unknown_source_contract_fallback_uses_stable_cache_identity() -> None:
 
     identity = service.runner.cache_identity(
         "daily_history",
-        "unconfigured-source",
+        source,
         "600001",
         {"code": "600001"},
         NOW,
     )
 
-    assert identity.source_contract_version == "unconfigured-source-component"
+    assert identity.source == source
+    assert identity.source_contract_version == contract
 
 
 def test_long_quote_circuit_does_not_open_candidate_quote_circuit() -> None:

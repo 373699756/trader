@@ -728,6 +728,35 @@ def test_tomorrow_training_resource_policy_is_two_threads_and_lower_priority(
     } == {"2"}
 
 
+def test_research_status_and_h1_audit_read_the_same_registered_archive(tmp_path: Path, capsys) -> None:
+    from tests.helpers.shared.configuration import SqlitePolicyFixture
+    from trader.training.application.historical_label import HistoricalLabelPreregistrationService
+    from trader.training.application.historical_screening import HistoricalSecurity
+    from trader.training.domain.evaluation.h1_point_in_time import H1PointInTimeSpec
+    from trader.training.entrypoints.h1_point_in_time import Main as h1_audit
+    from trader.training.infra.research.h1_point_in_time_snapshot import SQLiteH1PointInTimeSnapshot
+
+    config = _runtime_config(tmp_path)
+    runtime = LoadRuntimeSettings(config)
+    root = runtime.data_paths.research("v2")
+    archive = SQLiteH1PointInTimeSnapshot(root, sqlite_policy=SqlitePolicyFixture(runtime))
+    securities = (HistoricalSecurity("600001", "main", "A", False, False),)
+    for spec in (H1PointInTimeSpec("tomorrow"), H1PointInTimeSpec("d25")):
+        archive.register_universe(spec, securities)
+    labels = HistoricalLabelPreregistrationService(archive).execute()
+
+    assert h1_audit(["--config", str(config), "--runtime-dir", str(root)]) == 1
+    audit = json.loads(capsys.readouterr().out)["strategies"]
+    assert all(item["universe_count"] == 1 for item in audit)
+    assert {item["strategy"]: item["manifest_hash"] for item in audit} == {
+        item.strategy: item.h1_manifest_hash for item in labels.strategies
+    }
+    assert Main(["--config", str(config), "research-status"]) == 0
+    status = json.loads(capsys.readouterr().out)["tomorrow_research"]
+    assert status["input_prerequisite_status"] == "blocked"
+    assert status["input_prerequisite_hash"] == labels.content_hash
+
+
 def test_research_status_keeps_tomorrow_graph_conflict_out_of_h1_input_blockers(tmp_path: Path, monkeypatch) -> None:
     config = _runtime_config(tmp_path)
 

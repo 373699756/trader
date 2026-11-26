@@ -277,20 +277,35 @@
     };
   }
 
-  function scorePresentation(snapshot) {
+  function tomorrowProbabilityTiming(snapshot, item) {
+    const versions = snapshot.input_versions || {};
+    if (String(versions.tomorrow_close_evidence || "").startsWith("official-close:")
+        || (snapshot.run_mode === "preview" && snapshot.market_as_of && snapshot.market_trade_date)) return "close";
+    const sourceTime = item && item.anchor_source_time || snapshot.observed_at;
+    const tradeDate = snapshot.trade_date;
+    if (!tradeDate || typeof sourceTime !== "string" || !/(Z|[+-]\d\d:\d\d)$/i.test(sourceTime)) return "unknown";
+    const quoteTime = Date.parse(sourceTime);
+    const open = Date.parse(`${tradeDate}T09:15:00+08:00`);
+    const close = Date.parse(`${tradeDate}T15:00:00+08:00`);
+    return quoteTime >= open && quoteTime < close ? "intraday" : "unknown";
+  }
+
+  function scorePresentation(snapshot, item) {
     const versions = snapshot && snapshot.input_versions || {};
     const learnedRank = Boolean(snapshot && snapshot.strategy !== "long"
       && ["learned_rank_percentile_0_100", "model_prediction_percentile_0_100"].includes(versions.score_scale));
     const tomorrowProbability = Boolean(snapshot && snapshot.strategy === "tomorrow"
       && versions.score_scale === "tomorrow_close_gain_probability_0_100");
     const d25Probability = Boolean(snapshot && snapshot.strategy === "d25" && snapshot.prediction_target);
+    const timing = tomorrowProbability ? tomorrowProbabilityTiming(snapshot, item) : null;
     return {
       learnedRank,
       tomorrowProbability,
+      timing,
       d25Probability,
       shadow: Boolean(snapshot && snapshot.strategy !== "long" && versions.execution_mode === "shadow"),
       preview: Boolean(snapshot && snapshot.run_mode === "preview"),
-      finalLabel: tomorrowProbability ? "达标概率"
+      finalLabel: tomorrowProbability ? ({ intraday: "盘中达标预估", close: "收盘达标概率", unknown: "达标预估（时点待核）" })[timing]
         : learnedRank ? "模型排序分" : "最终评分",
     };
   }
@@ -298,7 +313,7 @@
   function currentTable(snapshot) {
     const presentation = scorePresentation(snapshot);
     const scoreLabel = presentation.tomorrowProbability
-      ? "模型排序分 / 达标概率"
+      ? `模型排序分 / ${presentation.finalLabel}`
       : presentation.d25Probability ? `${presentation.finalLabel} / 达标概率`
       : presentation.learnedRank ? "本地评分 / 模型排名" : "最终评分 / 加减分";
     return {
@@ -388,9 +403,9 @@
     return formatted === "-" ? formatted : `${sign}${formatted}`;
   }
 
-  function scoreStack(scores, snapshot) {
-    const presentation = scorePresentation(snapshot);
-    const rankTitle = presentation.tomorrowProbability ? ' title="模型排序分为达标概率换算成0–100分"'
+  function scoreStack(scores, snapshot, item) {
+    const presentation = scorePresentation(snapshot, item);
+    const rankTitle = presentation.tomorrowProbability ? ' title="模型排序分为达标预估值换算成0–100分"'
       : presentation.learnedRank ? ' title="模型分是同轮排名百分位"' : "";
     const d25Probability = presentation.d25Probability
       || (snapshot && snapshot.strategy === "d25" && hasValue(scores.target_probability));
@@ -399,7 +414,7 @@
     const scoreLabel = presentation.learnedRank || presentation.tomorrowProbability ? "模型" : "最终";
     const score = `<b${rankTitle}>${scoreLabel} ${finalScore}</b>`;
     const primary = presentation.tomorrowProbability
-      ? `${score} · <b>达标 ${finalScore}${finalScore === "-" ? "" : "%"}</b>`
+      ? `${score} · <b>${presentation.finalLabel} ${finalScore}${finalScore === "-" ? "" : "%"}</b>`
       : `${score}${d25Probability ? ` · <b>达标 ${d25Value}</b>` : ""}`;
     const local = `<b>本地 ${number(scores.local_score, 2)}</b>`;
     const ledger = scores.ledger;
@@ -429,7 +444,7 @@
       <td>${valuePercent(item.turnover_rate) || "-"}</td>
       <td>${compact(item.amount)}</td>
       <td>${compact(item.market_cap)}</td>
-      <td>${scoreStack(scores, snapshot)}</td>
+      <td>${scoreStack(scores, snapshot, item)}</td>
       <td class="reason-cell"><div class="reason-stack"><span class="reason-tag">${escapeHtml(actionReason(item.action_reason))}</span><span class="review-status" aria-label="风险复核">风险复核：${review}</span></div></td>
     </tr>`;
   }
@@ -510,7 +525,7 @@
     const long = snapshot.strategy === "long";
     const action = String(item.action || "unavailable");
     const downside = item.downside || null;
-    const presentation = scorePresentation(snapshot);
+    const presentation = scorePresentation(snapshot, item);
     const conclusionValues = long
       ? [
         ["观察状态", ACTION_LABELS[action] || "观察"],
@@ -590,6 +605,11 @@
       ["旧版DeepSeek风险扣分", Number(scores.deepseek_risk_penalty) > 0 ? number(scores.deepseek_risk_penalty, 2) : null],
     ];
     const scoreParts = [detailGrid(scoreValues)];
+    if (presentation.timing === "intraday") {
+      scoreParts.push(note("盘中预估使用报价时点的量价。模型按完整日线训练，当前缺少同时段历史校准证据。", "muted"));
+    } else if (presentation.timing === "unknown") {
+      scoreParts.push(note("本次评分的输入时点待核实。", "muted"));
+    }
     const ledger = scores.ledger;
     if (ledger) {
       scoreParts.push(detailGrid([
@@ -721,7 +741,7 @@
 
   function reviewResult(item, snapshot) {
     const { learnedRank, tomorrowProbability } = scorePresentation(snapshot);
-    const preserved = tomorrowProbability ? "席位按达标概率排序"
+    const preserved = tomorrowProbability ? "席位按模型达标预估排序"
       : learnedRank ? "模型排序分保持不变" : "最终评分仍为本地分";
     const unreviewed = tomorrowProbability || learnedRank ? preserved : "最终评分为本地分";
     const outcome = item.review_outcome;
@@ -743,18 +763,19 @@
   function hasResearchCoverage(research) {
     if (!research || !research.components) return false;
     return ["financial", "announcements", "pledge", "unlock"]
-      .some((key) => ["known_clear", "known_risk", "stale"].includes(research.components[key]));
+      .some((key) => ["known_clear", "known_risk", "stale", "unknown"].includes(research.components[key]));
   }
 
   function researchStatus(research) {
     const values = ["financial", "announcements", "pledge", "unlock"].map((key) => research.components[key]);
-    if (values.every((value) => value === "known_clear" || value === "known_risk")) return "风险研究：已核";
-    return "风险研究：部分";
+    if (values.every((value) => value === "known_clear" || value === "known_risk")) return "四项资料已获取";
+    if (values.every((value) => value === "unknown")) return "四项资料待获取";
+    return "部分资料可用或已过期";
   }
 
   function researchComponentStatus(research, key) {
     const status = research && research.components && research.components[key];
-    return ({ known_clear: "已核：未见风险", known_risk: "已核：有风险", stale: "已过期", unknown: "未获取" })[status]
+    return ({ known_clear: "资料已获取", known_risk: "已确认风险", stale: "资料已过期", unknown: "未获取" })[status]
       || "历史状态未知";
   }
 

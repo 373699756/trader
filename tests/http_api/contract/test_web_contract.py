@@ -852,8 +852,10 @@ def test_observation_failures_are_public_and_clear_on_recovery_without_io(monkey
         else f"{source}_observation:OSError"
         for source in ("history", "reference", "company", "model")
     }
+    if missing_publication:
+        failures["model"] = "d25_probability_target_mismatch"
     maintenance = {
-        "profile_id": "v3", "strategy": "tomorrow", "owned": True,
+        "profile_id": "v3", "strategy": "d25", "owned": True,
         "publication_observation_failure": failures["model"], "private_path": "must-not-leak",
     }
     reference = {

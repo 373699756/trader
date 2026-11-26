@@ -8,6 +8,9 @@ from trader.recommendation.domain.scoring.profile_identity import ScoringProfile
 from trader.training.domain.training_due import TrainingDueState
 
 
+D25_PROBABILITY_TARGET_MISMATCH = "d25_probability_target_mismatch"
+
+
 @dataclass(frozen=True)
 class ModelPublicationIdentity:
     profile_id: ScoringProfileId
@@ -41,8 +44,8 @@ class HeadTrainingStatus:
             self.owned
             and self.loaded != self.disk
             and (self.failure != "publication_busy" or self.disk is not None)
-            and not (self.disk is None and self.publication_observation_failure is not None)
+            and (self.disk is not None or self.publication_observation_failure in {None, D25_PROBABILITY_TARGET_MISMATCH})
         )
 
 
-__all__ = ["ModelPublicationIdentity", "HeadTrainingStatus"]
+__all__ = ["D25_PROBABILITY_TARGET_MISMATCH", "ModelPublicationIdentity", "HeadTrainingStatus"]

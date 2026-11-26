@@ -40,6 +40,7 @@ from trader.recommendation.domain.scoring.company import (
     CompanyFinancialScores,
     CompanyScoringPolicy,
     ScoreLedgerInput,
+    VisibleD25FinancialScores,
 )
 from trader.recommendation.domain.scoring.scoring import (
     ApplyBoardPolicy,
@@ -755,23 +756,21 @@ def ApplySelectionRisks(
                 original.features.optional_value("growth_score"),
             ),
         )
-        financial_scores = original.features.d25_financial_scores
-        if strategy is Strategy.D25 and financial_scores is not None:
-            available_at = financial_scores.available_at
-            if available_at <= original.features.observed_at:
-                observation = financial_scores.source.observation
-                lineage = ScoreAdjustmentItem(
-                    code="supplier_financial_scoring",
-                    kind="review",
-                    label=(f"东方财富财务观测 {observation.financial.report_date.isoformat()} "
-                           f"采用时间 {available_at.isoformat()}"),
-                    level=0,
-                    rule_points=0.0,
-                    applied_points=0.0,
-                    reason="used_for_d25_financial_scores",
-                    evidence_ids=(observation.record_hash,),
-                )
-                adjustments = replace(adjustments, bonuses=(*adjustments.bonuses, lineage))
+        financial_scores = VisibleD25FinancialScores(original.features) if strategy is Strategy.D25 else None
+        if financial_scores is not None:
+            observation = financial_scores.source.observation
+            lineage = ScoreAdjustmentItem(
+                code="supplier_financial_scoring",
+                kind="review",
+                label=(f"东方财富财务观测 {observation.financial.report_date.isoformat()} "
+                       f"采用时间 {financial_scores.available_at.isoformat()}"),
+                level=0,
+                rule_points=0.0,
+                applied_points=0.0,
+                reason="used_for_d25_financial_scores",
+                evidence_ids=(observation.record_hash,),
+            )
+            adjustments = replace(adjustments, bonuses=(*adjustments.bonuses, lineage))
         facts = DeduplicateRiskFacts((*facts, *adjustments.risks), rules=policy.rules)
         ledger = BuildScoreLedger(
             ScoreLedgerInput(

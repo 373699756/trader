@@ -331,6 +331,7 @@ def test_long_research_features_use_point_in_time_financial_and_event_inputs() -
             ResearchAnnouncement("控股股东减持并收到监管函", NOW),
         ),
         announcements_available=True,
+        corporate_risk_window_complete=True,
         pledge_ratio_pct=15.0,
         unlock_ratio_pct=6.0,
     )
@@ -405,6 +406,7 @@ def test_successful_empty_event_sources_are_auditable_real_zeroes() -> None:
     features = _derive_long_research_features(
         ResearchObservation(
             announcements_available=True,
+            corporate_risk_window_complete=True,
             pledge_ratio_pct=0.0,
             unlock_ratio_pct=0.0,
         ),
@@ -465,6 +467,7 @@ def test_long_event_risk_levels_use_exact_configured_boundaries(
     features = _derive_long_research_features(
         ResearchObservation(
             announcements_available=True,
+            corporate_risk_window_complete=True,
             pledge_ratio_pct=pledge_ratio,
             unlock_ratio_pct=unlock_ratio,
         ),
@@ -476,6 +479,7 @@ def test_long_event_risk_levels_use_exact_configured_boundaries(
     )
 
     assert features["pledge_risk"] == expected_pledge
+    assert features["unlock_risk"] == expected_unlock
     assert features["reduction_or_unlock"] == expected_unlock
 
 
@@ -514,8 +518,34 @@ def test_corporate_risk_window_does_not_keep_old_permanent_or_three_year_rules()
 def test_current_announcement_coverage_does_not_claim_regulatory_history() -> None:
     observation = ResearchObservation(announcements_available=True, corporate_risk_window_complete=False)
 
-    assert ResearchComponentsFromObservation(observation).announcements == "known_clear"
+    assert ResearchComponentsFromObservation(observation).announcements == "unknown"
     assert DeriveCorporateRiskFeatures((), NOW, window_complete=False)["corporate_risk_window_unavailable"] == 1.0
+
+
+@pytest.mark.parametrize("complete", (True, False))
+def test_cached_reduction_is_evaluated_at_each_decision_even_with_incomplete_coverage(complete: bool) -> None:
+    facts = CompileCompanyFacts(_snapshot(), CompanyEventPolicy())
+    plan = ResearchAnnouncement(
+        "控股股东拟减持股份的计划公告", NOW, "official:reduction",
+        body="本公司控股股东拟减持股份，详见减持计划。", body_checked=True,
+    )
+    original, = _extract((plan,)).risks
+    expiry = NOW + timedelta(hours=1)
+    event = replace(original, expires_at=expiry)
+    observation = ResearchObservation(
+        company_context=CompanyScoringContext(replace(facts, risk_events=(event,)), (), complete),
+        announcements_available=complete, corporate_risk_window_complete=complete, loaded_at=NOW,
+    )
+    for at, active in ((NOW - timedelta(seconds=1), False), (NOW, True), (expiry, False)):
+        features = DeriveLongResearchFeatures(
+            observation, LongResearchInputs(20.0, None, None, None), _long_policy(), _feature_component_weights(),
+            observed_at=at,
+        )
+        expected = 3.0 if active else (0.0 if complete else None)
+        assert features["negative_announcement_level"] == expected
+        assert features["shareholder_reduction_level"] == expected
+        component = ResearchComponentsFromObservation(observation, at)
+        assert component.announcements == ("known_risk" if active else "known_clear" if complete else "unknown")
 
 
 def test_effective_reduction_and_unresolved_investigation_are_hard_risk_facts() -> None:

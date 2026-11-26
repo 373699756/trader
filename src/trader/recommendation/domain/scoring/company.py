@@ -6,6 +6,8 @@ import math
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from decimal import ROUND_HALF_UP, Decimal
+from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 from trader.download.domain.company_events import (
     CompanyDataState,
@@ -18,6 +20,11 @@ from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_source_records import CompanyFinancialScoringObservation
 from trader.recommendation.domain.evidence.review import RiskFact
 from trader.recommendation.domain.publication.score_ledger import ScoreAdjustmentItem, ScoreLedger
+
+if TYPE_CHECKING:
+    from trader.recommendation.domain.market.models import FeatureSnapshot
+
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +86,18 @@ class D25FinancialScores:
     @property
     def available_at(self) -> datetime:
         return max(self.source.available_at, self.adopted_at) if self.adopted_at is not None else self.source.available_at
+
+
+def VisibleD25FinancialScores(snapshot: FeatureSnapshot) -> D25FinancialScores | None:
+    """Select supplier scores available at the decision and, for a trading day, by market close."""
+    scores = snapshot.d25_financial_scores
+    if scores is None or scores.available_at > snapshot.observed_at:
+        return None
+    if snapshot.preview_context is not None:
+        return scores
+    local = snapshot.observed_at.astimezone(_SHANGHAI)
+    close = local.replace(hour=15, minute=0, second=0, microsecond=0)
+    return scores if scores.available_at <= close else None
 
 
 @dataclass(frozen=True, slots=True)
