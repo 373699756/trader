@@ -24,6 +24,7 @@ from trader.download.domain.history_revision import HistoryTrainingRow
 from trader.download.infra.history_control_index import HistoryControlError, HistoryControlIndex
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader, HistorySnapshotReadError
 from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.market.tomorrow_probability import (
     BuildTomorrowFeatures,
@@ -46,7 +47,10 @@ from trader.training.application.tomorrow_training import (
     TrainingSampleProgress,
     TrainingValidationProgress,
 )
-from trader.training.domain.tomorrow_probability import TomorrowProbabilityProfileResult, TomorrowProbabilityTrainingResult
+from trader.training.domain.tomorrow_probability import (
+    TomorrowDiagnosticAssessment, TomorrowProbabilityProfileResult, TomorrowProbabilityTrainingResult,
+    TomorrowWindow, TomorrowWindowShortfall,
+)
 from trader.training.domain.v1.learned_rank import V1TrainingSettings
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.logistic_fitting import FitBinaryLogistic
@@ -60,6 +64,7 @@ from trader.training.infra.tomorrow.artifact import (
     TomorrowFeatureNames,
 )
 from trader.training.infra.tomorrow.settings import LoadTomorrowFitSettings, TomorrowFitSettings
+from trader.training.infra.tomorrow.dates import PRODUCTION_CALIBRATION_DAYS, TomorrowDateWindows, TomorrowWindows
 from trader.training.infra.tomorrow.tree import TomorrowTreeScores
 from trader.training.infra.tomorrow.v1.model import FitTomorrowRanker
 from trader.training.infra.tomorrow.v2.model import FitTomorrowClassifier
@@ -67,10 +72,6 @@ from trader.training.infra.tomorrow.v3.model import FitTomorrowLogistic, Logisti
 from trader.training.infra.tomorrow.v5.model import FitTomorrowTcn, TomorrowTcnModel
 from trader.training.infra.tomorrow.v5.samples import AppendTomorrowSequencePoints, CompletedTomorrowSequence
 
-_CALIBRATION_SESSIONS = 20
-_ASSESSMENT_SESSIONS = 20
-_EMBARGO_SESSIONS = 5
-_MIN_FITTING_SESSIONS = 60
 _BOARD_SEATS = 4
 _SEATS = 6
 _BOARDS = ("main", "chinext", "star")
@@ -120,37 +121,14 @@ class _Samples:
 
 
 @dataclass(frozen=True, slots=True)
-class _FitDates:
-    fitting: int
-    early: int = 0
-    calibration: int = _CALIBRATION_SESSIONS
-    assessment: int = _ASSESSMENT_SESSIONS
-    embargo: int = _EMBARGO_SESSIONS
-
-    @property
-    def reserve(self) -> int:
-        return self.early + self.calibration + self.assessment + self.embargo * (3 if self.early else 2)
-
-
-@dataclass(frozen=True, slots=True)
 class _PendingFit:
     target: PredictionTarget
     settings: TomorrowFitSettings
-    dates: _FitDates
+    dates: TomorrowDateWindows
 
     @property
     def profile(self) -> ScoringProfileId:
         return self.settings.profile
-
-
-def _fit_dates(settings: TomorrowFitSettings) -> _FitDates:
-    parameters = settings.parameters
-    if isinstance(parameters, V1TrainingSettings):
-        return _FitDates(
-            settings.fit_dates, parameters.early_stopping_dates, parameters.calibration_dates,
-            parameters.validation_dates, parameters.embargo_dates,
-        )
-    return _FitDates(settings.fit_dates)
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,11 +212,12 @@ def TrainTomorrowProbability(
             current = LoadTomorrowProbabilityModel(model_root, profile, target, project_root=project_root)
         except (OSError, RuntimeError, ValueError):
             current = None
-        if (
-            current is not None and current.artifact.history_snapshot_hash == history.snapshot_hash
-            and current.artifact.training_contract_hash == LoadTomorrowFitSettings(project_root, profile).identity
-        ):
-            result = TomorrowProbabilityTrainingResult(history.snapshot_hash, current.identity, current.artifact.algorithm)
+        if current is not None and current.artifact.history_snapshot_hash == history.snapshot_hash:
+            result = TomorrowProbabilityTrainingResult(
+                history.snapshot_hash, current.identity, current.artifact.algorithm, diagnostic=current.artifact.diagnostic,
+                fitting_dates=current.artifact.fitting_dates, early_stopping_dates=current.artifact.early_stopping_dates,
+                calibration_dates=current.artifact.calibration_dates, reused=True,
+            )
             results[profile] = TomorrowProbabilityProfileResult(target, profile, result)
             reporter.stage("training_preparation", "completed")
             reporter.stage("model_reuse", "completed")
@@ -250,13 +229,24 @@ def TrainTomorrowProbability(
         else:
             try:
                 settings = LoadTomorrowFitSettings(project_root, profile)
-                request = _PendingFit(target, settings, _fit_dates(settings))
+                request = _PendingFit(target, settings, TomorrowWindows(settings))
             except (OSError, ValueError) as exc:
                 result = _training_failure(history.snapshot_hash, exc)
                 results[profile] = TomorrowProbabilityProfileResult(target, profile, result)
                 reporter.fail()
             else:
-                pending.setdefault((target, profile == "v5"), []).append(request)
+                warmup = SEQUENCE_STEPS + 1 if profile == "v5" else 0
+                days = request.dates.fitting + request.dates.reserve
+                if len(history.open_dates) < days + warmup + 1:
+                    result = replace(
+                        _failed(history.snapshot_hash, "tomorrow_insufficient_training_dates"),
+                        window_shortfall=TomorrowWindowShortfall("source_calendar", days + warmup + 1, len(history.open_dates)),
+                    )
+                else:
+                    pending.setdefault((target, profile == "v5"), []).append(request)
+                    continue
+                results[profile] = TomorrowProbabilityProfileResult(target, profile, result)
+                reporter.fail()
 
     for requests in pending.values():
         group_reporters = tuple(reporters[item.profile] for item in requests)
@@ -322,7 +312,7 @@ def _training_failure(snapshot_hash: str, exc: Exception) -> TomorrowProbability
         reason = "tomorrow_probability_memory_budget_insufficient"
     else:
         reason = detail if isinstance(exc, ValueError) and detail.startswith("tomorrow_") else type(exc).__name__
-    return _failed(snapshot_hash, reason)
+    return replace(_failed(snapshot_hash, reason), window_shortfall=exc.shortfall if isinstance(exc, _WindowIncomplete) else None)
 
 
 def _failed(snapshot_hash: str, reason: str) -> TomorrowProbabilityTrainingResult:
@@ -456,13 +446,6 @@ def _observed_rows(samples: _Samples, section: slice) -> tuple[_FloatArray, _Flo
     return samples.features[section][observed], labels[observed]
 
 
-def _observed_dates(samples: _Samples, start_day: int, end_day: int) -> tuple[int, ...]:
-    return tuple(
-        day for day in range(start_day, end_day)
-        if np.any(np.isfinite(samples.labels[samples.rows(day, day + 1)]))
-    )
-
-
 def _sigmoid(scores: _FloatArray) -> _FloatArray:
     return np.asarray(np.exp(-np.logaddexp(0.0, -scores)), dtype=np.float64)
 
@@ -557,57 +540,102 @@ def _fit_pending(
     return TomorrowProbabilityProfileResult(request.target, request.profile, result)
 
 
-def _train(
-    request: _PendingFit, samples: _Samples, signal_dates: tuple[date, ...], snapshot_hash: str,
-    model_root: Path, check: Callable[[], None], threads: int, progress: _Progress,
-) -> TomorrowProbabilityTrainingResult:
-    dates = request.dates
-    assessment_begin = len(signal_dates) - dates.assessment
-    calibration_end = assessment_begin - dates.embargo
-    calibration_begin = calibration_end - dates.calibration
+@dataclass(frozen=True, slots=True)
+class _FitPartitions:
+    fitting: tuple[int, int]
+    early: tuple[int, int]
+    calibration: tuple[int, int]
+
+
+class _WindowIncomplete(ValueError):
+    def __init__(self, reason: str, shortfall: TomorrowWindowShortfall) -> None:
+        super().__init__(reason)
+        self.shortfall = shortfall
+
+
+def _require_window(samples: _Samples, start: int, end: int, partition: TomorrowWindow, failure: str) -> tuple[int, int]:
+    observed = sum(
+        bool(np.any(np.isfinite(samples.labels[samples.rows(day, day + 1)]))) for day in range(max(0, start), end)
+    )
+    if observed != end - start:
+        raise _WindowIncomplete(failure, TomorrowWindowShortfall(partition, end - start, observed))
+    return start, end
+
+
+def _partitions(samples: _Samples, dates: TomorrowDateWindows, calibration_end: int, calibration_days: int) -> _FitPartitions:
+    calibration_begin = calibration_end - calibration_days
     early_end = calibration_begin - dates.embargo
     early_begin = early_end - dates.early
     fitting_end = early_begin - (dates.embargo if dates.early else 0)
-    fitting_begin = max(0, fitting_end - dates.fitting)
-    minimum = min(dates.fitting, _MIN_FITTING_SESSIONS)
-    if fitting_end - fitting_begin < minimum or len(_observed_dates(samples, fitting_begin, fitting_end)) < minimum:
-        raise ValueError("tomorrow_insufficient_training_dates")
-    if dates.early and len(_observed_dates(samples, early_begin, early_end)) != dates.early:
-        raise ValueError("tomorrow_early_stopping_dates_incomplete")
-    calibrated = _observed_dates(samples, calibration_begin, calibration_end)
-    if len(calibrated) != dates.calibration:
-        raise ValueError("tomorrow_calibration_dates_incomplete")
-    if len(_observed_dates(samples, assessment_begin, len(signal_dates))) != dates.assessment:
-        raise ValueError("tomorrow_assessment_dates_incomplete")
-    calibration = samples.rows(calibration_begin, calibration_end)
-    assessment = samples.rows(assessment_begin, len(signal_dates))
-    fitted = _fit_head(samples, (fitting_begin, fitting_end), (early_begin, early_end), request.settings, check, threads)
-    progress.stage("model_fit", "completed")
-    progress.stage("model_calibration", "started")
-    calibration_rows, calibration_labels = _observed_rows(samples, calibration)
+    fitting_begin = fitting_end - dates.fitting
+    return _FitPartitions(
+        _require_window(samples, fitting_begin, fitting_end, "fitting", "tomorrow_insufficient_training_dates"),
+        _require_window(samples, early_begin, early_end, "early_stopping", "tomorrow_early_stopping_dates_incomplete"),
+        _require_window(samples, calibration_begin, calibration_end, "calibration", "tomorrow_calibration_dates_incomplete"),
+    )
+
+
+def _calibrate(
+    samples: _Samples, fitted: _FittedHead, span: tuple[int, int], check: Callable[[], None],
+) -> tuple[float, float]:
+    calibration_rows, calibration_labels = _observed_rows(samples, samples.rows(*span))
     _require_labels(calibration_labels)
     calibration_scores = fitted.scores(calibration_rows)
     intercept, weights = FitBinaryLogistic(calibration_scores[:, None], calibration_labels, 0.001, check)
     slope = float(weights[0])
     if not math.isfinite(slope) or slope <= 0:
         raise ValueError("tomorrow_calibration_not_monotone")
+    return intercept, slope
+
+
+def _train(
+    request: _PendingFit, samples: _Samples, signal_dates: tuple[date, ...], snapshot_hash: str,
+    model_root: Path, check: Callable[[], None], threads: int, progress: _Progress,
+) -> TomorrowProbabilityTrainingResult:
+    dates = request.dates
+    end = len(signal_dates)
+    assessment_begin = end - dates.assessment
+    diagnosis = _partitions(samples, dates, assessment_begin - dates.embargo, dates.calibration)
+    production = _partitions(samples, dates, end, PRODUCTION_CALIBRATION_DAYS)
+    _require_window(samples, assessment_begin, end, "assessment", "tomorrow_assessment_dates_incomplete")
+    fitted = _fit_head(samples, diagnosis.fitting, diagnosis.early, request.settings, check, threads)
+    progress.stage("model_fit", "completed")
+    progress.stage("model_calibration", "started")
+    intercept, slope = _calibrate(samples, fitted, diagnosis.calibration, check)
     progress.stage("model_calibration", "completed")
+    assessment = samples.rows(assessment_begin, end)
     assessment_labels_all = samples.labels[assessment]
     progress.stage("model_evaluation", "started", validation_rows=len(assessment_labels_all))
     assessed = np.isfinite(assessment_labels_all)
     assessment_labels = assessment_labels_all[assessed]
-    _require_labels(assessment_labels)
     probabilities = _sigmoid(intercept + slope * fitted.scores(samples.features[assessment]))
-    hits, seats, unsettled = _seat_hits(probabilities, samples, assessment_begin, len(signal_dates))
+    hits, seats, unsettled = _seat_hits(probabilities, samples, assessment_begin, end)
+    diagnostic = TomorrowDiagnosticAssessment(
+        ContentHash((
+            request.settings.identity, request.target, snapshot_hash, signal_dates[slice(*diagnosis.fitting)],
+            signal_dates[slice(*diagnosis.early)], signal_dates[slice(*diagnosis.calibration)],
+            fitted.logistic, fitted.tree, fitted.tcn, intercept, slope,
+        )),
+        signal_dates[slice(*diagnosis.fitting)], signal_dates[slice(*diagnosis.early)],
+        signal_dates[slice(*diagnosis.calibration)], signal_dates[assessment_begin:end],
+        len(assessment_labels), int(assessment_labels.sum()),
+        float(np.mean(np.square(probabilities[assessed] - assessment_labels))), hits, seats, unsettled,
+    )
     progress.stage("model_evaluation", "completed", validation_rows=len(assessment_labels_all))
-    fitted_dates = tuple(signal_dates[index] for index in (
-        *_observed_dates(samples, fitting_begin, fitting_end), *_observed_dates(samples, early_begin, early_end),
-    ))
-    calibrated_dates = tuple(signal_dates[index] for index in calibrated)
+    del fitted
+    check()
+    progress.stage("final_model_refit", "started")
+    fitted = _fit_head(samples, production.fitting, production.early, request.settings, check, threads)
+    intercept, slope = _calibrate(samples, fitted, production.calibration, check)
+    progress.stage("final_model_refit", "completed")
+    fitted_dates = signal_dates[slice(*production.fitting)]
+    calibrated_dates = signal_dates[slice(*production.calibration)]
+    early_dates = signal_dates[slice(*production.early)]
     artifact = TomorrowProbabilityArtifact(
         request.profile, request.target, snapshot_hash, request.settings.identity, fitted_dates, calibrated_dates,
         intercept, slope, fitted.logistic, fitted.tree, fitted.tcn,
         fit_settings_hash=request.settings.fitting_identity,
+        early_stopping_dates=early_dates, diagnostic=diagnostic,
     )
     check()
     progress.stage("artifact_publish", "started")
@@ -615,11 +643,8 @@ def _train(
     progress.stage("artifact_publish", "completed")
     return TomorrowProbabilityTrainingResult(
         snapshot_hash, identity, artifact.algorithm,
-        assessment_rows=len(assessment_labels),
-        assessment_positive_rows=int(assessment_labels.sum()),
-        assessment_brier=float(np.mean(np.square(probabilities[assessed] - assessment_labels))),
-        assessment_hits=hits, assessment_seats=seats, assessment_unsettled=unsettled,
         pending_labels=samples.pending, missing_features=samples.missing_features,
+        diagnostic=diagnostic, fitting_dates=fitted_dates, calibration_dates=calibrated_dates, early_stopping_dates=early_dates,
     )
 
 

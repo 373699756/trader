@@ -139,21 +139,14 @@ def test_production_observation_tracks_probability_changes_and_absence_without_r
 
 def test_tomorrow_observation_uses_the_loaded_target_and_keeps_startup_model(tmp_path, monkeypatch):
     from trader.training.infra.tomorrow.artifact import (
-        LoadTomorrowProbabilityModel, PublishTomorrowProbabilityModel, TomorrowProbabilityArtifact, TomorrowFeatureNames,
+        LoadTomorrowProbabilityModel, PublishTomorrowProbabilityModel,
     )
-    from trader.training.infra.tomorrow.settings import LoadTomorrowFitSettings
-    from trader.training.infra.tomorrow.v3.model import LogisticTomorrowModel
+    from tests.helpers.training.tomorrow_probability import TomorrowV3ArtifactFixture
     from pathlib import Path
 
     target = PredictionTarget(Strategy.TOMORROW, 500)
     project = Path(__file__).resolve().parents[4]
-    width = len(TomorrowFeatureNames("v3"))
-    settings = LoadTomorrowFitSettings(project, "v3")
-    artifact = TomorrowProbabilityArtifact(
-        "v3", target, "a" * 64, settings.identity, (date(2026, 8, 1),), (date(2026, 8, 2),),
-        0.0, 1.0, LogisticTomorrowModel(0.0, (0.1,) * width, (0.0,) * width, (1.0,) * width), None,
-        fit_settings_hash=LoadTomorrowFitSettings(project, "v3").fitting_identity,
-    )
+    artifact = TomorrowV3ArtifactFixture(project)
     PublishTomorrowProbabilityModel(tmp_path, artifact)
     loaded = LoadTomorrowProbabilityModel(tmp_path, "v3", target, project_root=project)
     assert loaded is not None

@@ -1,23 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date
 from pathlib import Path
 
 from tests.helpers.shared.configuration import RuntimeSettingsFixture
+from tests.helpers.training.tomorrow_probability import TomorrowV3ArtifactFixture
 from trader.entrypoints.cli import BuildParser
 from trader.infra.settings.data_paths import DataPaths
-from trader.recommendation.domain.market.tomorrow_probability import TOMORROW_FEATURE_NAMES
-from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
-from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.baseline_identity_audit import BaselineIdentityAuditService
 from trader.training.infra.research.baseline_identity_sources import LoadBaselineIdentityEvidence
-from trader.training.infra.tomorrow.artifact import (
-    PublishTomorrowProbabilityModel,
-    TomorrowProbabilityArtifact,
-)
-from trader.training.infra.tomorrow.settings import LoadTomorrowFitSettings
-from trader.training.infra.tomorrow.v3.model import LogisticTomorrowModel
+from trader.training.infra.tomorrow.artifact import PublishTomorrowProbabilityModel
 
 ROOT = Path(__file__).resolve().parents[4]
 
@@ -46,14 +38,7 @@ def test_baseline_audit_requires_distinct_production_artifacts(tmp_path: Path) -
         retired = runtime.data_paths.models / profile / "tomorrow" / "model.json"
         retired.parent.mkdir(parents=True)
         retired.write_text("retired model", encoding="utf-8")
-    width = len(TOMORROW_FEATURE_NAMES)
-    settings = LoadTomorrowFitSettings(runtime.project_root, "v3")
-    model = TomorrowProbabilityArtifact(
-        "v3", PredictionTarget(Strategy.TOMORROW, 500), "a" * 64, settings.identity,
-        (date(2024, 1, 2),), (date(2024, 2, 2),), 0, 1,
-        LogisticTomorrowModel(0, (0.0,) * width, (0.0,) * width, (1.0,) * width), None,
-        fit_settings_hash=settings.fitting_identity,
-    )
+    model = TomorrowV3ArtifactFixture(runtime.project_root)
     identity = PublishTomorrowProbabilityModel(runtime.data_paths.models, model)
 
     result = BaselineIdentityAuditService(LoadBaselineIdentityEvidence(runtime)).execute()

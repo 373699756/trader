@@ -74,7 +74,7 @@ def test_label_preserves_exact_hit_and_unknown_or_suspension() -> None:
 def test_four_independent_algorithms_fit_and_reload_with_only_two_reads(tmp_path: Path, monkeypatch) -> None:
     pytest.importorskip("torch")
     first = date(2023, 1, 2)
-    dates = tuple(first + timedelta(days=index) for index in range(185))
+    dates = tuple(first + timedelta(days=index) for index in range(1051))
     codes = tuple(f"{prefix}{index:03d}" for prefix in ("300", "600") for index in range(1, 9))
     reads = []
 
@@ -95,10 +95,14 @@ def test_four_independent_algorithms_fit_and_reload_with_only_two_reads(tmp_path
 
     history = SimpleNamespace(open_dates=dates, universe_count=len(codes), snapshot_hash="a" * 64, iter_training_rows=rows)
     targets = LoadPredictionTargets(_ROOT / "config/strategy.json")
+    config = json.loads((_ROOT / "config/training.json").read_text(encoding="utf-8"))
+    next(profile for profile in config["profiles"] if profile["profile"] == "v1")["calibration_dates"] = 12
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config/training.json").write_text(json.dumps(config), encoding="utf-8")
     budget = TrainingCpuBudget(2, TrainingResourceSettingsFixture().cpu)
     progress = {profile: [] for profile in SCORING_PROFILE_IDS}
     arguments = dict(
-        profiles=SCORING_PROFILE_IDS, prediction_targets=targets, project_root=_ROOT,
+        profiles=SCORING_PROFILE_IDS, prediction_targets=targets, project_root=tmp_path,
         cancelled=lambda: False, cpu_budget=budget, memory=TrainingMemoryBudget(120 * 1024**2),
         progress=lambda profile, event: progress[profile].append(event),
     )
@@ -117,10 +121,21 @@ def test_four_independent_algorithms_fit_and_reload_with_only_two_reads(tmp_path
         assert head.result.ready
         assert head.result.assessment_seats == 6 * 20
         assert head.result.assessment_brier is not None and 0 <= head.result.assessment_brier <= 1
-        model = LoadTomorrowProbabilityModel(tmp_path, head.profile, _TARGET, project_root=_ROOT)
+        model = LoadTomorrowProbabilityModel(tmp_path, head.profile, _TARGET, project_root=tmp_path)
         assert model is not None and model.identity == head.result.model_identity
         assert model.artifact.profile == head.profile
         assert model.artifact.fitting_dates[-1] < model.artifact.calibration_dates[0]
+        assert len(model.artifact.fitting_dates) == LoadTomorrowFitSettings(_ROOT, head.profile).fit_dates
+        assert model.artifact.calibration_dates == dates[-21:-1]
+        diagnostic = model.artifact.diagnostic
+        assert diagnostic.calibration_dates[-1] < diagnostic.assessment_dates[0]
+        assert diagnostic.model_identity != head.result.model_identity
+        assert diagnostic.fitting_dates != model.artifact.fitting_dates
+        assert model.publication.label_cutoff == dates[-2]
+        if head.profile == "v1":
+            assert len(diagnostic.calibration_dates) == 12
+            assert len(model.artifact.early_stopping_dates) == 20
+            assert model.artifact.fitting_dates[-1] < model.artifact.early_stopping_dates[0]
         zero = (0.0,) * len(TomorrowFeatureNames(head.profile))
         batch = model.predict_probabilities((zero, zero))
         assert all(0 <= value <= 1 for value in batch)
@@ -133,6 +148,7 @@ def test_four_independent_algorithms_fit_and_reload_with_only_two_reads(tmp_path
             ("model_fit", "started"), ("model_fit", "completed"),
             ("model_calibration", "started"), ("model_calibration", "completed"),
             ("model_evaluation", "started"), ("model_evaluation", "completed"),
+            ("final_model_refit", "started"), ("final_model_refit", "completed"),
             ("artifact_publish", "started"), ("artifact_publish", "completed"),
         ]
         scan = next(event for event in events if event.stage == "history_conversion" and event.state == "completed")
@@ -145,7 +161,16 @@ def test_four_independent_algorithms_fit_and_reload_with_only_two_reads(tmp_path
         events.clear()
 
     reused = TrainTomorrowProbability(history, tmp_path, **arguments)
-    assert len(reads) == 2 and all(head.result.assessment_rows == 0 for head in reused)
+    assert len(reads) == 2
+    for cold, hot in zip(fitted, reused, strict=True):
+        assert hot.result.assessment_rows == cold.result.assessment_rows > 0
+        assert hot.result.assessment_positive_rows == cold.result.assessment_positive_rows
+        assert hot.result.assessment_brier == cold.result.assessment_brier
+        assert hot.result.assessment_hits == cold.result.assessment_hits
+        assert hot.result.assessment_seats == cold.result.assessment_seats
+        assert hot.result.assessment_unsettled == cold.result.assessment_unsettled
+    assert all(head.result.reused for head in reused)
+    assert tuple(head.result.diagnostic for head in reused) == tuple(head.result.diagnostic for head in fitted)
     assert tuple(head.result.model_identity for head in reused) == tuple(head.result.model_identity for head in fitted)
     assert all(
         [(event.stage, event.state) for event in events] == [
@@ -198,7 +223,7 @@ def test_sequence_ends_on_the_previous_trading_day() -> None:
 
 def test_training_respects_memory_admission_and_cancellation(tmp_path: Path) -> None:
     first = date(2023, 1, 2)
-    dates = tuple(first + timedelta(days=index) for index in range(180))
+    dates = tuple(first + timedelta(days=index) for index in range(801))
     # Reserve/check must run before touching the reader or creating the artifact.
     history = SimpleNamespace(open_dates=dates, universe_count=6, snapshot_hash="a" * 64)
     budget = TrainingCpuBudget(2, TrainingResourceSettingsFixture().cpu)

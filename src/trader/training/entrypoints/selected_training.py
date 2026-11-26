@@ -208,9 +208,11 @@ def _run_selected_training(
             for head in tomorrow:
                 target = head.target.threshold_bps / 100
                 tomorrow_result = head.result
+                shortfall = tomorrow_result.window_shortfall
+                window = "" if shortfall is None else f" | 可用/所需日 {shortfall.available_days}/{shortfall.required_days}"
                 command_output.report_notice(
                     f"Tomorrow ≥{target:g}%模型",
-                    f"{head.profile} | {tomorrow_result.failure or tomorrow_result.algorithm or '模型未就绪'}",
+                    f"{head.profile} | {tomorrow_result.failure or tomorrow_result.algorithm or '模型未就绪'}{window}",
                     state="完成" if tomorrow_result.ready else "失败",
                 )
             returned_training_code = (
@@ -403,17 +405,35 @@ def _run_selected_training(
 
 def _project_tomorrow(head: TomorrowProbabilityProfileResult) -> dict[str, object]:
     result = head.result
+    diagnostic = result.diagnostic
     return {
         "target": head.target.identity,
         "threshold_bps": head.target.threshold_bps,
         "profile": head.profile,
         "ready": result.ready,
+        "reused": result.reused,
         "history_snapshot_hash": result.history_snapshot_hash,
         "model_identity": result.model_identity,
         "algorithm": result.algorithm,
         "failure": result.failure,
+        "window_shortfall": None if result.window_shortfall is None else {
+            "partition": result.window_shortfall.partition, "required_days": result.window_shortfall.required_days,
+            "available_days": result.window_shortfall.available_days,
+        },
         "historical_universe_proven": False,
         "point_in_time_parity": False,
+        "fitting_dates": [day.isoformat() for day in result.fitting_dates],
+        "early_stopping_dates": [day.isoformat() for day in result.early_stopping_dates],
+        "calibration_dates": [day.isoformat() for day in result.calibration_dates],
+        "diagnostic": None if diagnostic is None else {
+            "model_identity": diagnostic.model_identity,
+            "fitting_dates": [day.isoformat() for day in diagnostic.fitting_dates],
+            "early_stopping_dates": [day.isoformat() for day in diagnostic.early_stopping_dates],
+            "calibration_dates": [day.isoformat() for day in diagnostic.calibration_dates],
+            "assessment_dates": [day.isoformat() for day in diagnostic.assessment_dates],
+            "rows": diagnostic.rows, "positive_rows": diagnostic.positive_rows, "brier": diagnostic.brier,
+            "daily_close_proxy": {"hits": diagnostic.hits, "seats": diagnostic.seats, "unsettled": diagnostic.unsettled},
+        },
         "assessment_rows": result.assessment_rows,
         "assessment_positive_rows": result.assessment_positive_rows,
         "assessment_brier": result.assessment_brier,

@@ -17,7 +17,8 @@ _SHARED_INPUT = (
 )
 _TOMORROW = (
     "training/infra/tomorrow/artifact.py", "training/infra/tomorrow/settings.py", "training/infra/tomorrow/training.py",
-    "recommendation/domain/market/tomorrow_probability.py",
+    "recommendation/domain/market/tomorrow_probability.py", "training/domain/tomorrow_probability.py",
+    "training/infra/tomorrow/dates.py",
 )
 _D25 = (
     "download/domain/current_industry.py", "training/domain/training_input_identity.py",

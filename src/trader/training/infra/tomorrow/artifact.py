@@ -25,10 +25,12 @@ from trader.recommendation.domain.outcomes.prediction_target import ParsePredict
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.domain.model_publication import ModelPublicationIdentity
+from trader.training.domain.tomorrow_probability import TomorrowDiagnosticAssessment
 from trader.training.infra.model_bundles.profile_publication import ProfilePublicationLock, PublishStrategyModelFiles
 from trader.training.infra.tcn.settings import TCN_NETWORK_CONTRACT
 from trader.training.infra.tcn.tensors import DecodeTcnNetwork
 from trader.training.infra.tomorrow.settings import LoadTomorrowFitSettings, TomorrowAlgorithm
+from trader.training.infra.tomorrow.dates import PRODUCTION_CALIBRATION_DAYS, TomorrowWindows
 from trader.training.infra.tomorrow.tree import TomorrowTreeScores
 from trader.training.infra.tomorrow.v1.model import LoadTomorrowRanker
 from trader.training.infra.tomorrow.v2.model import LoadTomorrowClassifier
@@ -42,7 +44,7 @@ _MAX_MODEL_BYTES = 16 * 1024 * 1024
 _MAX_METADATA_BYTES = 1024 * 1024
 _METADATA_FIELDS = (
     "profile", "algorithm", "target", "features", "history_snapshot_hash", "training_contract_hash",
-    "fitting_dates", "calibration_dates", "fit_settings_hash",
+    "fitting_dates", "early_stopping_dates", "calibration_dates", "diagnostic", "fit_settings_hash",
 )
 _MODEL_FIELDS = ("logistic", "lightgbm", "tcn", "calibration")
 
@@ -65,16 +67,21 @@ class TomorrowProbabilityArtifact:
     lightgbm: str | None
     tcn: TomorrowTcnModel | None = None
     fit_settings_hash: str = field(kw_only=True)
+    early_stopping_dates: tuple[date, ...] = field(kw_only=True)
+    diagnostic: TomorrowDiagnosticAssessment = field(kw_only=True)
 
     def __post_init__(self) -> None:
+        ordered = self.fitting_dates + self.early_stopping_dates + self.calibration_dates
         if (
             self.target.strategy is not Strategy.TOMORROW
             or not _valid_hash(self.history_snapshot_hash) or not _valid_hash(self.training_contract_hash)
             or not _valid_hash(self.fit_settings_hash)
             or not self.fitting_dates or not self.calibration_dates
-            or self.fitting_dates != tuple(sorted(set(self.fitting_dates)))
-            or self.calibration_dates != tuple(sorted(set(self.calibration_dates)))
-            or self.fitting_dates[-1] >= self.calibration_dates[0]
+            or ordered != tuple(sorted(set(ordered)))
+            or len(self.fitting_dates) != len(self.diagnostic.fitting_dates)
+            or len(self.calibration_dates) != PRODUCTION_CALIBRATION_DAYS
+            or self.diagnostic.assessment_dates[-1] != self.calibration_dates[-1]
+            or len(self.early_stopping_dates) != len(self.diagnostic.early_stopping_dates)
             or not math.isfinite(self.calibration_intercept)
             or not math.isfinite(self.calibration_slope) or self.calibration_slope <= 0
             or (self.logistic is not None) != (self.profile == "v3")
@@ -99,7 +106,7 @@ class LoadedTomorrowProbabilityModel:
     @property
     def publication(self) -> ModelPublicationIdentity:
         artifact = self.artifact
-        return _publication_identity(artifact.profile, self.identity, artifact.fitting_dates, artifact.history_snapshot_hash)
+        return _publication_identity(artifact.profile, self.identity, artifact.calibration_dates, artifact.history_snapshot_hash)
 
     def predict_probability(self, features: tuple[float, ...]) -> float:
         return self.predict_probabilities((features,))[0]
@@ -134,6 +141,7 @@ class LoadedTomorrowProbabilityModel:
 def _document(artifact: TomorrowProbabilityArtifact) -> dict[str, object]:
     logistic = artifact.logistic
     tcn = artifact.tcn
+    diagnostic = artifact.diagnostic
     return {
         "profile": artifact.profile,
         "algorithm": artifact.algorithm,
@@ -143,7 +151,17 @@ def _document(artifact: TomorrowProbabilityArtifact) -> dict[str, object]:
         "training_contract_hash": artifact.training_contract_hash,
         "fit_settings_hash": artifact.fit_settings_hash,
         "fitting_dates": tuple(day.isoformat() for day in artifact.fitting_dates),
+        "early_stopping_dates": tuple(day.isoformat() for day in artifact.early_stopping_dates),
         "calibration_dates": tuple(day.isoformat() for day in artifact.calibration_dates),
+        "diagnostic": {
+            "model_identity": diagnostic.model_identity,
+            "fitting_dates": tuple(day.isoformat() for day in diagnostic.fitting_dates),
+            "early_stopping_dates": tuple(day.isoformat() for day in diagnostic.early_stopping_dates),
+            "calibration_dates": tuple(day.isoformat() for day in diagnostic.calibration_dates),
+            "assessment_dates": tuple(day.isoformat() for day in diagnostic.assessment_dates),
+            "rows": diagnostic.rows, "positive_rows": diagnostic.positive_rows, "brier": diagnostic.brier,
+            "hits": diagnostic.hits, "seats": diagnostic.seats, "unsettled": diagnostic.unsettled,
+        },
         "logistic": None if logistic is None else {
             "intercept": logistic.intercept, "weights": logistic.weights,
             "means": logistic.means, "scales": logistic.scales,
@@ -224,7 +242,15 @@ def LoadTomorrowProbabilityModel(
         lightgbm=tree,
         tcn=None if source["tcn"] is None else _decode_tcn(source["tcn"]),
         fit_settings_hash=fit_identity,
+        early_stopping_dates=_dates(source["early_stopping_dates"]), diagnostic=_diagnostic(source["diagnostic"]),
     )
+    windows = TomorrowWindows(settings)
+    if (
+        len(artifact.fitting_dates) != windows.fitting or len(artifact.early_stopping_dates) != windows.early
+        or len(artifact.diagnostic.calibration_dates) != windows.calibration
+        or len(artifact.diagnostic.assessment_dates) != windows.assessment
+    ):
+        raise ValueError("tomorrow_probability_artifact_date_windows_invalid")
     return LoadedTomorrowProbabilityModel(
         identity, artifact, None if tree is None else _load_tree(tree, profile),
         None if artifact.tcn is None else LoadTomorrowNetwork(artifact.tcn),
@@ -241,8 +267,11 @@ def ReadTomorrowPublicationIdentity(
     if target != published_target:
         return None
     snapshot = metadata["history_snapshot_hash"]
-    dates = _dates(metadata["fitting_dates"])
-    if not isinstance(snapshot, str) or not _valid_hash(snapshot) or not dates:
+    dates = _dates(metadata["calibration_dates"])
+    if (
+        not isinstance(snapshot, str) or not _valid_hash(snapshot)
+        or len(dates) != PRODUCTION_CALIBRATION_DAYS or dates != tuple(sorted(set(dates)))
+    ):
         raise ValueError("tomorrow_probability_artifact_invalid")
     return _publication_identity(profile, identity, dates, snapshot)
 
@@ -341,6 +370,19 @@ def _dates(values: object) -> tuple[date, ...]:
     if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
         raise ValueError("tomorrow_probability_artifact_invalid")
     return tuple(date.fromisoformat(value) for value in values)
+
+
+def _diagnostic(value: object) -> TomorrowDiagnosticAssessment:
+    if not isinstance(value, dict) or set(value) != {
+        "model_identity", "fitting_dates", "early_stopping_dates", "calibration_dates", "assessment_dates",
+        "rows", "positive_rows", "brier", "hits", "seats", "unsettled",
+    } or not isinstance(value["model_identity"], str):
+        raise ValueError("tomorrow_diagnostic_assessment_invalid")
+    return TomorrowDiagnosticAssessment(
+        value["model_identity"], _dates(value["fitting_dates"]), _dates(value["early_stopping_dates"]),
+        _dates(value["calibration_dates"]), _dates(value["assessment_dates"]), value["rows"], value["positive_rows"],
+        _number(value["brier"]), value["hits"], value["seats"], value["unsettled"],
+    )
 
 
 __all__ = [
