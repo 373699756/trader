@@ -39,6 +39,7 @@ class CompanyAnnouncementCoverage:
     pending: int
     directory_complete: bool
     has_retained_material: bool
+    empty_input_identity: str
 
 
 def ReadCompanyAnnouncementCoverage(
@@ -71,7 +72,9 @@ def ReadCompanyAnnouncementCoverage(
             AND (d.body_checked=0 OR d.body_retained=0)""", (*batch, start.isoformat(), cutoff.isoformat())):
             if CompanyDocumentNeedsReview(title) or not (IsCompanyUnlockListingNotice(title) or IsCompanyUnlockListingRevision(title)):
                 pending[code] += 1
-    return {code: CompanyAnnouncementCoverage(pending[code], covered[market], code in retained) for code, market in markets.items()}
+    empty_input_identity = CanonicalDigest(((), cutoff))
+    return {code: CompanyAnnouncementCoverage(pending[code], covered[market], code in retained, empty_input_identity)
+            for code, market in markets.items()}
 
 
 def PrepareCompanyAnnouncements(
@@ -88,7 +91,7 @@ def PrepareCompanyAnnouncements(
     if not coverage.has_retained_material:
         normalized = NormalizeCompanyAnnouncementFacts(previous, (), cutoff, event_policy, candidates=(),
             pending_count=coverage.pending, directory_complete=coverage.directory_complete,
-            input_identity=CanonicalDigest(((), cutoff)))
+            input_identity=coverage.empty_input_identity)
         return CompanyAnnouncementPreparation(normalized.facts, (), (), (), 0)
     start = cutoff.date() - timedelta(days=365)
     documents: list[CompanyDocument] = []

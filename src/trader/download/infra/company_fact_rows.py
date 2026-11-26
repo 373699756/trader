@@ -247,7 +247,34 @@ def WriteCompanyFactRows(connection: SqliteConnection, facts: CompanyFacts, sour
         )
 
 
-def ReadCompanyFactRows(connection: SqliteConnection, codes: Sequence[str]) -> tuple[CompanyFacts, ...]:
+class CompanyFactRowCache:
+    """Reuse decoded scalar rows of this field producer's fixed issuer population."""
+
+    def __init__(self, codes: Sequence[str]) -> None:
+        self._eligible = frozenset(codes)
+        self._rows: dict[str, tuple[sqlite3.Row, CompanyFacts]] = {}
+
+    def decode(
+        self, row: sqlite3.Row, risks: tuple[CompanyRiskEvent, ...], positives: tuple[CompanyPositiveEvent, ...],
+        reviews: tuple[CompanyReviewReason, ...], unlocks: tuple[CompanyRatio, ...], latest: CompanyFinancial | None,
+    ) -> CompanyFacts:
+        code = row["code"]
+        # Row equality includes its columns and values. Restrict scalar types so
+        # numeric equality cannot confuse e.g. an invalid float with an integer.
+        if (code not in self._eligible or risks or positives or reviews or unlocks or latest is not None
+            or any(value is not None and type(value) not in (int, str) for value in row)):
+            return _facts(row, risks, positives, reviews, unlocks, latest)
+        existing = self._rows.get(code)
+        if existing is not None and existing[0] == row:
+            return existing[1]
+        decoded = _facts(row, risks, positives, reviews, unlocks, latest)
+        self._rows[code] = row, decoded
+        return decoded
+
+
+def ReadCompanyFactRows(
+    connection: SqliteConnection, codes: Sequence[str], *, row_cache: CompanyFactRowCache | None = None,
+) -> tuple[CompanyFacts, ...]:
     """Decode each batch with a fixed number of queries, including all child rows."""
     if not codes:
         return ()
@@ -353,8 +380,9 @@ def ReadCompanyFactRows(connection: SqliteConnection, codes: Sequence[str]) -> t
         if day is None or ratio is None:
             raise ValueError("company_unlock_identity_incomplete")
         unlocks[row["code"]].append(CompanyRatio(CompanyIdentifier(row["code"]), day, ratio))
+    decode = _facts if row_cache is None else row_cache.decode
     return tuple(
-        _facts(
+        decode(
             row,
             tuple(sorted(risks[row["code"]], key=lambda item: (item.risk_type.value, item.event_id))),
             tuple(sorted(positives[row["code"]], key=lambda item: (item.event_type.value, item.event_id))),
@@ -466,4 +494,4 @@ def _facts(
     )
 
 
-__all__ = ["COMPANY_FACT_COLUMNS", "WriteCompanyFactRows", "ReadCompanyFactRows"]
+__all__ = ["COMPANY_FACT_COLUMNS", "CompanyFactRowCache", "WriteCompanyFactRows", "ReadCompanyFactRows"]

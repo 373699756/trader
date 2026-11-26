@@ -23,7 +23,7 @@ from trader.download.domain.company_normalization import CompanyNormalizationCom
 from trader.download.domain.company_source_records import (
     CompanyFinancialBatchCoverage, CompanyFinancialSourceObservation, CompanyFinancialSourcePage,
 )
-from trader.download.infra.company_fact_rows import ReadCompanyFactRows
+from trader.download.infra.company_fact_rows import CompanyFactRowCache, ReadCompanyFactRows
 from trader.download.infra.company_risk_adoption import (
     COMPANY_RISK_ADOPTION, CompanyRiskAdoptionWitness, CompanyRiskAdoptionWitnessDigest,
     ProjectCompanyRiskAdoptions, ReadCompanyRiskAdoptionWitnesses,
@@ -382,7 +382,9 @@ class SQLiteCompanyNormalizedIndex:
         self._publish_scope(scope, codes, cutoff)
         return True
 
-    def _publish_scope(self, scope: str, codes: tuple[str, ...], cutoff: datetime, *, restore_only: bool = False) -> tuple[str, ...]:
+    def _publish_scope(self, scope: str, codes: tuple[str, ...], cutoff: datetime, *, restore_only: bool = False,
+        row_cache: CompanyFactRowCache | None = None,
+    ) -> tuple[str, ...]:
         self._check_cancelled()
         with self._session(self.path, sqlite_policy=self._sqlite_policy) as source, SqliteTransaction(source, immediate=True):
             scoring = _financial_scoring_receipts(source, scope)
@@ -418,8 +420,8 @@ class SQLiteCompanyNormalizedIndex:
                     sources: tuple[tuple[str, str], ...] = ()
                     receipts = scoring
                 else:
-                    facts, fields = ReadCompanyFactsWithFieldResults(source, codes)
-                    previous = {item.code: item for item in ReadCompanyFactRows(formal, codes)}
+                    facts, fields = ReadCompanyFactsWithFieldResults(source, codes, row_cache=row_cache)
+                    previous = {item.code: item for item in ReadCompanyFactRows(formal, codes, row_cache=row_cache)}
                     changed = tuple(item for item in facts if item != previous.get(item.code))
                     observations = ReadRoundCompanyFinancialObservations(source, scope)
                     financial_keys = {(item.financial.code, item.source_key, item.record_hash) for item in observations}
@@ -546,6 +548,7 @@ class SQLiteCompanyNormalizedIndex:
         fields: tuple[CompanyFieldConclusion, ...], receipts: tuple[CompanyInputReceipt, ...],
         links: tuple[CompanyPublishedEvidenceLink, ...], cutoff: datetime, *,
         field_rules_hash: bytes, sources: tuple[tuple[str, str], ...] = (),
+        row_cache: CompanyFactRowCache | None = None,
     ) -> tuple[str, ...]:
         """Stage complete typed issuer snapshots, then use the sole formal publisher.
 
@@ -570,11 +573,11 @@ class SQLiteCompanyNormalizedIndex:
                 "SELECT 1 FROM company_round_intent WHERE scope=? AND confirmed_content_hash IS NOT NULL", (scope,),
             ).fetchone() is not None:
                 return ()
-            previous = {item.code: item for item in ReadCompanyFactRows(connection, codes)}
+            previous = {item.code: item for item in ReadCompanyFactRows(connection, codes, row_cache=row_cache)}
             changed = tuple(item for item in facts if item != previous.get(item.code))
             source_pairs = _sources(connection)
         if generation is not None:
-            return self._publish_scope(scope, codes, cutoff)
+            return self._publish_scope(scope, codes, cutoff, row_cache=row_cache)
         self._check_cancelled()
         bound_sources = dict(source_pairs)
         for key, supplier in sources:
@@ -590,7 +593,7 @@ class SQLiteCompanyNormalizedIndex:
             connection.run("UPDATE company_normalization_seed SET field_rules_hash=? WHERE singleton=1 AND complete=1", (field_rules_hash,))
             connection.run("INSERT INTO company_round_generation VALUES(?,?,?)",
                 (scope, bytes.fromhex(CanonicalDigest((scope, _identity_values(identity)))), identity.content_hash))
-        return self._publish_scope(scope, codes, cutoff)
+        return self._publish_scope(scope, codes, cutoff, row_cache=row_cache)
 
     def _check_cancelled(self) -> None:
         if self._io_budget is not None:

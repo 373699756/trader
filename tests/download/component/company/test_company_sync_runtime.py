@@ -15,6 +15,7 @@ from trader.download.domain.company_source_records import CompanyFinancialSource
 from trader.download.domain.company_sync import CompanySyncBudget, CompanySyncFamily, CompanySyncPhasePlan, CompanySyncPhaseState, CompanySyncRebuildActiveRound, CompanySyncStepResult
 from trader.download.infra.company_disclosure_source import CNINFO_DIRECTORY_URL
 from trader.download.infra.company_document_files import CompanyDocumentFiles
+from trader.download.infra.company_fact_rows import CompanyFactRowCache, ReadCompanyFactRows
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity, SQLiteCompanyFactsIndex
 from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
@@ -127,13 +128,13 @@ def test_field_step_joins_fields_to_facts_in_the_current_formal_transaction(tmp_
     read_facts_and_fields = company_sync_runtime.ReadCompanyFactsWithFieldResults
     prepared_snapshots = []
 
-    def read(connection, codes):
+    def read(connection, codes, *, row_cache):
         reads.append(tuple(codes))
-        return read_facts(connection, codes)
+        return read_facts(connection, codes, row_cache=row_cache)
 
     monkeypatch.setattr(company_sync_runtime, "ReadCompanyFactRows", read)
-    def read_prepared(connection, codes):
-        facts, fields = read_facts_and_fields(connection, codes)
+    def read_prepared(connection, codes, *, row_cache):
+        facts, fields = read_facts_and_fields(connection, codes, row_cache=row_cache)
         prepared_snapshots.append((tuple(codes), tuple((fact.code, fact.pending_document_count) for fact in facts)))
         return facts, fields
 
@@ -158,6 +159,35 @@ def test_field_step_joins_fields_to_facts_in_the_current_formal_transaction(tmp_
     assert prepared_snapshots == [(prepared_codes, expected_pending)]
     assert result.accepted_inputs == (2 if change == "global_rules" else 1)
     assert physical == []
+
+
+def test_field_row_reuse_observes_current_scalars_and_children_without_a_new_head(tmp_path):
+    runtime, _, _, _ = _runtime(tmp_path)
+    codes = ("600001", "600002")
+    runtime.initialize(codes, _SCOPE.cutoff)
+    cache = CompanyFactRowCache(codes[:1])
+    with SqliteSession(runtime.facts.path, sqlite_policy=SqlitePolicyFixture()) as formal:
+        def read():
+            return ReadCompanyFactRows(formal, codes, row_cache=cache)
+
+        head = ReadCompanyPublicationIdentity(formal)
+        first, neighbor = read()
+        repeated = read()
+        assert repeated[0] is first and repeated[1] == neighbor and repeated[1] is not neighbor
+        formal.run("UPDATE company_facts SET pending_docs=1 WHERE code=?", (first.code,))
+        assert read()[0].pending_document_count == 1
+        formal.run("UPDATE company_facts SET pending_docs=1.5 WHERE code=?", (first.code,))
+        with pytest.raises(ValueError, match="company_integer_required"):
+            read()
+        formal.run("UPDATE company_facts SET pending_docs=0 WHERE code=?", (first.code,))
+        restored, _ = read()
+        assert restored == first
+        formal.run("""INSERT INTO company_review(code,scope,reason,detected_at)
+            SELECT code,1,1,published_at FROM company_facts WHERE code=?""", (first.code,))
+        reviewed, _ = read()
+        assert tuple(reason.reason_code for reason in reviewed.review_reasons) == ("document_pending",)
+        formal.run("DELETE FROM company_review WHERE code=?", (first.code,))
+        assert read()[0] == first and ReadCompanyPublicationIdentity(formal) == head
 
 
 def test_clean_download_reuses_the_ledger_but_not_the_old_active_cursor(tmp_path):

@@ -31,7 +31,7 @@ from trader.download.domain.company_sync import (
     CompanySyncRebuildActiveRound, CompanySyncRoundIdentity, CompanySyncRoundResult, CompanySyncRoundScope, CompanySyncStepResult, CompanySourceCancelled,
 )
 from trader.download.domain.company_unlock_notice import IsCompanyUnlockListingNotice
-from trader.download.infra.company_fact_rows import ReadCompanyFactRows
+from trader.download.infra.company_fact_rows import CompanyFactRowCache, ReadCompanyFactRows
 from trader.download.infra.company_announcement_preparation import ReadCompanyAnnouncementCoverage
 from trader.download.infra.company_document_link_rows import ReadCompanyDocumentLinks
 from trader.download.infra.company_facts_index import CompanyPublicationIdentity, ReadCompanyPublicationIdentity, SQLiteCompanyFactsIndex
@@ -402,13 +402,14 @@ class CompanySyncRuntime:
 
     def field_watermark(self, scope: CompanySyncRoundScope, eligible_codes: tuple[str, ...], check: Callable[[], None], *,
         financial_query: StructuredCompanyQuery | None = None,
+        row_cache: CompanyFactRowCache | None = None,
     ) -> str:
         check()
         eligible = frozenset(eligible_codes)
         markets = tuple(sorted({EvidenceMarket(code) for code in eligible_codes}))
         material: list[tuple[object, ...]] = []
         with self._session(self.facts.path, check=check, read_only=True) as formal, SqliteTransaction(formal):
-            facts = ReadCompanyFactRows(formal, eligible_codes)
+            facts = ReadCompanyFactRows(formal, eligible_codes, row_cache=row_cache)
             publication = ReadCompanyPublicationIdentity(formal)
         unlock_open = eligible.difference(fact.code for fact in facts if fact.unlock_state is CompanyDataState.COMPLETE)
         retained_unlock_codes: set[str] = set()
@@ -492,6 +493,7 @@ class CompanySyncRuntime:
 
     def prepare_local(self, scope: CompanySyncRoundScope, *, check: Callable[[], None], cancel_requested: Callable[[], bool],
         eligible_codes: tuple[str, ...], financial_query: StructuredCompanyQuery,
+        row_cache: CompanyFactRowCache | None = None,
     ) -> CompanySyncStepResult:
         check()
         if not eligible_codes:
@@ -516,7 +518,7 @@ class CompanySyncRuntime:
             published = ReadCompanyPublicationIdentity(formal)
             revalidate = stored_rules != rules_hash
             all_codes = tuple(sorted(set(eligible_codes) | {row[0] for row in formal.run("SELECT code FROM company_facts ORDER BY code")})) if revalidate else eligible_codes
-            facts, stored_fields = ReadCompanyFactsWithFieldResults(formal, all_codes)
+            facts, stored_fields = ReadCompanyFactsWithFieldResults(formal, all_codes, row_cache=row_cache)
             old = {fact.code: fact for fact in facts}
             fields_by_code: dict[str, list[CompanyFieldConclusion]] = defaultdict(list)
             for field in stored_fields:
@@ -556,7 +558,7 @@ class CompanySyncRuntime:
                 prepared.append(item)
         changed = self.normalized.publish_prepared(all_codes, tuple(item.facts for item in prepared),
             tuple(field for item in prepared for field in item.fields), tuple(receipt for item in prepared for receipt in item.receipts),
-            tuple(link for item in prepared for link in item.links), scope.cutoff, field_rules_hash=rules_hash,
+            tuple(link for item in prepared for link in item.links), scope.cutoff, field_rules_hash=rules_hash, row_cache=row_cache,
             sources=tuple(sorted({(receipt.source_key, receipt.source) for item in prepared for receipt in item.receipts}
                 | {(link.link.evidence_id, link.source) for item in prepared for link in item.links})))
         self.inputs.acknowledge_recovered(scope.identity, tuple(item for item in recovered if item.code in all_codes))
@@ -564,7 +566,8 @@ class CompanySyncRuntime:
         with (self._session(self.material.path, check=check, read_only=False) as raw,
             SqliteTransaction(raw, immediate=True), self._session(self.facts.path, check=check, read_only=True) as formal,
             SqliteTransaction(formal)):
-            RegisterCompanyMaterialDependencies(raw, formal, tuple(item.facts for item in prepared), self.facts.extraction_hash)
+            RegisterCompanyMaterialDependencies(raw, formal, tuple(item.facts for item in prepared), self.facts.extraction_hash,
+                row_cache=row_cache)
         pending = sum(field.applicable and field.state != "verified" for item in prepared for field in item.fields)
         remaining = sum(item.pending_retained for item in prepared)
         return CompanySyncStepResult(not remaining, bool(remaining), len(prepared), changed_codes=changed, pending_count=pending + remaining,
@@ -577,6 +580,7 @@ class _FieldProducer:
     ) -> None:
         self._runtime, self._monotonic = runtime, monotonic
         self._eligible_codes = eligible_codes
+        self._row_cache = CompanyFactRowCache(eligible_codes)
         self._financial_query = query
         self._plan = CompanySyncPhasePlan(CompanySyncFamily.FIELDS, CanonicalDigest(("current_field_proof", CompanyFieldProofRulesHash().hex())), refresh_on_input_change=True)
 
@@ -586,7 +590,8 @@ class _FieldProducer:
 
     def state(self, scope: CompanySyncRoundScope) -> CompanySyncPhaseState:
         check = self._runtime._io_budget.check if self._runtime._io_budget is not None else lambda: None
-        watermark = self._runtime.field_watermark(scope, self._eligible_codes, check, financial_query=self._financial_query)
+        watermark = self._runtime.field_watermark(scope, self._eligible_codes, check, financial_query=self._financial_query,
+            row_cache=self._row_cache)
         return CompanySyncPhaseState(CanonicalDigest((scope, self._plan, watermark)), False)
 
     def advance(self, scope: CompanySyncRoundScope, *, cancel_requested: Callable[[], bool], deadline: float) -> CompanySyncStepResult:
@@ -594,7 +599,7 @@ class _FieldProducer:
             if cancel_requested() or self._monotonic() >= deadline:
                 raise CompanySyncInterrupted("company_sync_local_preparation_interrupted")
         return self._runtime.prepare_local(scope, check=check, cancel_requested=cancel_requested, eligible_codes=self._eligible_codes,
-            financial_query=self._financial_query)
+            financial_query=self._financial_query, row_cache=self._row_cache)
 
 
 def _unavailable(code: str, cutoff: datetime) -> CompanyFacts:

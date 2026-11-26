@@ -16,7 +16,7 @@ from trader.download.domain.company_events import CompanyPositiveEvent, CompanyP
 from trader.download.domain.company_evidence import CompanyDocumentFailureRules
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_field_plan import BuildCompanyFieldGaps, CompanyFieldGap, CompanyFieldMaterial, CompanyFieldRecovery, PlanCompanyFieldRecovery
-from trader.download.infra.company_fact_rows import ReadCompanyFactRows
+from trader.download.infra.company_fact_rows import CompanyFactRowCache, ReadCompanyFactRows
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
 from trader.download.infra.company_field_result_rows import ReadCompanyFactsWithFieldResults
 from trader.download.infra.company_financial_publication import ReadCompanyFinancialMaterials
@@ -70,6 +70,7 @@ def RegisterCompanyMaterialDependencies(
     formal: SqliteConnection,
     facts: Sequence[CompanyFacts],
     extraction_hash: bytes,
+    *, row_cache: CompanyFactRowCache | None = None,
 ) -> None:
     """Pin reviewed and unproved field material after its matching formal receipt exists.
 
@@ -77,7 +78,8 @@ def RegisterCompanyMaterialDependencies(
     until the same current body has actually been processed and published.
     This projection can be rebuilt after a formal commit/collection rollback.
     """
-    field_required, field_settled = _field_material_requirements(formal, tuple(fact.code for fact in facts), extraction_hash)
+    field_required, field_settled = _field_material_requirements(formal, tuple(fact.code for fact in facts),
+        extraction_hash, row_cache=row_cache)
     already_protected = {row[0] for row in collected.run("SELECT DISTINCT code FROM company_material_dependencies")}
     for fact in facts:
         required = frozenset(
@@ -158,6 +160,7 @@ def _field_material_requirements(
     formal: SqliteConnection,
     codes: Sequence[str],
     extraction_hash: bytes,
+    *, row_cache: CompanyFactRowCache | None = None,
 ) -> tuple[dict[str, frozenset[tuple[str, str, str]]], dict[str, frozenset[tuple[str, str, str]]]]:
     publication = ReadCompanyPublicationIdentity(formal)
     if publication is None or publication.extraction_hash != extraction_hash:
@@ -166,7 +169,7 @@ def _field_material_requirements(
     settled: dict[str, set[tuple[str, str, str]]] = {}
     for offset in range(0, len(codes), 128):
         batch = codes[offset:offset + 128]
-        facts, fields = ReadCompanyFactsWithFieldResults(formal, batch)
+        facts, fields = ReadCompanyFactsWithFieldResults(formal, batch, row_cache=row_cache)
         events = {(item.code, item.event_id) for item in fields}
         unverified = {
             (item.code, item.event_id) for item in fields

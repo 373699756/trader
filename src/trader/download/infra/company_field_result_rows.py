@@ -16,7 +16,7 @@ from trader.download.domain.company_field_results import (
     CompanyFieldName,
     CompanyFieldUnit,
 )
-from trader.download.infra.company_fact_rows import ReadCompanyFactRows
+from trader.download.infra.company_fact_rows import CompanyFactRowCache, ReadCompanyFactRows
 from trader.download.infra.company_facts_protocol import CompanyInteger, DecodeCompanyEnum, EncodeCompanyTime, RequireCompanyTime, SUBJECTS
 from trader.infra.sqlite_connection import SqliteConnection
 
@@ -102,25 +102,25 @@ def ReadCompanyFieldResults(connection: SqliteConnection, codes: Sequence[str]) 
 
 
 def ReadCompanyFactsWithFieldResults(
-    connection: SqliteConnection, codes: Sequence[str],
+    connection: SqliteConnection, codes: Sequence[str], *, row_cache: CompanyFactRowCache | None = None,
 ) -> tuple[tuple[CompanyFacts, ...], tuple[CompanyFieldConclusion, ...]]:
     """Read facts with their complete, checked field bindings in one transaction."""
     facts: list[CompanyFacts] = []
     fields: list[CompanyFieldConclusion] = []
-    for batch_facts, batch_fields in _fact_field_batches(connection, codes):
+    for batch_facts, batch_fields in _fact_field_batches(connection, codes, row_cache=row_cache):
         facts.extend(batch_facts)
         fields.extend(batch_fields)
     return tuple(facts), tuple(fields)
 
 
 def _fact_field_batches(
-    connection: SqliteConnection, codes: Sequence[str],
+    connection: SqliteConnection, codes: Sequence[str], *, row_cache: CompanyFactRowCache | None = None,
 ) -> Iterator[tuple[tuple[CompanyFacts, ...], tuple[CompanyFieldConclusion, ...]]]:
     requested = tuple(sorted({_code(code) for code in codes}))
     for offset in range(0, len(requested), 512):
         batch = requested[offset:offset + 512]
         slots = ",".join("?" for _ in batch)
-        facts = ReadCompanyFactRows(connection, batch)
+        facts = ReadCompanyFactRows(connection, batch, row_cache=row_cache)
         values, subjects = _bindings(facts)
         results: list[CompanyFieldConclusion] = []
         published: set[tuple[str, str, str]] = set()
