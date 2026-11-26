@@ -40,9 +40,10 @@ from trader.training.domain.v1.training_plan import (
 from trader.training.domain.training_date_coverage import TrainingDateCoverage
 from trader.training.infra.execution_options import BASELINE_EXECUTION_OPTIONS, TrainingExecutionOptions
 from trader.training.infra.d25.artifact import (
-    D25ProbabilityArtifact, D25ProbabilityBinding, HasD25Probability, StageD25Probability,
+    D25ProbabilityArtifact, D25ProbabilityBinding, ReadD25ProbabilityReceipt, StageD25Probability,
 )
 from trader.training.infra.d25.v1.probability import FitV1D25Probability
+from trader.training.domain.d25_assessment import D25ProbabilityReceipt
 from trader.training.infra.fitting_resources import ReserveTrainingFittingResources
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
 from trader.training.infra.implementation_identity import LaneTrainingImplementationIdentity, TrainingImplementationIdentity
@@ -134,24 +135,27 @@ class _LearnedRankInspection:
             return None
         return pair
 
-    def validate_pair(self, pair: LearnedRankFinalPair) -> bool:
+    def validate_pair(self, pair: LearnedRankFinalPair) -> tuple[bool, D25ProbabilityReceipt | None]:
+        receipt = None
         try:
             for head in pair.heads:
                 self.check_cancelled()
                 LearnedRankPredictor(head)
-                if head.strategy is Strategy.D25 and self.d25_target is not None and not HasD25Probability(
-                    self.model_root / "v1", "v1", LEARNED_RANK_FEATURE_IDS,
-                    D25ProbabilityBinding(
-                        self.d25_target, head.content_hash, pair.training_input_hash,
-                        LearnedRankMetadataHash(pair.contract_hash, head.split, head.final_fit),
-                    ),
-                ):
-                    return False
+                if head.strategy is Strategy.D25 and self.d25_target is not None:
+                    receipt = ReadD25ProbabilityReceipt(
+                        self.model_root / "v1", "v1", LEARNED_RANK_FEATURE_IDS,
+                        D25ProbabilityBinding(
+                            self.d25_target, head.content_hash, pair.training_input_hash,
+                            LearnedRankMetadataHash(pair.contract_hash, head.split, head.final_fit),
+                        ),
+                    )
+                    if receipt is None:
+                        return False, None
         except InterruptedError:
             raise
         except (OSError, ValueError, LightGBMError):
-            return False
-        return True
+            return False, None
+        return True, receipt
 
 
 @dataclass(frozen=True)
@@ -218,14 +222,16 @@ class _PinnedLearnedRankSession(_LearnedRankInspection):
         with TemporaryTrainingSamples(self.adapter.sample_root, "v1") as directory:
             yield _LearnedRankSamples(self, directory)
 
-    def publish_pair(self, pair: LearnedRankFinalPair) -> None:
+    def publish_pair(self, pair: LearnedRankFinalPair) -> D25ProbabilityReceipt | None:
         probability = self.fitted_models.d25_probability
         if probability is None:
             PublishLearnedRankPair(self.model_root, pair)
-        else:
-            PublishLearnedRankPair(
-                self.model_root, pair, stage_d25=partial(StageD25Probability, artifact=probability),
-            )
+            return None
+        identity = PublishLearnedRankPair(
+            self.model_root, pair, stage_d25=partial(StageD25Probability, artifact=probability),
+        )
+        assert identity is not None
+        return D25ProbabilityReceipt(identity, probability.assessment)
 
 
 @dataclass(frozen=True)

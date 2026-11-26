@@ -30,6 +30,7 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 
 from trader.training.application.profile_training import TrainingRunResult
+from trader.training.domain.d25_assessment import D25ProbabilityAssessment
 from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort
 from trader.training.infra.d25.artifact import (
     D25ProbabilityArtifact, D25ProbabilityBinding, HasD25Probability, StageD25Probability,
@@ -173,6 +174,7 @@ def test_v5_d25_calibration_failure_writes_utility_and_keeps_existing_calibrated
             fixture_weights.transformer_means, fixture_weights.transformer_scales,
             fixture_weights.dropout, fixture_weights.weights, fixture_weights.architecture,
         )),),
+        D25ProbabilityAssessment(plan.validation_dates, (), 0, 0, 0, 0, 2, 1, None, None),
     ))
     PublishStrategyModelDirectory(profile_root, Strategy.D25, staged)
     assert HasD25Probability(profile_root, "v5", features, binding)

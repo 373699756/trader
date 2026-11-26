@@ -16,7 +16,7 @@ from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFIL
 _HASH = re.compile(r"[0-9a-f]{64}")
 _NAME = re.compile(r"[a-z][a-z0-9_]{0,95}")
 ResearchStrategy = Literal["tomorrow", "d25"]
-ResearchComponentRole = Literal["target_probability", "ranker", "utility"]
+ResearchComponentRole = Literal["target_probability", "utility"]
 ResearchModelFamily = Literal["lambdarank", "lightgbm", "logistic", "ridge", "tcn"]
 
 
@@ -35,7 +35,7 @@ class ResearchModelComponent:
     epochs: int
 
     def __post_init__(self) -> None:
-        if self.role not in {"target_probability", "ranker", "utility"} or self.family not in {
+        if self.role not in {"target_probability", "utility"} or self.family not in {
             "lambdarank", "lightgbm", "logistic", "ridge", "tcn",
         }:
             raise ValueError("research_model_component_invalid")
@@ -58,7 +58,7 @@ def ValidateResearchComponents(
         ("target_probability", probability_families[SCORING_PROFILE_IDS.index(profile_id)]),
     )
     d25_utility = {
-        "v1": (("ranker", "lambdarank"), ("utility", "ridge")),
+        "v1": (("utility", "ridge"),),
         "v2": (("utility", "lightgbm"),),
         "v3": (("utility", "ridge"),),
         "v5": (("utility", "tcn"),),

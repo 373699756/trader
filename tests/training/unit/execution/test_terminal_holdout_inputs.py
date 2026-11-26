@@ -105,6 +105,7 @@ def _inputs(root, parents, *, config_dir=_CONFIG, vary_state=False):
                 (0.02, 0.02, 0.02, 0.02) if strategy == "d25" else (),
                 (0.01, 0.01, 0.01, 0.01) if strategy == "d25" else (),
                 ranking_score=50.0, local_score=50.0, target_probability=0.5,
+                event_rank_model_hash="e" * 64 if strategy == "d25" and parent.profile_id == "v1" else None,
             )
             payload = asdict(row)
             payload["trade_date"] = day.isoformat()

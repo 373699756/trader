@@ -151,6 +151,8 @@ def _profile_results(mode: str, profiles: Sequence[str], reused: bool) -> list[d
                     "strategy": "d25",
                     "status": "engineering_ready",
                     "model_hash": _digest(mode + profile + ":utility"),
+                    "probability_model_hash": _digest(mode + profile + ":event"),
+                    "scoring_model_hash": _digest(mode + profile + ":bound"),
                     "report_hash": _digest(mode + profile + ":report"),
                 }
             ],
@@ -186,6 +188,7 @@ def _run(
             "profile": profile, "strategy": "d25", "target": _D25_TARGET["identity"],
             "input_hash": outcome["training_input_hash"], "model_hash": _digest(mode + profile + ":bound"),
             "utility_model_hash": utility["model_hash"], "utility_report_hash": utility["report_hash"],
+            "probability_model_hash": utility["probability_model_hash"],
         })
         if not d25_only:
             artifacts.append({
@@ -195,7 +198,11 @@ def _run(
             tomorrow.append({
                 "profile": profile, "target": _TOMORROW_TARGET, "threshold_bps": 500, "ready": True,
                 "history_snapshot_hash": _digest("history"), "model_identity": _digest(mode + profile + ":tomorrow"),
-                "assessment_rows": 0 if reused else 100,
+                "assessment_rows": 100, "assessment_positive_rows": 25, "assessment_brier": 0.2,
+                "assessment_daily_close_proxy": {"hits": 3, "seats": 6, "unsettled": 0}, "reused": reused,
+                "diagnostic": {"model_identity": _digest(mode + profile + ":diagnostic"),
+                               "rows": 100, "positive_rows": 25, "brier": 0.2,
+                               "daily_close_proxy": {"hits": 3, "seats": 6, "unsettled": 0}},
             })
     return {
         "complete": True,

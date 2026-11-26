@@ -299,7 +299,7 @@ def test_alignment_repeats_complete_training_in_the_same_workspace(tmp_path, mon
     reads = []
 
     def read_industry(path, observed_at, sqlite_policy):
-        assert path == tmp_path / "reference" and observed_at.utcoffset().total_seconds() == 8 * 60 * 60
+        assert path == tmp_path / "metadata" and observed_at.utcoffset().total_seconds() == 8 * 60 * 60
         reads.append(observed_at)
         return industry
 
@@ -350,7 +350,8 @@ def test_alignment_repeats_complete_training_in_the_same_workspace(tmp_path, mon
     "missing_execution", "failed_execution", "scan", "rows", "boolean_zero", "missing_counter",
     "wrong_execution_profiles", "malformed_execution_profiles", "not_reused", "boolean_reused",
     "missing_profile", "duplicate_head", "changed_model", "changed_input", "failed_profile", "failed_head",
-    "tomorrow_model", "tomorrow_refit", "tomorrow_fake_report",
+    "tomorrow_model", "tomorrow_diagnostic_changed", "tomorrow_diagnostic_hidden", "tomorrow_reuse_unverified", "tomorrow_fake_report",
+    "d25_wrong_probability", "d25_wrong_scoring_identity",
 ))
 def test_comparison_rejects_false_reuse_even_when_child_claims_passed(checkout, change):
     results = list(deepcopy(_checkout_results() if checkout else _serial_results()))
@@ -389,8 +390,16 @@ def test_comparison_rejects_false_reuse_even_when_child_claims_passed(checkout, 
         profile["heads"][0]["status"] = "failed"
     elif change == "tomorrow_model":
         execution["tomorrow_probability"][0]["model_identity"] = "f" * 64
-    elif change == "tomorrow_refit":
-        execution["tomorrow_probability"][0]["assessment_rows"] = 100
+    elif change == "tomorrow_diagnostic_changed":
+        execution["tomorrow_probability"][0]["diagnostic"]["model_identity"] = "f" * 64
+    elif change == "tomorrow_diagnostic_hidden":
+        execution["tomorrow_probability"][0]["assessment_rows"] = 0
+    elif change == "tomorrow_reuse_unverified":
+        execution["tomorrow_probability"][0]["reused"] = False
+    elif change == "d25_wrong_probability":
+        profile["heads"][0]["probability_model_hash"] = "f" * 64
+    elif change == "d25_wrong_scoring_identity":
+        profile["heads"][0]["scoring_model_hash"] = "f" * 64
     elif change == "tomorrow_fake_report":
         next(item for item in repeat["artifacts"] if item["strategy"] == "tomorrow")["report_hash"] = "f" * 64
     else:
@@ -527,8 +536,9 @@ def test_sample_refit_uses_verified_copy_without_deleting_or_copying_original_mo
         shutil.rmtree(target / "samples/v5")
         return _sample_fixture("serial", 2.0, ("v5",))["run"]
 
-    def prepare(*_args, industry_snapshot):
+    def prepare(*_args, industry_snapshot, measure_sample_components):
         assert industry_snapshot is industry
+        assert not measure_sample_components
         return _sample_fixture("serial", 2.0, ("v5",))["preparation"]
 
     monkeypatch.setattr(training_alignment, "_prepare_sample_reuse", prepare)

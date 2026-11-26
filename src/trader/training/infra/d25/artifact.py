@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, fields, replace
 from datetime import date
 from importlib.util import find_spec
 from pathlib import Path
@@ -17,7 +17,9 @@ from trader.recommendation.domain.outcomes.prediction_target import PredictionTa
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ParseScoringProfile, ScoringProfileId
 from trader.recommendation.domain.scoring.residualization import ExposureContract
-from trader.training.infra.d25.artifact_values import D25ArtifactObject, D25ArtifactVector
+from trader.training.infra.d25.artifact_values import D25ArtifactNumber, D25ArtifactObject, D25ArtifactVector
+from trader.training.domain.d25_assessment import D25ProbabilityAssessment, D25ProbabilityReceipt
+from trader.training.infra.d25.calibration import CalibratedD25Probabilities
 from trader.training.infra.d25.contracts import StandardD25Profile
 from trader.training.infra.d25.model_document import (
     D25MetadataIntegrityError, D25ModelPair, D25ProbabilityPublication, EncodeD25MetadataDocument,
@@ -43,7 +45,7 @@ from trader.training.infra.tcn.manifest import SEQUENCE_FEATURE_IDS
 _MAX_BYTES = 128 * 1024**2
 _ALGORITHMS = {"v1": V1_ALGORITHM, "v2": V2_ALGORITHM, "v3": V3_ALGORITHM, "v5": V5_ALGORITHM}
 _KEYS = {"profile", "algorithm", "target", "features", "utility_hash", "input_hash", "utility_metadata_hash", "implementation_hash", "fitting_dates",
-         "calibration_dates", "calibration", "models"}
+         "calibration_dates", "calibration", "models", "assessment"}
 
 
 D25Model = D25TreeModel | D25LogisticModel | D25TcnModel
@@ -80,6 +82,7 @@ class D25ProbabilityArtifact:
     calibration_dates: tuple[date, ...]
     calibration: tuple[float, float]
     industry_models: tuple[tuple[str, D25Model], ...]
+    assessment: D25ProbabilityAssessment
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,8 +119,11 @@ class _D25Predictor:
         return tuple(sorted(self.models))
 
     def predict(self, inputs: Sequence[ModelInput]) -> tuple[ModelPrediction, ...]:
-        predictions = self.utility.predict(inputs)
-        intercept, slope = self.artifact.calibration
+        return self._with_events(inputs, self.utility.predict(inputs))
+
+    def _with_events(
+        self, inputs: Sequence[ModelInput], predictions: Sequence[ModelPrediction],
+    ) -> tuple[ModelPrediction, ...]:
         grouped: dict[str, list[ModelInput]] = {}
         for item in inputs:
             industry = "" if self.profile_id == "v1" else item.industry
@@ -129,10 +135,7 @@ class _D25Predictor:
             for start in range(0, len(selected), 256):
                 batch = selected[start : start + 256]
                 scores = model(batch)
-                logits = intercept + slope * scores
-                if not np.isfinite(logits).all():
-                    raise ValueError("d25_probability_prediction_nonfinite")
-                probabilities = np.exp(-np.logaddexp(0.0, -logits))
+                probabilities = CalibratedD25Probabilities(scores, self.artifact.calibration)
                 for item, score, probability in zip(batch, scores, probabilities, strict=True):
                     event_scores[item.code] = float(score), float(probability)
         combined: list[ModelPrediction] = []
@@ -147,6 +150,23 @@ class _D25Predictor:
                 target_probability=probability,
             ))
         return tuple(combined)
+
+
+class _V1EventRankReplayPredictor(_D25Predictor):
+    def predict(self, inputs: Sequence[ModelInput]) -> tuple[ModelPrediction, ...]:
+        if not isinstance(self.utility, LearnedRankPredictor):
+            raise ValueError("v1_event_rank_replay_requires_learned_rank_utility")
+        return self._with_events(inputs, self.utility.predict_utility(inputs))
+
+
+def BuildV1EventRankReplayCandidate(profile: LoadedScoringProfile) -> LoadedScoringProfile:
+    """Opt-in offline replay that omits the discarded independent return rank."""
+    head = profile.heads[Strategy.D25]
+    current = head.predictor
+    if profile.profile_id != "v1" or not isinstance(current, _D25Predictor):
+        raise ValueError("v1_event_rank_replay_requires_published_d25_v1")
+    candidate = _V1EventRankReplayPredictor(current.utility, current.artifact, current.probability_hash, current.models)
+    return replace(profile, heads={**profile.heads, Strategy.D25: replace(head, predictor=candidate)})
 
 
 def StageD25Probability(model_directory: Path, artifact: D25ProbabilityArtifact) -> str:
@@ -165,6 +185,11 @@ def StageD25Probability(model_directory: Path, artifact: D25ProbabilityArtifact)
         "calibration_dates": tuple(day.isoformat() for day in artifact.calibration_dates),
         "calibration": artifact.calibration,
         "models": tuple((industry, _model_document(model)) for industry, model in artifact.industry_models),
+        "assessment": {
+            **asdict(artifact.assessment),
+            "validation_dates": [day.isoformat() for day in artifact.assessment.validation_dates],
+            "scored_dates": [day.isoformat() for day in artifact.assessment.scored_dates],
+        },
     }
     identity = ContentHash(document)
     rendered = json.dumps({"identity": identity, "artifact": document}, allow_nan=False, separators=(",", ":"))
@@ -195,11 +220,18 @@ def HasD25Probability(
 def ReadD25ProbabilityIdentity(
     profile_root: Path, profile: ScoringProfileId, feature_ids: tuple[str, ...], binding: D25ProbabilityBinding,
 ) -> str | None:
+    receipt = ReadD25ProbabilityReceipt(profile_root, profile, feature_ids, binding)
+    return receipt.probability_hash if receipt is not None else None
+
+
+def ReadD25ProbabilityReceipt(
+    profile_root: Path, profile: ScoringProfileId, feature_ids: tuple[str, ...], binding: D25ProbabilityBinding,
+) -> D25ProbabilityReceipt | None:
     try:
-        _, identity = _read(profile_root, profile, feature_ids, binding)
+        artifact, identity = _read(profile_root, profile, feature_ids, binding)
     except (OSError, ValueError, TypeError):
         return None
-    return identity
+    return D25ProbabilityReceipt(identity, artifact.assessment)
 
 
 def LoadD25ScoringProfile(
@@ -338,8 +370,11 @@ def _decode(
     industries = tuple(key for key, _ in parsed)
     if industries != tuple(sorted(set(industries))) or (industries != ("",) if profile == "v1" else "" in industries):
         raise ValueError("d25_probability_industries_invalid")
+    assessment = _assessment(doc["assessment"])
+    if calibration[-1] >= assessment.validation_dates[0]:
+        raise ValueError("d25_probability_assessment_dates_overlap")
     return D25ProbabilityArtifact(
-        profile, binding, features, fitting, calibration, (intercept, slope), tuple(parsed),
+        profile, binding, features, fitting, calibration, (intercept, slope), tuple(parsed), assessment,
     ), identity
 
 
@@ -361,3 +396,23 @@ def _dates(value: object) -> tuple[date, ...]:
 
 def _valid_hash(value: str) -> bool:
     return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
+def _assessment(value: object) -> D25ProbabilityAssessment:
+    raw = D25ArtifactObject(value, {item.name for item in fields(D25ProbabilityAssessment)})
+
+    def count(name: str) -> int:
+        result = raw[name]
+        if type(result) is not int:
+            raise ValueError("d25_probability_assessment_counts_invalid")
+        return result
+
+    def metric(name: str) -> float | None:
+        number = raw[name]
+        return None if number is None else D25ArtifactNumber(number)
+
+    return D25ProbabilityAssessment(
+        _dates(raw["validation_dates"]), () if raw["scored_dates"] == [] else _dates(raw["scored_dates"]),
+        count("sample_rows"), count("labeled_rows"), count("scored_rows"), count("positive_rows"),
+        count("training_rows"), count("training_positive_rows"), metric("brier"), metric("baseline_brier"),
+    )

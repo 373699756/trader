@@ -26,6 +26,12 @@ class D25TerminalHoldoutService:
         self._parent = parent
 
     def execute(self) -> TerminalHoldoutReport:
+        registration = self._parent.registration
+        event_rank_model_hash = (
+            registration.candidate_components[0].model_hash
+            if self._parent.profile_id == "v1" and registration is not None and registration.strategy == "d25"
+            and registration.profile_id == "v1" else None
+        )
         return EvaluateTerminalHoldout(
             TerminalHoldoutEvaluation(
                 strategy="d25",
@@ -33,6 +39,7 @@ class D25TerminalHoldoutService:
                 parent_hash=self._parent.parent_hash,
                 candidate_hash=self._parent.candidate_hash,
                 rows=self._rows,
+                event_rank_model_hash=event_rank_model_hash,
                 parent_status=self._parent.candidate_status,
                 profile_id=self._parent.profile_id,
                 parent_failure_reasons=self._parent.failure_reasons,

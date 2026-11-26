@@ -184,6 +184,14 @@ class LearnedRankSampleIndex:
     def close(self) -> None:
         self._connection.close()
 
+    def d25_validation_counts(self, dates: tuple[date, ...]) -> tuple[int, int]:
+        placeholders = ",".join("?" for _ in dates)
+        row = self._connection.run(
+            f"SELECT COUNT(*), COUNT(target_d25_hit) FROM samples WHERE trade_date IN ({placeholders})",
+            tuple(EncodeDate(day) for day in dates),
+        ).require_one()
+        return int(row[0]), int(row[1])
+
     def add_day(
         self, pending: LearnedRankPendingDay, *, include_t1: bool = True, d25_target: PredictionTarget | None = None,
     ) -> tuple[int, int, int]:

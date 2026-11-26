@@ -13,6 +13,7 @@ from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixtu
 from tests.helpers.training.profiles.v3.profile import _publish_profile
 from tests.helpers.shared.configuration import RuntimeSettingsFixture, SqlitePolicyFixture
 from trader.infra.cache import BoundedLruCache
+from trader.training.domain.d25_assessment import D25ProbabilityAssessment
 from tests.helpers.training.history_training_due import HistoryTrainingExpectationFixture
 from trader.download.domain.baostock_daily import BaoStockCalendar
 from trader.infra.regular_file import ReadRegularFile
@@ -90,6 +91,7 @@ def test_production_observation_tracks_probability_changes_and_absence_without_r
         "v3", D25ProbabilityBinding(target, utility.model_hash, utility.training_history_hash, utility.metadata_hash),
         features, (date(2026, 8, 1),), (date(2026, 8, 2),), (0.0, 1.0),
         (("银行", D25LogisticModel((0.0,) * width, (1.0,) * width, 0.0, (0.1,) * width)),),
+        D25ProbabilityAssessment((date(2026, 8, 3),), (), 0, 0, 0, 0, 2, 1, None, None),
     )
 
     def publish(model):

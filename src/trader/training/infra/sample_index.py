@@ -329,6 +329,15 @@ class SQLiteTrainingSampleIndex:
             self._prepare_industry_counts()
         return self._counts_by_target[target]
 
+    def d25_validation_counts(self) -> tuple[int, int]:
+        row = self._connection.run(
+            "SELECT COALESCE(SUM(CASE WHEN s.target='rows' THEN s.sample_count END),0), "
+            "COALESCE(SUM(CASE WHEN s.target=? THEN s.sample_count END),0) FROM sample_statistics s "
+            "JOIN sample_split_dates d ON d.trade_date=s.trade_date WHERE d.split_name='validation' "
+            "AND s.target IN ('rows',?)", (D25_HIT_COLUMN, D25_HIT_COLUMN),
+        ).require_one()
+        return int(row[0]), int(row[1])
+
     @contextmanager
     def d25_probability_training_data(
         self, counts: TrainingIndustryCounts, contract: TrainedHeadContract, check: Callable[[], None],

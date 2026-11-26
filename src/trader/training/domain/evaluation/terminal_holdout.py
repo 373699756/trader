@@ -67,6 +67,7 @@ class TerminalHoldoutRow:
     ranking_score: float = field(kw_only=True)
     local_score: float = field(kw_only=True)
     target_probability: float = field(kw_only=True)
+    event_rank_model_hash: str | None = field(default=None, kw_only=True)
     horizon_net_excess_returns: tuple[float, ...] = ()
     baseline_horizon_net_excess_returns: tuple[float, ...] = ()
 
@@ -113,6 +114,11 @@ class TerminalHoldoutRow:
 
 
 def ValidateTerminalRanking(strategy: TerminalStrategy, profile_id: ScoringProfileId, row: TerminalHoldoutRow) -> None:
+    if strategy == "d25" and profile_id == "v1":
+        if row.event_rank_model_hash is None or _SHA256.fullmatch(row.event_rank_model_hash) is None:
+            raise ValueError("terminal D25 V1 event ranking identity missing")
+    elif row.event_rank_model_hash is not None:
+        raise ValueError("terminal event rank identity is exclusive to D25 V1")
     if strategy == "tomorrow":
         if row.ranking_score != 100.0 * row.target_probability:
             raise ValueError("terminal Tomorrow ranking differs from the unrounded target probability")
@@ -279,6 +285,7 @@ class TerminalHoldoutEvaluation:
     bootstrap_block_days: int | None = None
     terminal_holdout_already_opened: bool = False
     profile_id: ScoringProfileId | None = None
+    event_rank_model_hash: str | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -326,6 +333,8 @@ def EvaluateTerminalHoldout(evaluation: TerminalHoldoutEvaluation) -> TerminalHo
         raise ValueError("terminal holdout point-in-time parity is incomplete")
     for row in ordered:
         ValidateTerminalRanking(evaluation.strategy, evaluation.profile_id, row)
+        if row.event_rank_model_hash != evaluation.event_rank_model_hash:
+            raise ValueError("terminal D25 V1 ranking differs from registered event LambdaRank")
     if evaluation.strategy == "d25" and any(
         len(item.horizon_net_excess_returns) != 4 or len(item.baseline_horizon_net_excess_returns) != 4
         for item in ordered

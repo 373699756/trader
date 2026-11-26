@@ -66,7 +66,9 @@ from trader.training.infra.history.history_training_input import (
 )
 from trader.training.infra.implementation_identity import LaneTrainingImplementationIdentity, TrainingImplementationIdentity
 from trader.training.infra.execution_options import TrainingExecutionOptions
-from trader.training.infra.d25.artifact import D25ProbabilityBinding, ReadD25ProbabilityIdentity, StageD25Probability
+from trader.training.infra.d25.artifact import (
+    D25ProbabilityBinding, ReadD25ProbabilityIdentity, ReadD25ProbabilityReceipt, StageD25Probability,
+)
 from trader.training.infra.d25.calibration import D25ProbabilityCalibrationError
 from trader.training.infra.d25.model_document import D25ModelDocument, EncodeD25MetadataDocument, EncodeD25ModelDocument
 from trader.training.infra.d25.training import D25IndustryFitRequest, FitIndustryD25Probability
@@ -443,11 +445,12 @@ class _ProfileTrainingAdapter:
             width = len(request.contracts[0].feature_positions)
             event_matrix_bytes = max((item.training for item in counts), default=0) * (width + 1) * 8
             calibration_bytes = sum(item.calibration for item in counts) * 64
+            validation_bytes = sum(item.validation for item in counts) * 64
             if isinstance(request.settings.fitting, TcnFittingParameters):
                 batch_arrays = request.settings.fitting.batch_size * (width + 1) * 24
-                estimate = max(estimate, 512 * 1024**2 + event_matrix_bytes + batch_arrays + calibration_bytes)
+                estimate = max(estimate, 512 * 1024**2 + event_matrix_bytes + batch_arrays + calibration_bytes + validation_bytes)
             else:
-                estimate = max(estimate, 256 * 1024**2 + event_matrix_bytes * 4 + calibration_bytes)
+                estimate = max(estimate, 256 * 1024**2 + event_matrix_bytes * 4 + calibration_bytes + validation_bytes)
         if request.execution_options.shared_validation:
             estimate += (512 if request.profile.algorithm == "tcn" else 256) * 1024**2
         if request.execution_options.shared_matrix_memory:
@@ -575,7 +578,10 @@ class _ProfileFittingAdapter:
                             probability_calibration_failed=True,
                         ), False)
                     checkpoint()
-                    result = replace(result, probability_model_hash=StageD25Probability(staging, artifact))
+                    result = replace(
+                        result, probability_model_hash=StageD25Probability(staging, artifact),
+                        probability_assessment=artifact.assessment,
+                    )
             return PreparedTrainingHead(result, staging is not None)
 
     def publish_pair(self) -> None:
@@ -1005,13 +1011,13 @@ def _reuse_profile(history: _TrainingInputSnapshot, request: ProfileTrainingRequ
     heads: list[PublishedTrainingHead] = []
     for bundle, contract in zip(bundles, request.contracts, strict=True):
         model = bundle.model
-        probability_hash = None
+        receipt = None
         if request.d25_target is not None:
-            probability_hash = ReadD25ProbabilityIdentity(
+            receipt = ReadD25ProbabilityReceipt(
                 request.train_root, request.profile.profile_id, contract.feature_manifest.names,
                 D25ProbabilityBinding(request.d25_target, model.content_hash, bundle.training_input_hash, bundle.metadata_hash),
             )
-            if probability_hash is None:
+            if receipt is None:
                 return None
         heads.append(
             PublishedTrainingHead(HeadTrainingResult(
@@ -1032,7 +1038,8 @@ def _reuse_profile(history: _TrainingInputSnapshot, request: ProfileTrainingRequ
                 final_fit=model.final_fit,
                 diagnostic_plan=model.diagnostic_plan,
                 utility_model_published=True,
-                probability_model_hash=probability_hash,
+                probability_model_hash=receipt.probability_hash if receipt is not None else None,
+                probability_assessment=receipt.assessment if receipt is not None else None,
             ), bundle.training_contract_hash)
         )
     return InspectProfileReuse(_read_profile_source(history, request), tuple(heads))

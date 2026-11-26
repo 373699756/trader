@@ -89,6 +89,7 @@ def _evidence(
                 "eligible": True,
                 "target_probability": (90 - index) / 100,
                 "ranking_score": 90 - index if strategy == "d25" and profile_id in {"v1", "v5"} else None,
+                "event_rank_model_hash": "e" * 64 if strategy == "d25" and profile_id == "v1" else None,
                 "predicted_net_excess_return": 0.018 if strategy == "d25" else None,
             }
             rows.append(

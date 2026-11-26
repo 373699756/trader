@@ -11,6 +11,7 @@ from trader.training.application.training_diagnostics import (
     BuildTrainingOperationIssue, NotifyTrainingCommit, TrainingIssueStage, TrainingOperationIssue,
 )
 from trader.training.domain.final_fit import FinalFitDatePlan
+from trader.training.domain.d25_assessment import D25ProbabilityAssessment
 from trader.training.domain.profile_training import (
     BuildProfileTrainingPlan,
     PlannedTrainingHead,
@@ -53,6 +54,7 @@ class HeadTrainingResult:
     utility_model_published: bool = False
     probability_model_hash: str | None = None
     probability_calibration_failed: bool = False
+    probability_assessment: D25ProbabilityAssessment | None = None
 
 
 @dataclass(frozen=True)
@@ -220,7 +222,8 @@ def TrainProfile(
                     published = True
                 except ProfileTrainingOperationError as exc:
                     completed = [replace(item, status="blocked", model_hash="", failure_reasons=(str(exc),),
-                                         diagnostic=CaptureTrainingError(exc), probability_model_hash=None) for item in completed]
+                                         diagnostic=CaptureTrainingError(exc), probability_model_hash=None,
+                                         probability_assessment=None) for item in completed]
                 if published:
                     completed = [replace(item, utility_model_published=True) for item in completed]
                     issue = NotifyTrainingCommit(progress)
@@ -229,7 +232,7 @@ def TrainProfile(
             else:
                 completed = [
                     replace(item, status="blocked", model_hash="", failure_reasons=("profile_pair_incomplete",),
-                            probability_model_hash=None)
+                            probability_model_hash=None, probability_assessment=None)
                     if item.status == "engineering_ready" else item
                     for item in completed
                 ]
@@ -246,7 +249,7 @@ def TrainProfile(
             reason = str(exc)
             completed = [
                 replace(item, status="blocked", model_hash="", failure_reasons=(reason,), diagnostic=CaptureTrainingError(exc),
-                        probability_model_hash=None)
+                        probability_model_hash=None, probability_assessment=None)
                 if item.status == "engineering_ready" else item
                 for item in completed
             ]

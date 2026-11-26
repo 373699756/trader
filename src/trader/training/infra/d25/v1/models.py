@@ -180,6 +180,20 @@ class LearnedRankPredictor:
     def predict(self, inputs: Sequence[ModelInput]) -> tuple[ModelPrediction, ...]:
         if not inputs:
             return ()
+        matrix, gross = self._utility_values(inputs)
+        rank_raw = self._ranker.predict(matrix, num_iteration=self._head.rank_iterations, num_threads=1)
+        return tuple(
+            ModelPrediction(item.code, float(prediction), float(rank))
+            for item, prediction, rank in zip(inputs, gross, rank_raw, strict=True)
+        )
+
+    def predict_utility(self, inputs: Sequence[ModelInput]) -> tuple[ModelPrediction, ...]:
+        if not inputs:
+            return ()
+        _, gross = self._utility_values(inputs)
+        return tuple(ModelPrediction(item.code, float(value)) for item, value in zip(inputs, gross, strict=True))
+
+    def _utility_values(self, inputs: Sequence[ModelInput]) -> tuple[np.ndarray, np.ndarray]:
         if len({item.code for item in inputs}) != len(inputs) or any(
             len(item.alpha_features) != len(self.feature_ids) for item in inputs
         ):
@@ -187,19 +201,15 @@ class LearnedRankPredictor:
         matrix = np.asarray([item.alpha_features for item in inputs], dtype=np.float64)
         matrix -= self._means
         matrix /= self._scales
-        rank_raw = self._ranker.predict(matrix, num_iteration=self._head.rank_iterations, num_threads=1)
         gross = self._head.calibration_intercept + self._head.calibration_slope * (
             self._head.ridge_intercept + matrix @ self._coefficients
         )
-        return tuple(
-            ModelPrediction(item.code, float(prediction), float(rank))
-            for item, prediction, rank in zip(inputs, gross, rank_raw, strict=True)
-        )
+        return matrix, gross
 
 
 def PublishLearnedRankPair(
     model_root: Path, pair: LearnedRankFinalPair, *, stage_d25: Callable[[Path], str] | None = None,
-) -> None:
+) -> str | None:
     """Publish the selected final-refit heads as one locked profile directory."""
     if not isinstance(pair, LearnedRankFinalPair):
         raise ValueError("V1 publication requires a complete final-refit pair")
@@ -215,6 +225,7 @@ def PublishLearnedRankPair(
     staging = Path(tempfile.mkdtemp(prefix=".v1.publication.", dir=model_root))
     previous = model_root / f".v1.previous.{uuid.uuid4().hex}"
     old_moved = False
+    probability_hash = None
     try:
         for head in pair.heads:
             directory = staging / head.strategy.value
@@ -287,7 +298,7 @@ def PublishLearnedRankPair(
                 EncodeD25MetadataDocument(metadata) if head.strategy is Strategy.D25 else metadata,
             )
             if head.strategy is Strategy.D25 and stage_d25 is not None:
-                stage_d25(directory)
+                probability_hash = stage_d25(directory)
             _fsync_directory(directory)
         _fsync_directory(staging)
         if _read_pair_directory(staging, strategies) != pair:
@@ -299,7 +310,7 @@ def PublishLearnedRankPair(
                 staging / Strategy.D25.value,
                 validate=_read_d25_directory,
             )
-            return
+            return probability_hash
         with ProfilePublicationLock(profile_root):
             RequireProfilePublicationReady(profile_root)
             if profile_root.is_symlink() or (profile_root.exists() and not profile_root.is_dir()):
@@ -326,6 +337,7 @@ def PublishLearnedRankPair(
                 shutil.rmtree(previous)
             except (OSError, ValueError):
                 _LOGGER.warning("V1 previous model directory cleanup failed")
+        return probability_hash
     finally:
         if staging.exists() or staging.is_symlink():
             InspectProfileWorkspace(staging, allow_partial_heads=True, strategies=strategies)

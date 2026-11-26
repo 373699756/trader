@@ -785,6 +785,9 @@ def _load_artifact_evidence(
         loaded = LoadD25ScoringProfile(model_root, profile, target)
         model_hash = loaded.heads[Strategy.D25].predictor.model_hash
         d25 = ReadD25ProbabilityArtifact(loaded)
+        publication, = loaded.publications
+        if publication.probability_hash is None:
+            raise ValueError("training_alignment_d25_probability_publication_missing")
         binding = d25.binding
         utility_model_hash, input_hash, metadata_hash, report_hash = _read_d25_utility_evidence(model_root, profile)
         if (utility_model_hash, input_hash, metadata_hash) != (
@@ -795,6 +798,7 @@ def _load_artifact_evidence(
             "profile": profile, "strategy": "d25", "target": target.identity,
             "input_hash": input_hash, "model_hash": model_hash,
             "utility_model_hash": utility_model_hash, "utility_report_hash": report_hash,
+            "probability_model_hash": publication.probability_hash,
         })
         values[(profile, "d25")] = (
             d25.calibration,

@@ -21,11 +21,15 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.domain.production_diagnostic_dates import BuildProductionDiagnosticDatePlan
 from trader.training.domain.v1.learned_rank import BuildLearnedRankDateSplit
+from trader.training.entrypoints.profile_training import ProjectLearnedRankTrainingResult
+from trader.training.infra.d25.calibration import AssessD25Probabilities
 from trader.training.infra.d25.labels import D25HitLabel, VerifiedD25Close
 from trader.training.infra.d25.artifact import (
+    BuildV1EventRankReplayCandidate,
     D25ProbabilityBinding,
     HasD25Probability,
     LoadD25ScoringProfile,
+    ReadD25ProbabilityReceipt,
     StageD25Probability,
 )
 from trader.training.infra.d25.model_document import D25ModelDocument, EncodeD25MetadataDocument, EncodeD25ModelDocument
@@ -56,6 +60,15 @@ def test_d25_exact_binary_label_requires_four_prices() -> None:
     assert D25HitLabel(_TARGET, 100, (100, 101, 101, 101.999999)) == 0
     assert D25HitLabel(_OTHER, 100, prices) == 0
     assert D25HitLabel(_TARGET, 100, (100, 101, None, 102)) is None
+
+
+def test_probability_baseline_uses_fitted_labels_on_the_same_held_out_rows() -> None:
+    assessment = AssessD25Probabilities(
+        np.zeros(2), np.ones(2), (0.0, 1.0), validation_dates=_CALENDAR[:2], scored_dates={_CALENDAR[0]},
+        sample_rows=5, labeled_rows=3, training_rows=4, training_positive_rows=1,
+    )
+    assert (assessment.brier, assessment.baseline_brier) == (0.25, 0.75 ** 2)
+    assert assessment.positive_rows == 2 and assessment.unavailable_reason == "validation_dates_incomplete"
 
 
 @pytest.mark.parametrize(("condition", "expected_status", "expected_label"), (
@@ -121,11 +134,14 @@ def test_v1_production_fit_builds_d25_probabilities_from_raw_history_rows(tmp_pa
 
     model_root = tmp_path / "models"
     target = PredictionTarget(Strategy.D25, 50)
-    result = RunV1Training(
-        VerifiedHistory, model_root, history_root=tmp_path / "history", sample_root=tmp_path / "samples",
-        settings=_settings(), sample_settings=TrainingSampleSettingsFixture(), sqlite_policy=SqlitePolicyFixture(),
-        strategies=(Strategy.D25,), d25_target=target,
-    )
+    def run():
+        return RunV1Training(
+            VerifiedHistory, model_root, history_root=tmp_path / "history", sample_root=tmp_path / "samples",
+            settings=_settings(), sample_settings=TrainingSampleSettingsFixture(), sqlite_policy=SqlitePolicyFixture(),
+            strategies=(Strategy.D25,), d25_target=target,
+        )
+
+    result = run()
     assert result.status == "engineering_ready", (result.failure_reasons, result.diagnostic)
     assert {path.relative_to(model_root).as_posix() for path in model_root.rglob("*.json")} == {
         "v1/d25/model.json", "v1/d25/metadata.json",
@@ -133,9 +149,17 @@ def test_v1_production_fit_builds_d25_probabilities_from_raw_history_rows(tmp_pa
     utility = LoadV1ScoringProfile(model_root, strategies=(Strategy.D25,))
     loaded = LoadD25ScoringProfile(model_root, "v1", target)
     assert loaded.heads[Strategy.D25].predictor.model_hash != utility.heads[Strategy.D25].predictor.model_hash
+    assert result.probability and result.probability.assessment.scored_rows > 0
+    assert result.probability.assessment.validation_dates == result.heads[0].split.validation
+    projected = ProjectLearnedRankTrainingResult(result)["heads"][0]
+    assert projected["scoring_model_hash"] == loaded.heads[Strategy.D25].predictor.model_hash
+    assert projected["probability_model_hash"] == result.probability.probability_hash
+    assert projected["ranking_source"] == "d25_event_lambdarank_raw_percentile"
+    repeated = run()
+    assert repeated.reused and repeated.probability == result.probability
 
 
-def test_v1_binary_lambdarank_uses_mature_close_labels_and_reloads(tmp_path: Path) -> None:
+def test_v1_binary_lambdarank_uses_mature_close_labels_and_reloads(tmp_path: Path, monkeypatch) -> None:
     settings = _settings()
     model_root = tmp_path / "models"
     assert RunV1Training(
@@ -183,14 +207,32 @@ def test_v1_binary_lambdarank_uses_mature_close_labels_and_reloads(tmp_path: Pat
     previous = utility.heads[Strategy.D25].predictor
     inputs = (ModelInput("600000", (0.0,) * 10), ModelInput("600011", (11.0,) * 10))
     old = previous.predict(inputs)
+    from lightgbm import Booster
+
+    native = Booster.predict
+    calls = []
+
+    def counted(booster, *args, **kwargs):
+        calls.append(booster)
+        return native(booster, *args, **kwargs)
+
+    monkeypatch.setattr(Booster, "predict", counted)
     predictions = cast(tuple[ModelPrediction, ...], current.predict(inputs))
+    assert len(calls) == 2
+    event = calls[-1]
+    calls.clear()
+    replay = BuildV1EventRankReplayCandidate(loaded).heads[Strategy.D25].predictor
+    assert replay.model_hash == current.model_hash
+    assert replay.predict(()) == current.predict(()) == ()
+    assert tuple(replay.predict(inputs)) == predictions
+    assert calls == [event]
+    with pytest.raises(ValueError, match="unique codes"):
+        replay.predict((inputs[0], inputs[0]))
     probabilities = tuple(item.target_probability for item in predictions)
     assert probabilities[0] is not None and 0 < probabilities[0] < 0.5
     assert probabilities[1] is not None and 0.5 < probabilities[1] < 1
     tree = model.industry_models[0][1]
     assert isinstance(tree, D25TreeModel)
-    from lightgbm import Booster
-
     ranks = Booster(model_str=tree.tree).predict(
         np.asarray([item.alpha_features for item in inputs]), num_threads=1, raw_score=True,
     )
@@ -242,9 +284,15 @@ def test_d25_industry_models_fit_the_new_event_with_separate_utility_identity(
                 f"{600000 + position:06d}", day, "main", industry, 1e7,
                 (float(label * 2 - 1),) * width, (None,) * 6, label,
             )
-            for day in (*split.fitting_dates, *split.calibration_dates)
+            for day in (*split.fitting_dates, *split.calibration_dates, *split.validation_dates)
             for position, label in enumerate(labels)
         )
+        samples.add_final((
+            TrainingSample("699999", split.validation_dates[0], "main", "uncovered", 1e7,
+                           (0.0,) * width, (None,) * 6, 0),
+            TrainingSample("699998", split.validation_dates[0], "main", industry, 1e7,
+                           (0.0,) * width, (None,) * 6, None),
+        ))
         samples.prepare_for_model_fitting(split)
         with PreserveTcnRuntime():
             artifact = FitIndustryD25Probability(samples, request, lambda: None, progress=updates.append)
@@ -263,7 +311,16 @@ def test_d25_industry_models_fit_the_new_event_with_separate_utility_identity(
     (directory / "model.json").write_text(json.dumps(document), encoding="utf-8")
     (directory / "metadata.json").write_text(json.dumps(EncodeD25MetadataDocument({})), encoding="utf-8")
     assert artifact.calibration[1] > 0
-    assert len(StageD25Probability(directory, artifact)) == 64
+    identity = StageD25Probability(directory, artifact)
+    assert len(identity) == 64
+    receipt = ReadD25ProbabilityReceipt(profile_root, profile_id, artifact.features, artifact.binding)
+    assert receipt and receipt.probability_hash == identity and receipt.assessment == artifact.assessment
+    assessment = artifact.assessment
+    assert assessment.scored_dates == split.validation_dates and assessment.baseline_brier == 0.25
+    assert assessment.scored_rows == len(labels) * len(split.validation_dates)
+    assert assessment.positive_rows == assessment.scored_rows // 2
+    assert assessment.labeled_rows == assessment.scored_rows + 1 and assessment.sample_rows == assessment.labeled_rows + 1
+    assert assessment.brier is not None and 0 <= assessment.brier <= 1
     assert HasD25Probability(profile_root, profile_id, artifact.features, artifact.binding)
     assert not HasD25Probability(profile_root, profile_id, artifact.features, replace(artifact.binding, utility_hash="f" * 64))
 

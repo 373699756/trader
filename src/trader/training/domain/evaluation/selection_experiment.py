@@ -87,6 +87,7 @@ class ProductionSelectionEvidence:
     target_probability: float | None
     ranking_score: float | None
     predicted_net_excess_return: float | None
+    event_rank_model_hash: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.eligible) is not bool:
@@ -484,12 +485,12 @@ def EvaluatePairedSelectionExperiment(
 ) -> PairedSelectionExperimentReport:
     """Evaluate every preregistered arm on exactly the same rows and dates."""
 
-    ordered = tuple(sorted(rows, key=lambda item: (item.trade_date, item.board, item.code)))
-    _validate_rows(specification, ordered)
-    targets: tuple[SelectionTarget, ...] = D25_SELECTION_TARGETS if specification.strategy == "d25" else ("tomorrow",)
-    results: list[SelectionExperimentResult] = []
     if specification.registration is None:
         raise ResearchNotReadyError("research_candidate_registration_missing")
+    ordered = tuple(sorted(rows, key=lambda item: (item.trade_date, item.board, item.code)))
+    _validate_rows(specification, ordered, specification.registration)
+    targets: tuple[SelectionTarget, ...] = D25_SELECTION_TARGETS if specification.strategy == "d25" else ("tomorrow",)
+    results: list[SelectionExperimentResult] = []
     for target in targets:
         control_variant = SelectionExperimentVariant("production_control", "model_gate_then_fixed_top6", target, None, profile_id=specification.profile_id, local_action_threshold=specification.production_action_threshold)
         control, control_days = _evaluate_variant(specification, ordered, control_variant)
@@ -520,7 +521,10 @@ def EvaluatePairedSelectionExperiment(
     )
 
 
-def _validate_rows(specification: PairedSelectionSpecification, rows: tuple[PairedSelectionRow, ...]) -> None:
+def _validate_rows(
+    specification: PairedSelectionSpecification, rows: tuple[PairedSelectionRow, ...],
+    registration: CandidateResearchRegistration,
+) -> None:
     if not rows or any(not row.point_in_time_parity for row in rows):
         raise ValueError("paired selection rows require point-in-time parity")
     if tuple(sorted({row.trade_date for row in rows})) != specification.research_dates:
@@ -536,11 +540,23 @@ def _validate_rows(specification: PairedSelectionSpecification, rows: tuple[Pair
             raise ValueError("paired selection target evidence does not match the strategy")
         for evidence in (row.profile_production, row.control_production):
             _validate_production_evidence(specification, evidence)
+        if specification.strategy == "d25" and specification.profile_id == "v1":
+            for evidence, components in (
+                (row.profile_production, registration.candidate_components),
+                (row.control_production, registration.control_components),
+            ):
+                expected_hash = components[0].model_hash if evidence.ranking_score is not None else None
+                if evidence.event_rank_model_hash != expected_hash:
+                    raise ValueError("D25 V1 ranking must come from the registered event LambdaRank")
 
 
 def _validate_production_evidence(
     specification: PairedSelectionSpecification, evidence: ProductionSelectionEvidence,
 ) -> None:
+    if evidence.event_rank_model_hash is not None and (
+        specification.strategy != "d25" or specification.profile_id != "v1"
+    ):
+        raise ValueError("event rank model identity is exclusive to D25 V1")
     if specification.strategy == "tomorrow":
         if evidence.ranking_score is not None or evidence.predicted_net_excess_return is not None:
             raise ValueError("Tomorrow production evidence must use its target probability alone")

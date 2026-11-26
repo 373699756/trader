@@ -71,7 +71,8 @@ def _production(strategy: SelectionStrategy, profile_id: ScoringProfileId, score
     if strategy == "tomorrow":
         return ProductionSelectionEvidence(True, score / 100, None, None)
     rank = score if profile_id in {"v1", "v5"} else None
-    return ProductionSelectionEvidence(True, 0.64, rank, 0.01)
+    return ProductionSelectionEvidence(True, score / 100 if profile_id == "v1" else 0.64, rank, 0.01,
+                                       "e" * 64 if profile_id == "v1" else None)
 
 
 def _rows(strategy: SelectionStrategy = "tomorrow", profile_id: ScoringProfileId = "v2") -> tuple[PairedSelectionRow, ...]:
@@ -232,6 +233,15 @@ def test_d25_refuses_incomplete_or_wrong_profile_production_evidence(
         EvaluatePairedSelectionExperiment(
             _specification("d25", profile_id=profile_id), (replace(first, profile_production=evidence), *rest),
         )
+
+
+@pytest.mark.parametrize("arm", ["candidate", "control"])
+def test_d25_v1_rejects_an_unregistered_event_rank_for_either_arm(arm: str) -> None:
+    first, *rest = _rows("d25", "v1")
+    wrong = replace(first.profile_production, event_rank_model_hash="9" * 64)
+    first = replace(first, profile_production=wrong) if arm == "candidate" else replace(first, control_production=wrong)
+    with pytest.raises(ValueError, match="registered event LambdaRank"):
+        EvaluatePairedSelectionExperiment(_specification("d25", profile_id="v1"), (first, *rest))
 
 
 @pytest.mark.parametrize("profile_id", ["v1", "v2", "v3", "v5"])

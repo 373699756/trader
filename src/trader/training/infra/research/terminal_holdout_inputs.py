@@ -174,7 +174,7 @@ def _row(raw: Mapping[str, object]) -> TerminalHoldoutRow:
         "predicted_net_excess_return", "ranking_score", "local_score", "actual_net_excess_returns", "baseline_net_excess_returns", "selected",
         "baseline_selected", "severe_loss", "baseline_severe_loss", "mae_atr20", "baseline_mae_atr20",
         "exit_untradable", "baseline_exit_untradable", "capacity", "baseline_capacity", "point_in_time_parity",
-        "horizon_net_excess_returns", "baseline_horizon_net_excess_returns", "target_probability",
+        "horizon_net_excess_returns", "baseline_horizon_net_excess_returns", "target_probability", "event_rank_model_hash",
     }, "terminal_row")
     actual, baseline = _numbers(raw, "actual_net_excess_returns"), _numbers(raw, "baseline_net_excess_returns")
     if len(actual) != 3 or len(baseline) != 3:
@@ -186,6 +186,7 @@ def _row(raw: Mapping[str, object]) -> TerminalHoldoutRow:
         predicted_net_excess_return=Number(raw, "predicted_net_excess_return"),
         ranking_score=Number(raw, "ranking_score"), local_score=Number(raw, "local_score"),
         target_probability=Number(raw, "target_probability"),
+        event_rank_model_hash=Text(raw, "event_rank_model_hash") if raw["event_rank_model_hash"] is not None else None,
         actual_net_excess_returns=actual,
         baseline_net_excess_returns=baseline,
         selected=Boolean(raw, "selected"), baseline_selected=Boolean(raw, "baseline_selected"),

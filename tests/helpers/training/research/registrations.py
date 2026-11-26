@@ -28,10 +28,6 @@ def CandidateRegistrationFixture(
         "utility", family, model_hash, "4" * 64, "5" * 64,
         60 if profile_id == "v5" else 0, 10 if profile_id == "v5" else 0,
     )
-    utility_components = (
-        (ResearchModelComponent("ranker", "lambdarank", "9" * 64, "4" * 64, "5" * 64, 0, 0), utility)
-        if profile_id == "v1" else (utility,)
-    )
     probability_families: dict[ScoringProfileId, ResearchModelFamily] = {
         "v1": "lambdarank", "v2": "lightgbm", "v3": "logistic", "v5": "tcn",
     }
@@ -40,7 +36,7 @@ def CandidateRegistrationFixture(
         "4" * 64, "5" * 64,
         60 if profile_id == "v5" else 0, 10 if profile_id == "v5" else 0,
     )
-    components = (probability,) if strategy == "tomorrow" else (probability, *utility_components)
+    components = (probability,) if strategy == "tomorrow" else (probability, utility)
     default_threshold = 500 if strategy == "tomorrow" else 100
     return CandidateResearchRegistration(
         profile_id, strategy, "window_candidate", ("window_candidate",), "fit_dates",

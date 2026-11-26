@@ -74,10 +74,12 @@ def TrainingReuseFailures(initial: object, repeat: object, profiles: Sequence[st
     ):
         failures.append("reuse_profiles_not_reused")
     if isinstance(execution, Mapping):
-        tomorrow = execution.get("tomorrow_probability")
-        if not isinstance(tomorrow, list) or any(
-            not isinstance(head, Mapping) or type(head.get("assessment_rows")) is not int or head["assessment_rows"] != 0
-            for head in tomorrow
+        prior = initial.get("execution")
+        first = _keyed_rows(prior.get("tomorrow_probability"), set(profiles)) if isinstance(prior, Mapping) else None
+        tomorrow = _keyed_rows(execution.get("tomorrow_probability"), set(profiles))
+        if first is None or tomorrow is None or any(
+            head.get("reused") is not True or head.get("diagnostic") != first[profile].get("diagnostic")
+            for profile, head in tomorrow.items()
         ):
             failures.append("reuse_tomorrow_refitted_or_missing")
     return tuple(failures)
@@ -305,6 +307,9 @@ def _d25_evidence(identity: Mapping[str, object], outcome: Mapping[str, object])
         and _matches_threshold(identity["target"], target.get("threshold_bps"))
         and identity.get("utility_model_hash") == utility.get("model_hash")
         and identity.get("utility_report_hash") == utility.get("report_hash")
+        and identity.get("probability_model_hash") == utility.get("probability_model_hash")
+        and _artifact_hash(identity.get("probability_model_hash"))
+        and identity.get("model_hash") == utility.get("scoring_model_hash")
         and _artifact_hash(identity.get("utility_model_hash")) and _artifact_hash(identity.get("utility_report_hash"))
     )
 
@@ -344,7 +349,7 @@ def TrainingArtifactEvidence(
             return None
         fields = {"profile", "strategy", "input_hash", "target", "model_hash"}
         if strategy == "d25":
-            fields.update(("utility_model_hash", "utility_report_hash"))
+            fields.update(("utility_model_hash", "utility_report_hash", "probability_model_hash"))
         if (set(item) != fields or not _artifact_hash(item["input_hash"]) or not _artifact_hash(item["model_hash"])
                 or not _matches_target(strategy, item["target"])):
             return None
@@ -353,10 +358,17 @@ def TrainingArtifactEvidence(
                 return None
         else:
             head = tomorrow[profile]
+            diagnostic = head.get("diagnostic")
             assessment_rows = head.get("assessment_rows")
             if (head.get("ready") is not True or head.get("target") != item["target"]
                     or not _matches_threshold(item["target"], head.get("threshold_bps"))
-                    or type(assessment_rows) is not int or assessment_rows < 0
+                    or type(assessment_rows) is not int or assessment_rows <= 0 or not isinstance(diagnostic, Mapping)
+                    or not {"positive_rows", "brier", "daily_close_proxy"} <= diagnostic.keys()
+                    or not _artifact_hash(diagnostic.get("model_identity")) or diagnostic.get("rows") != assessment_rows
+                    or any(head.get(summary) != diagnostic.get(detail) for summary, detail in (
+                        ("assessment_positive_rows", "positive_rows"), ("assessment_brier", "brier"),
+                        ("assessment_daily_close_proxy", "daily_close_proxy"),
+                    ))
                     or head.get("model_identity") != item["model_hash"] or head.get("history_snapshot_hash") != item["input_hash"]):
                 return None
         identities[profile, strategy] = item

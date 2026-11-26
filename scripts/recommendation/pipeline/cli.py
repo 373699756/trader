@@ -44,7 +44,7 @@ def BuildParser(
     if action_identity in ("performance",):
         parser.add_argument('--performance-factor-candidate', choices=('baseline', 'raw_factor_reuse'), default='baseline', help='explicit offline raw-factor reuse candidate; requires continuous replay')
     if action_identity in ("performance",):
-        parser.add_argument('--performance-scoring-candidate', choices=SCORING_CANDIDATES, default='baseline', help='offline qualification/reference reuse or independent V5 industry executor; requires continuous replay')
+        parser.add_argument('--performance-scoring-candidate', choices=SCORING_CANDIDATES, default='baseline', help='offline scoring candidate for continuous replay, including the D25 V1 event rank without the unused return rank')
     if action_identity in ("performance",):
         parser.add_argument('--performance-replay-ticks', type=int, default=0, help='1..1000 continuous ticks per scenario instead of model microbenchmarks')
     if action_identity in ("performance",):

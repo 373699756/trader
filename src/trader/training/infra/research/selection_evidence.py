@@ -256,12 +256,15 @@ def _row(raw: Mapping[str, object]) -> PairedSelectionRow:
 
 
 def _production(raw: Mapping[str, object]) -> ProductionSelectionEvidence:
-    RequireExactKeys(raw, {"eligible", "target_probability", "ranking_score", "predicted_net_excess_return"}, "production_selection")
+    RequireExactKeys(raw, {
+        "eligible", "target_probability", "ranking_score", "predicted_net_excess_return", "event_rank_model_hash",
+    }, "production_selection")
     return ProductionSelectionEvidence(
         eligible=Boolean(raw, "eligible"),
         target_probability=_number_or_none(raw, "target_probability"),
         ranking_score=_number_or_none(raw, "ranking_score"),
         predicted_net_excess_return=_number_or_none(raw, "predicted_net_excess_return"),
+        event_rank_model_hash=Text(raw, "event_rank_model_hash") if raw["event_rank_model_hash"] is not None else None,
     )
 
 

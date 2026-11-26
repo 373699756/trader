@@ -89,6 +89,14 @@ def test_d25_local_score_profiles_reject_an_independent_ranking_score(profile: S
         ValidateTerminalRanking("d25", profile, row)
 
 
+def test_terminal_v1_refuses_a_return_rank_even_with_a_valid_percentile() -> None:
+    row = replace(_rows(1)[0], ranking_score=98.0, event_rank_model_hash="a" * 64)
+    with pytest.raises(ValueError, match="registered event LambdaRank"):
+        EvaluateTerminalHoldout(TerminalHoldoutEvaluation(
+            "d25", "d25_research", "b" * 64, "c" * 64, (row,), profile_id="v1", event_rank_model_hash="d" * 64,
+        ))
+
+
 @pytest.mark.parametrize("profile", ["v1", "v2", "v3", "v5"])
 def test_tomorrow_ranking_keeps_the_raw_probability(profile: ScoringProfileId) -> None:
     probability = 0.753421

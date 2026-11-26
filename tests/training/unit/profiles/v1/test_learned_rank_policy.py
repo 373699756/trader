@@ -106,9 +106,9 @@ class _Training:
     def read_pair(self) -> LearnedRankFinalPair | None:
         return self.pair
 
-    def validate_pair(self, pair: LearnedRankFinalPair) -> bool:
+    def validate_pair(self, pair: LearnedRankFinalPair) -> tuple[bool, None]:
         self.events.append("validated")
-        return pair is self.pair
+        return pair is self.pair, None
 
     @contextmanager
     def samples(self) -> Iterator[LearnedRankSamplesPort]:

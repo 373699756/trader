@@ -19,7 +19,7 @@ from trader.training.infra.d25.artifact import (
     D25ProbabilityArtifact,
     D25ProbabilityBinding,
 )
-from trader.training.infra.d25.calibration import CalibrateD25Probability, HasD25ProbabilityLabels
+from trader.training.infra.d25.calibration import AssessD25Probabilities, CalibrateD25Probability, HasD25ProbabilityLabels
 from trader.training.infra.d25.v2.probability import FitD25Lightgbm
 from trader.training.infra.d25.v3.probability import FitD25Logistic
 from trader.training.infra.d25.v5.probability import FitD25Tcn
@@ -54,6 +54,10 @@ def FitIndustryD25Probability(
     counts = tuple(item for item in samples.industry_counts(request.contract, d25_probability=True) if item.industry in selected)
     scores = np.empty(sum(item.calibration for item in counts), dtype=np.float64)
     labels = np.empty_like(scores)
+    validation_scores = np.empty(sum(item.validation for item in counts))
+    validation_labels = np.empty_like(validation_scores)
+    validation_dates: set[date] = set()
+    validation_position = training_rows = training_positive_rows = 0
     position = skipped = 0
 
     def report(state: TomorrowTrainingProgressState, detail: TrainingFitDetail | None = None) -> None:
@@ -82,6 +86,8 @@ def FitIndustryD25Probability(
                         training, request.parameters, request.compute_threads, check,
                         partial(report_epoch, industry, count.training, epochs),
                     )
+                    training_rows += len(training.labels)
+                    training_positive_rows += int(training.labels.sum())
         if model_result is None:
             skipped += 1
             report("running", TrainingFitDetail(
@@ -102,6 +108,18 @@ def FitIndustryD25Probability(
             position = end
         if calibrated_rows != count.calibration:
             raise ValueError("d25_probability_calibration_counts_changed")
+        # Freeze held-out raw predictions while this industry's native scorer is resident.
+        # Calibration below reads only the separate calibration partition.
+        start = validation_position
+        for batch in samples.iter_batches(industry, request.contract, "validation", d25_probability=True):
+            check()
+            end = validation_position + len(batch.labels)
+            validation_scores[validation_position:end] = logits(batch.features)
+            validation_labels[validation_position:end] = batch.labels
+            validation_dates.update(batch.trade_dates)
+            validation_position = end
+        if validation_position - start != count.validation:
+            raise ValueError("d25_probability_validation_counts_changed")
         models.append((industry, model))
         fitted_dates.update(dates)
         report("running", TrainingFitDetail(industry, count.training, "completed"))
@@ -120,10 +138,16 @@ def FitIndustryD25Probability(
         raise
     if progress is not None:
         progress(TomorrowTrainingProgress("model_calibration", "completed", 1, 1, strategy=Strategy.D25))
+    sample_rows, labeled_rows = samples.d25_validation_counts()
+    assessment = AssessD25Probabilities(
+        validation_scores[:validation_position], validation_labels[:validation_position], weights,
+        validation_dates=request.split.validation_dates, scored_dates=validation_dates, sample_rows=sample_rows,
+        labeled_rows=labeled_rows, training_rows=training_rows, training_positive_rows=training_positive_rows,
+    )
     return D25ProbabilityArtifact(
         request.profile, request.binding, request.contract.feature_manifest.names,
         tuple(sorted(fitted_dates)), tuple(sorted(calibration_dates)),
-        weights, tuple(models),
+        weights, tuple(models), assessment,
     )
 
 

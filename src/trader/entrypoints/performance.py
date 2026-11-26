@@ -167,6 +167,8 @@ def Run(
     )
     if len(selected) not in {1, 4}:
         raise ValueError("performance accepts one profile or the complete four-profile selection")
+    if scoring_candidate == "v1_event_rank_only" and "v1" not in selected:
+        raise ValueError("v1_event_rank_only requires a D25 V1 workload")
 
     def prepare() -> _PerformancePreparation:
         return _prepare_profiles(settings, selected, config_path, replay_rows=replay_rows)
@@ -371,9 +373,12 @@ def _continuous_report(
     factor_candidate: str = "baseline",
     scoring_candidate: str = "baseline",
 ) -> dict[str, object]:
+    from trader.training.infra.d25.artifact import BuildV1EventRankReplayCandidate
+
     workloads = tuple(
         PipelineReplayWorkload(
-            item,
+            replace(item, profile=BuildV1EventRankReplayCandidate(item.profile))
+            if scoring_candidate == "v1_event_rank_only" and item.profile.profile_id == "v1" else item,
             LoadStrategySettings(settings.strategy_config_path, scoring_profile=item.profile.profile_id),
         )
         for item in prepared.workloads

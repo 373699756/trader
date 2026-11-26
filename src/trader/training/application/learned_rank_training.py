@@ -13,6 +13,7 @@ from trader.training.application.tomorrow_training import (
 from trader.training.application.training_diagnostics import (
     BuildTrainingOperationIssue, NotifyTrainingCommit, TrainingIssueStage, TrainingOperationIssue,
 )
+from trader.training.domain.d25_assessment import D25ProbabilityReceipt
 from trader.training.domain.final_fit import FinalFitDatePlan
 from trader.training.domain.training_date_coverage import TrainingDateBasis, TrainingDateCoverage, TrainingDateCoverageMatches
 from trader.training.domain.v1.learned_rank import (
@@ -40,6 +41,7 @@ class V1TrainingResult:
     post_commit_issues: tuple[TrainingOperationIssue, ...] = ()
     date_coverage: tuple[TrainingDateCoverage, ...] = ()
     diagnostic: TrainingErrorDiagnostic | None = None
+    probability: D25ProbabilityReceipt | None = None
 
 
 @dataclass(frozen=True)
@@ -77,7 +79,7 @@ class LearnedRankInspectionPort(Protocol):
 
     def read_pair(self) -> LearnedRankFinalPair | None: ...
 
-    def validate_pair(self, pair: LearnedRankFinalPair) -> bool: ...
+    def validate_pair(self, pair: LearnedRankFinalPair) -> tuple[bool, D25ProbabilityReceipt | None]: ...
 
 
 class LearnedRankTrainingSessionPort(LearnedRankInspectionPort, Protocol):
@@ -88,7 +90,7 @@ class LearnedRankTrainingSessionPort(LearnedRankInspectionPort, Protocol):
 
     def date_upper_bounds(self, plan: LearnedRankTrainingPlan) -> tuple[TrainingDateCoverage, ...]: ...
 
-    def publish_pair(self, pair: LearnedRankFinalPair) -> None: ...
+    def publish_pair(self, pair: LearnedRankFinalPair) -> D25ProbabilityReceipt | None: ...
 
 
 class LearnedRankTrainingPort(Protocol):
@@ -104,11 +106,15 @@ def InspectLearnedRankTraining(session: LearnedRankInspectionPort) -> V1Training
         plan = BuildLearnedRankTrainingPlan(session.source, session.settings)
     except ValueError:
         return None
-    if not CanReuseLearnedRankPair(pair, plan) or not session.validate_pair(pair):
+    if not CanReuseLearnedRankPair(pair, plan):
+        return None
+    valid, probability = session.validate_pair(pair)
+    if not valid:
         return None
     session.check_cancelled()
     return V1TrainingResult(
         "engineering_ready", session.source.identity_hash, session.source.training_input_hash, 0, pair.heads, reused=True,
+        probability=probability,
     )
 
 
@@ -119,6 +125,7 @@ def TrainLearnedRank(operations: LearnedRankTrainingPort) -> V1TrainingResult:
     coverage: tuple[LearnedRankPartitionCoverage, ...] = ()
     date_coverage: tuple[TrainingDateCoverage, ...] = ()
     published_heads: tuple[LearnedRankFinalHead, ...] | None = None
+    probability = None
     post_commit_issues: list[TrainingOperationIssue] = []
     post_commit_stage: TrainingIssueStage = "scope_cleanup"
     try:
@@ -174,7 +181,7 @@ def TrainLearnedRank(operations: LearnedRankTrainingPort) -> V1TrainingResult:
                     price_snapshot_hash=source.snapshot_hash, industry_snapshot=source.industry_snapshot,
                 )
                 session.check_cancelled()
-                session.publish_pair(pair)
+                probability = session.publish_pair(pair)
                 published_heads = pair.heads
                 issue = NotifyTrainingCommit(session.progress)
                 if issue is not None:
@@ -186,7 +193,7 @@ def TrainLearnedRank(operations: LearnedRankTrainingPort) -> V1TrainingResult:
         return V1TrainingResult(
             "engineering_ready", run_id, input_hash, peak_bytes, published_heads, counts, coverage=coverage,
             post_commit_issues=tuple(post_commit_issues),
-            date_coverage=date_coverage,
+            date_coverage=date_coverage, probability=probability,
         )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         if published_heads is not None:
@@ -195,7 +202,7 @@ def TrainLearnedRank(operations: LearnedRankTrainingPort) -> V1TrainingResult:
                 post_commit_issues=(
                     *post_commit_issues, BuildTrainingOperationIssue(post_commit_stage, exc),
                 ),
-                date_coverage=date_coverage,
+                date_coverage=date_coverage, probability=probability,
             )
         if not isinstance(exc, LearnedRankTrainingOperationError):
             raise

@@ -9,9 +9,29 @@ from trader.training.application.profile_training import TrainingRunResult
 from trader.training.application.learned_rank_training import V1TrainingResult
 from trader.training.application.training_diagnostics import TrainingOperationIssue
 from trader.training.domain.training_date_coverage import TrainingDateCoverage
+from trader.training.domain.d25_assessment import D25ProbabilityAssessment
 from trader.download.domain.current_industry import CurrentIndustrySnapshot
 from trader.training.domain.training_input_identity import TRAINING_INDUSTRY_POLICY
 from trader.training.entrypoints.report_output import ProjectTrainingError
+
+
+def _probability_assessment(assessment: D25ProbabilityAssessment | None) -> dict[str, object] | None:
+    if assessment is None:
+        return None
+    return {
+        "scope": "daily_close_event_validation",
+        "validation_dates": [day.isoformat() for day in assessment.validation_dates],
+        "scored_dates": [day.isoformat() for day in assessment.scored_dates],
+        "sample_rows": assessment.sample_rows, "labeled_rows": assessment.labeled_rows,
+        "scored_rows": assessment.scored_rows, "positive_rows": assessment.positive_rows,
+        "pending_labels": assessment.sample_rows - assessment.labeled_rows,
+        "uncovered_labeled_rows": assessment.labeled_rows - assessment.scored_rows,
+        "labeled_row_coverage": assessment.scored_rows / assessment.labeled_rows if assessment.labeled_rows else None,
+        "training_rows": assessment.training_rows, "training_positive_rows": assessment.training_positive_rows,
+        "training_prevalence": assessment.training_positive_rows / assessment.training_rows,
+        "brier": assessment.brier, "baseline_brier": assessment.baseline_brier,
+        "unavailable_reason": assessment.unavailable_reason,
+    }
 
 
 def ProjectProfileTrainingResult(profile: ScoringProfileId, result: TrainingRunResult) -> dict[str, object]:
@@ -30,6 +50,9 @@ def ProjectProfileTrainingResult(profile: ScoringProfileId, result: TrainingRunR
                 "model_hash": head.model_hash,
                 "utility_model_published": head.utility_model_published,
                 "probability_model_hash": head.probability_model_hash,
+                "probability_assessment": _probability_assessment(head.probability_assessment),
+                "scoring_model_hash": ContentHash((head.model_hash, head.probability_model_hash))
+                if head.probability_model_hash and head.utility_model_published else None,
                 "probability_calibration_failed": head.probability_calibration_failed,
                 "report_hash": head.report_hash,
                 "training_rows": head.training_rows,
@@ -107,6 +130,15 @@ def ProjectLearnedRankTrainingResult(result: V1TrainingResult) -> dict[str, obje
                 "strategy": head.strategy.value,
                 "status": "engineering_ready",
                 "model_hash": head.content_hash,
+                "utility_model_published": True,
+                "probability_model_hash": result.probability.probability_hash
+                if result.probability and head.strategy.value == "d25" else None,
+                "scoring_model_hash": ContentHash((head.content_hash, result.probability.probability_hash))
+                if result.probability and head.strategy.value == "d25" else None,
+                "ranking_source": "d25_event_lambdarank_raw_percentile"
+                if result.probability and head.strategy.value == "d25" else None,
+                "probability_assessment": _probability_assessment(result.probability.assessment)
+                if result.probability and head.strategy.value == "d25" else None,
                 "report_hash": ContentHash(
                     (head.diagnostic.content_hash, head.split, head.validation, head.final_fit)
                 ),
@@ -125,6 +157,7 @@ def ProjectLearnedRankTrainingResult(result: V1TrainingResult) -> dict[str, obje
                 "diagnostic_validation_end": head.diagnostic.split.validation[-1].isoformat(),
                 "diagnostic_maturity_sessions": head.diagnostic.split.maturity_sessions,
                 "evaluation_model_role": "pre_refit_diagnostic",
+                "rank_metric_source": "pre_refit_return_lambdarank",
                 "diagnostic_model_hash": head.diagnostic.content_hash,
                 "calibration_transfer": True,
                 "final_model_unseen_validation_passed": False,

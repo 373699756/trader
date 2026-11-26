@@ -32,7 +32,7 @@ def test_all_profile_strategy_registrations_round_trip_without_changing_hash(
     assert all(type(parameter.value) is float for parameter in decoded.parameters)
     assert decoded.candidate_components[0].role == "target_probability"
     if profile_id == "v1" and strategy == "d25":
-        assert tuple((item.role, item.family) for item in decoded.candidate_components[1:]) == (("ranker", "lambdarank"), ("utility", "ridge"))
+        assert tuple((item.role, item.family) for item in decoded.candidate_components) == (("target_probability", "lambdarank"), ("utility", "ridge"))
     if profile_id == "v3":
         assert decoded.candidate_components[0].family == "logistic"
     if profile_id == "v5":
