@@ -56,6 +56,10 @@ def IsTransientCompanyFailure(exc: BaseException) -> bool:
     return IsTransientCompanyDocumentFailure(CompanyFailureCode(exc))
 
 
+def IsRetryableCompanySourceFailure(failure: str | None) -> bool:
+    return failure is not None and failure != "access_denied" and IsTransientCompanyDocumentFailure(failure)
+
+
 def IsCompanyTransportFailure(exc: BaseException) -> bool:
     failure = CompanyFailureCode(exc)
     return failure in {"timeout", "HttpConnectionError", "HttpError"} or failure.startswith("http_")

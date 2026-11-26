@@ -82,9 +82,9 @@ class CompanySyncConfiguration:
     publication_interval_seconds: float
     text_task_reserve_bytes: int
     ocr_task_reserve_bytes: int
-    round_request_limit: int
-    round_step_limit: int
-    round_timeout_seconds: float
+    round_request_limit: int | None
+    round_step_limit: int | None
+    round_timeout_seconds: float | None
 
     def __post_init__(self) -> None:
         values = (
@@ -97,7 +97,6 @@ class CompanySyncConfiguration:
             self.document_ocr_timeout_seconds,
             self.document_ocr_page_timeout_seconds,
             self.publication_interval_seconds,
-            self.round_timeout_seconds,
         )
         if (
             not 1 <= self.directory_batch_pages <= 100
@@ -126,9 +125,9 @@ class CompanySyncConfiguration:
         ):
             raise ValueError("company_batch_configuration_invalid")
         if (
-            type(self.round_request_limit) is not int or not 0 <= self.round_request_limit <= 2048
-            or type(self.round_step_limit) is not int or not 1 <= self.round_step_limit <= 4096
-            or type(self.round_timeout_seconds) not in {int, float} or not 1 <= self.round_timeout_seconds <= 28_800
+            (self.round_request_limit is not None and (type(self.round_request_limit) is not int or not 0 <= self.round_request_limit <= 2048))
+            or (self.round_step_limit is not None and (type(self.round_step_limit) is not int or not 1 <= self.round_step_limit <= 4096))
+            or (self.round_timeout_seconds is not None and (type(self.round_timeout_seconds) not in {int, float} or not 1 <= self.round_timeout_seconds <= 28_800))
         ):
             raise ValueError("company_round_configuration_invalid")
         if (
@@ -806,6 +805,7 @@ _TRANSIENT_FAILURES = frozenset(
         "HttpConnectionError",
         "HttpError",
         "http_transport_failed",
+        "http_transport_error",
         "http_compressed_body_invalid",
         "http_408",
         "http_500",

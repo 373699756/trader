@@ -28,7 +28,7 @@ from trader.download.entrypoints.company_evidence_progress import CompanyEvidenc
 from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.entrypoints.cli import Main
 from trader.download.domain.company_sync import (
-    CompanyDownloadOperation, CompanyStructuredDownloadProgress, CompanySyncFamily, CompanySyncFamilyResult, CompanySyncStepResult,
+    CompanyDisclosureDownloadProgress, CompanyDownloadOperation, CompanyStructuredDownloadProgress, CompanySyncFamily, CompanySyncFamilyResult, CompanySyncStepResult,
 )
 from trader.download.domain.company_source_records import CompanyFinancialBatchCoverage
 from tests.helpers.download.company_round import CompanySyncFamilyFixture, CompanySyncRoundFixture
@@ -315,28 +315,34 @@ def test_company_step_heartbeat_repeats_only_progress_and_stops_with_owner(failu
     assert len(messages) == count
 
 
-def test_company_heartbeat_shows_live_page_and_keeps_source_counts_separate_from_the_ledger():
+@pytest.mark.parametrize(("limit", "starting", "expected"), ((20, 4, "5/20次"), (None, 512, "513次（不限次数）")))
+def test_company_heartbeat_shows_live_page_and_keeps_source_counts_separate_from_the_ledger(limit, starting, expected):
     messages = []
     clock = [0.0]
     progress = SyncProgress(messages.append, lambda: clock[0])
     report = CompanyRoundProgress(progress, lambda: clock[0])
     report.start(4)
     round_id = "a" * 64
-    report.observe_requests(CompanyRequestProgress(round_id, 20, 4, 0))
+    report.observe_requests(CompanyRequestProgress(round_id, limit, starting, 0))
     family = CompanySyncFamily.FINANCIAL
     report.download(CompanyStructuredDownloadProgress(family, 2, 4, 1_000, 2_000), (round_id, family, 2))
+    partition = DisclosurePartition("sse", _ROUND_AT.date(), _ROUND_AT.date())
+    report.download(CompanyDisclosureDownloadProgress(partition, "accepted", 30, 100), None)
+    report.download(CompanyDisclosureDownloadProgress(partition, "recovered", 30, 100), None)
+    report.download(CompanyDisclosureDownloadProgress(partition, "reconciled", 100, 100), None)
     with report.activity(family):
         clock[0] = 1
         day = _ROUND_AT.date()
         report.download(CompanyDownloadOperation(family, "structured_page", StructuredCompanyQuery("financial", day, day, page=3)),
             (round_id, family, 3))
-        report.observe_requests(CompanyRequestProgress(round_id, 20, 5, 1))
+        report.observe_requests(CompanyRequestProgress(round_id, limit, starting + 1, 1))
         clock[0] = 6
         progress.heartbeat()
     heartbeat = " | ".join(field.text for field in messages[-1].fields)
     assert "第3页 已用 00:00:05" in heartbeat and "东财财务 2/4（50.00%）页" in heartbeat
     assert "距最近入库 00:00:06" in heartbeat and "本次新增1次" in heartbeat
-    assert "轮次累计5/20次" in heartbeat and "未确认1次" in heartbeat
+    assert f"轮次累计{expected}" in heartbeat and "未确认1次" in heartbeat
+    assert "本次目录新入库1页，平均10.00页/分" in heartbeat
 
 
 def test_company_finishes_with_measured_execution_and_pinned_field_counts():

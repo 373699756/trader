@@ -180,6 +180,23 @@ def test_unknown_response_acceptance_never_repeats_source_but_later_local_famili
         journal.finish_refresh(result.round_id)
 
 
+def test_unlimited_resume_finishes_old_budget_paused_page_without_reissuing_requests(tmp_path):
+    journal, producers, budget, physical, _, transport = _resources(tmp_path, maximum=1)
+    with transport:
+        limited = RunCompanySyncRound(journal, producers, _SCOPE, budget,
+            monotonic=lambda: 0, cancel_requested=lambda: False)
+    assert limited.pause_reason == "request_limit" and physical == ["https://example.test/1"]
+    journal, producers, _, physical, _, transport = _resources(tmp_path)
+    unlimited = CompanySyncBudget(None, None, None, float("inf"))
+    with transport:
+        completed = RunCompanySyncRound(journal, producers, _SCOPE, unlimited,
+            monotonic=lambda: 86400, cancel_requested=lambda: False)
+    stored = journal.active()
+    assert stored is not None and stored.max_source_calls is None and stored.source_calls == 2
+    assert completed.round_id == limited.round_id and completed.business_complete
+    assert physical == ["https://example.test/2"] and completed.pause_reason is None
+
+
 def test_fixed_source_budget_exhaustion_still_runs_local_fields_and_does_not_refill_on_resume(tmp_path):
     journal, producers, budget, physical, calls, transport = _resources(tmp_path, maximum=1)
     with transport:
@@ -511,6 +528,98 @@ def test_known_source_rejection_does_not_skip_later_local_fields(tmp_path, failu
         result = RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: False)
     assert result.processing_complete and not result.business_complete and "fields" in calls
     assert result.families[0].result.failure and not physical
+
+
+@pytest.mark.parametrize("outcome", ("recovered", "repeated", "cancelled", "unobserved"))
+def test_transport_retry_yields_to_local_work_and_only_retries_acknowledged_requests(tmp_path, outcome):
+    from trader.download.domain.company_evidence import CompanySourceFailure
+    from trader.download.infra.company_http import CompanySourceOperation
+    from trader.infra.http_contracts import HttpConnectionError
+
+    journal, producers, _, physical, calls, transport = _resources(tmp_path)
+    clock = [0.0]
+    def send(request):
+        physical.append(request.url)
+        if len(physical) == 1 or outcome == "repeated" and len(physical) <= 5 or outcome == "cancelled":
+            raise HttpConnectionError("http_transport_failed")
+        return HttpResponse(200, b"ok")
+    transport._execute_request = send
+    financial = producers[0]
+    advance = financial.advance
+    @CompanySourceOperation
+    def fetch(scope, **kwargs):
+        if outcome == "unobserved":
+            journal.authorize_request(HttpRequest("GET", "https://example.test/pending", 1))
+            raise CompanySourceFailure("timeout")
+        return advance(scope, **kwargs)
+    financial.advance = fetch
+
+    def sleep(seconds):
+        assert "fields" in calls and 0 < seconds <= 0.5
+        clock[0] += seconds
+    with transport:
+        result = RunCompanySyncRound(journal, producers, _SCOPE, CompanySyncBudget(None, None, None, float("inf")),
+            monotonic=lambda: clock[0], cancel_requested=lambda: outcome == "cancelled" and clock[0] > 0,
+            sleeper=sleep, transient_retry_seconds=5)
+    family = result.families[0]
+    if outcome == "recovered":
+        assert result.business_complete and family.result.failure is None and not family.result.gaps
+        assert len(physical) == family.source_calls == 3 and clock[0] == 5
+    elif outcome == "repeated":
+        assert result.business_complete and family.result.failure is None
+        assert len(physical) == family.source_calls == 7 and clock[0] == 25
+    elif outcome == "cancelled":
+        assert result.cancelled and len(physical) == 1 and clock[0] == 0.5
+    else:
+        assert family.result.failure == "source_attempt_unconfirmed" and not family.result.can_continue
+        assert family.unknown_attempts == 1 and physical == [] and clock[0] == 0
+
+
+@pytest.mark.parametrize(("status", "retry"), ((403, False), (404, False), (408, True), (429, True), (503, True)))
+def test_actual_http_status_controls_cooldown_and_only_same_cursor_clears_its_failure(tmp_path, status, retry):
+    from trader.download.infra.company_http import CheckCompanyResponse
+    journal, producers, _, physical, _, transport = _resources(tmp_path)
+    producer = producers[0]
+    original = producer.advance
+    clock = [0.0]
+    def fetch(scope, **kwargs):
+        if not physical:
+            response = transport.get("https://example.test/rejected", timeout=1)
+            CheckCompanyResponse(response)
+        return original(scope, **kwargs)
+    def send(request):
+        physical.append(request.url)
+        return HttpResponse(status if len(physical) == 1 else 200, b"response")
+    def sleep(delay):
+        clock[0] += delay
+    producer.advance = fetch
+    transport._execute_request = send
+    with transport:
+        result = RunCompanySyncRound(journal, producers, _SCOPE, CompanySyncBudget(None, None, None, float("inf")),
+            monotonic=lambda: clock[0], cancel_requested=lambda: False, sleeper=sleep, transient_retry_seconds=5)
+    family = result.families[0]
+    assert result.business_complete is retry and (family.result.failure is None) is retry
+    assert len(physical) == (3 if retry else 1) and clock[0] == (5 if retry else 0)
+
+
+def test_observed_old_transport_rejection_reopens_but_remains_distinct_from_an_unknown_attempt(tmp_path):
+    journal, producers, budget, physical, _, transport = _resources(tmp_path)
+    round_id = journal.begin(_SCOPE, tuple(item.plan for item in producers), max_source_calls=budget.max_source_calls)
+    for producer in producers:
+        family = producer.plan.family
+        journal.start(round_id, family, producer.state(_SCOPE))
+        if family is CompanySyncFamily.FINANCIAL:
+            with transport:
+                transport.get("https://example.test/prior", timeout=1)
+            journal.finish(round_id, family, CompanySyncStepResult(False, False, failure="http_transport_error", gaps=("supplier_input_rejected",)))
+        else:
+            journal.finish(round_id, family, CompanySyncStepResult(True, False, pending_count=0))
+    assert not journal.can_refresh(round_id)
+    restarted, producers, budget, current_calls, _, transport = _resources(tmp_path)
+    with transport:
+        result = RunCompanySyncRound(restarted, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: False)
+    assert result.business_complete and restarted.can_refresh(round_id)
+    assert physical == ["https://example.test/prior"] and current_calls == ["https://example.test/1", "https://example.test/2"]
 
 
 def test_new_local_rules_and_input_watermark_reopen_only_fields_and_clear_resolved_gap(tmp_path):

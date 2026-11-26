@@ -12,8 +12,9 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from trader.download.application.company_round_progress import CompanyRequestProgress
+from trader.download.application.company_failures import IsRetryableCompanySourceFailure
 from trader.download.application.company_sync import CompanyDirectoryResponseReceipt
-from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDownloadStore
+from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDownloadStore, IsTransientCompanyDocumentFailure
 from trader.download.infra.company_disclosure_source import CNINFO_DIRECTORY_URL
 from trader.download.infra.company_sync_io import CompanySyncIoBudget
 from trader.download.domain.company_sync import CompanySyncRoundIdentity
@@ -34,7 +35,14 @@ from trader.infra.sqlite_policy import SqliteIoPolicy
 
 _DIRECTORY_HOST = urlsplit(CNINFO_DIRECTORY_URL).hostname
 _DIRECTORY_RESPONSE_LIMIT = 16 * 1024 * 1024
+# The journal uses a NOT NULL integer. Zero reserves a deliberately offline
+# run, so use a distinct value for a run with no request ceiling.
+_UNLIMITED_REQUESTS = -1
 _DIRECTORY_RECOVERY_GAP_PREFIX = "directory_response_recovered:"
+
+
+def _can_retry_rejection(processed: int, failure: str | None, gaps: tuple[str, ...]) -> bool:
+    return not processed and IsRetryableCompanySourceFailure(failure) and "supplier_input_rejected" in gaps
 
 
 _SCHEMA = SqliteSchema((
@@ -134,10 +142,11 @@ class SQLiteCompanySyncRoundJournal:
             plans = tuple(CompanySyncPhasePlan(_phase_family(item[0]), item[1], _strings(item[2]), bool(item[3])) for item in connection.run(
                 "SELECT family,request_hash,gaps,refresh_on_input_change FROM company_sync_plan WHERE round_id=? ORDER BY position", (row[0],),
             ))
-            return CompanySyncResume(row[0], CompanySyncRoundScope(codes, datetime.fromisoformat(row[1]), tuple(plan.family for plan in plans)), plans, row[2], _source_calls(connection, row[0]))
+            limit = None if row[2] == _UNLIMITED_REQUESTS else row[2]
+            return CompanySyncResume(row[0], CompanySyncRoundScope(codes, datetime.fromisoformat(row[1]), tuple(plan.family for plan in plans)), plans, limit, _source_calls(connection, row[0]))
 
-    def begin(self, scope: CompanySyncRoundScope, plans: tuple[CompanySyncPhasePlan, ...], *, max_source_calls: int) -> str:
-        if type(max_source_calls) is not int or not 0 <= max_source_calls <= 2048:
+    def begin(self, scope: CompanySyncRoundScope, plans: tuple[CompanySyncPhasePlan, ...], *, max_source_calls: int | None) -> str:
+        if max_source_calls is not None and (type(max_source_calls) is not int or not 0 <= max_source_calls <= 2048):
             raise ValueError("company_sync_source_budget_invalid")
         round_id = CompanySyncRoundIdentity(scope, plans)
         progress = self._latest_request_progress
@@ -145,8 +154,9 @@ class SQLiteCompanySyncRoundJournal:
             self._session(self.path, sqlite_policy=self._sqlite_policy) as connection,
             SqliteTransaction(connection, immediate=True) as transaction,
         ):
-            self._begin(connection, round_id, scope, plans, max_source_calls)
-            if self._observe_requests is not None and (progress is None or progress.round_id != round_id):
+            limit = _UNLIMITED_REQUESTS if max_source_calls is None else max_source_calls
+            self._begin(connection, round_id, scope, plans, limit)
+            if self._observe_requests is not None and (progress is None or progress.round_id != round_id or progress.limit != max_source_calls):
                 progress = _read_request_progress(connection, round_id)
             transaction.commit()
             self._report_requests(progress)
@@ -162,8 +172,10 @@ class SQLiteCompanySyncRoundJournal:
     ) -> None:
         current = connection.run("SELECT round_id,max_source_calls FROM company_sync_round WHERE active=1").fetchone()
         if current is not None:
-            if (current[0], current[1]) != (round_id, limit):
+            if current[0] != round_id or (current[1] != limit and limit != _UNLIMITED_REQUESTS):
                 raise ValueError("company_sync_active_scope_must_resume")
+            if current[1] != limit:
+                connection.run("UPDATE company_sync_round SET max_source_calls=? WHERE round_id=?", (limit, round_id))
             for plan in plans:
                 if plan.refresh_on_input_change:
                     connection.run("INSERT OR IGNORE INTO company_sync_local_plan VALUES(?,?,?,?)",
@@ -188,8 +200,8 @@ class SQLiteCompanySyncRoundJournal:
         with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
             plans = tuple(row[0] for row in connection.run("SELECT family FROM company_sync_plan WHERE round_id=?", (round_id,)))
             for family in plans:
-                row = connection.run("SELECT complete,can_continue,failure FROM company_sync_step WHERE round_id=? AND family=? ORDER BY step DESC LIMIT 1", (round_id, family)).fetchone()
-                if row is None or not row[0] or row[1] or row[2] == "source_attempt_unconfirmed":
+                row = connection.run("SELECT complete,can_continue,failure,processed,gaps FROM company_sync_step WHERE round_id=? AND family=? ORDER BY step DESC LIMIT 1", (round_id, family)).fetchone()
+                if row is None or not row[0] or row[1] or row[2] == "source_attempt_unconfirmed" or _can_retry_rejection(row[3], row[2], _strings(row[4])):
                     raise ValueError("company_sync_refresh_requires_terminal_scope")
             if connection.run("SELECT 1 FROM company_sync_request WHERE round_id=? AND observed=0 LIMIT 1", (round_id,)).fetchone() is not None:
                 raise ValueError("company_sync_refresh_has_unknown_request")
@@ -198,8 +210,8 @@ class SQLiteCompanySyncRoundJournal:
     def can_refresh(self, round_id: str) -> bool:
         with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection):
             for row in connection.run("SELECT family FROM company_sync_plan WHERE round_id=?", (round_id,)):
-                step = connection.run("SELECT complete,can_continue,failure FROM company_sync_step WHERE round_id=? AND family=? ORDER BY step DESC LIMIT 1", (round_id, row[0])).fetchone()
-                if step is None or not step[0] or step[1] or step[2] == "source_attempt_unconfirmed":
+                step = connection.run("SELECT complete,can_continue,failure,processed,gaps FROM company_sync_step WHERE round_id=? AND family=? ORDER BY step DESC LIMIT 1", (round_id, row[0])).fetchone()
+                if step is None or not step[0] or step[1] or step[2] == "source_attempt_unconfirmed" or _can_retry_rejection(step[3], step[2], _strings(step[4])):
                     return False
             return connection.run("SELECT 1 FROM company_sync_request WHERE round_id=? AND observed=0 LIMIT 1", (round_id,)).fetchone() is None
 
@@ -253,27 +265,36 @@ class SQLiteCompanySyncRoundJournal:
                 FROM company_sync_request WHERE round_id=? AND family=?
                 """, (row[0], round_id, family.value)).require_one()
             history = tuple(connection.run(
-                "SELECT step,changed_codes,gaps,failure FROM company_sync_step "
+                "SELECT step,changed_codes,gaps,failure,state_hash FROM company_sync_step "
                 "WHERE round_id=? AND family=? AND complete=1 AND deferred=0 ORDER BY step",
                 (round_id, family.value),
             ))
             changed_codes = tuple(sorted({code for item in history for code in _strings(item[1])}))
-            refresh = connection.run("SELECT refresh_on_input_change FROM company_sync_plan WHERE round_id=? AND family=?", (round_id, family.value)).require_one()[0]
+            refresh, plan_gaps = connection.run("SELECT refresh_on_input_change,gaps FROM company_sync_plan WHERE round_id=? AND family=?", (round_id, family.value)).require_one()
             latest_gaps = _strings(row[5])
             failure = row[7]
+            retry_rejected = not unknown and _can_retry_rejection(row[1], failure, latest_gaps)
             if refresh:
                 gaps = latest_gaps
             else:
-                history_results = tuple((item[0], _strings(item[2]), item[3]) for item in history)
+                baseline = frozenset(_strings(plan_gaps))
+                history_results = tuple((item[0], _strings(item[2]), item[3], item[4]) for item in history)
+                confirmed = {state_hash: step for step, item_gaps, error, state_hash in history_results
+                    if error is None and baseline.issuperset(item_gaps)}
                 recovered_steps = {
                     int(gap[len(_DIRECTORY_RECOVERY_GAP_PREFIX):])
-                    for _, item_gaps, _ in history_results for gap in item_gaps if gap.startswith(_DIRECTORY_RECOVERY_GAP_PREFIX)
+                    for _, item_gaps, _, _ in history_results for gap in item_gaps if gap.startswith(_DIRECTORY_RECOVERY_GAP_PREFIX)
                 } if family is CompanySyncFamily.ANNOUNCEMENTS else set()
-                effective_history = tuple((item_gaps, error) for step, item_gaps, error in history_results if step not in recovered_steps)
+                effective_history = tuple((item_gaps, error) for step, item_gaps, error, state_hash in history_results
+                    if step not in recovered_steps and not (confirmed.get(state_hash, 0) > step and (
+                        "announcement_document_failed" in item_gaps or "required_original_recovery_failed" in item_gaps
+                        or error is not None and IsTransientCompanyDocumentFailure(error))))
                 all_gaps = set(latest_gaps) | {gap for item_gaps, _ in effective_history for gap in item_gaps}
+                if "source_budget_exhausted" not in latest_gaps:
+                    all_gaps.discard("source_budget_exhausted")
                 gaps = tuple(sorted(gap for gap in all_gaps if not gap.startswith(_DIRECTORY_RECOVERY_GAP_PREFIX)))
                 failure = next((error for _, error in effective_history if error is not None), failure)
-            result = CompanySyncStepResult(bool(row[1]), bool(row[2]), row[3], step_calls, changed_codes, gaps, row[6], failure, bool(row[8]))
+            result = CompanySyncStepResult(bool(row[1]), bool(row[2]) or retry_rejected, row[3], step_calls, changed_codes, gaps, row[6], failure, bool(row[8]))
             return CompanySyncFamilyResult(family, row[0], accepted, calls, result, unknown)
 
     def outstanding(self, round_id: str, family: CompanySyncFamily) -> CompanySyncPhaseState | None:
@@ -343,7 +364,7 @@ class SQLiteCompanySyncRoundJournal:
                 raise ValueError("company_sync_request_outside_source_step")
             maximum = connection.run("SELECT max_source_calls FROM company_sync_round WHERE round_id=? AND active=1", (round_id,)).require_one()[0]
             used = _source_calls(connection, round_id)
-            if used >= maximum:
+            if maximum != _UNLIMITED_REQUESTS and used >= maximum:
                 raise CompanySyncSourceBudgetExceeded("company_sync_source_budget_exhausted")
             request_hash = _request_hash(request.method, request.url, request.body)
             host = urlsplit(request.url).hostname or ""
@@ -540,7 +561,7 @@ def _read_request_progress(connection: SqliteConnection, round_id: str) -> Compa
         FROM company_sync_round rounds LEFT JOIN company_sync_request requests USING(round_id)
         WHERE rounds.round_id=? GROUP BY rounds.round_id,rounds.max_source_calls
         """, (round_id,)).require_one()
-    return CompanyRequestProgress(round_id, limit, used, unknown)
+    return CompanyRequestProgress(round_id, None if limit == _UNLIMITED_REQUESTS else limit, used, unknown)
 
 
 def _source_calls(connection: SqliteConnection, round_id: str) -> int:

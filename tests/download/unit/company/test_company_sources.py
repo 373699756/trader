@@ -489,7 +489,7 @@ def test_request_endpoint_descriptors_match_real_routes_without_requests_or_dyna
     cninfo = CninfoMarketDisclosureSource(session, monotonic=lambda: 0, sleeper=lambda value: None)
     assert eastmoney.request_endpoint("financial") == "https://datacenter.eastmoney.com/securities/api/data/get"
     assert eastmoney.request_endpoint("pledge") == eastmoney.request_endpoint("unlock") == "https://datacenter-web.eastmoney.com/api/data/v1/get"
-    assert eastmoney.request_endpoint("news") == "https://search-api-web.eastmoney.com/search/jsonp"
+    assert eastmoney.request_endpoint("news") == ""
     assert eastmoney.request_endpoint("annual_income") == "Eastmoney.F10.NewFinanceAnalysis.interface_family"
     assert cninfo.request_endpoint("directory") == "https://www.cninfo.com.cn/new/hisAnnouncement/query"
     assert cninfo.request_endpoint("download") == "https://static.cninfo.com.cn/finalpage/"
@@ -498,5 +498,5 @@ def test_request_endpoint_descriptors_match_real_routes_without_requests_or_dyna
     assert eastmoney.request_endpoint("unknown") == cninfo.request_endpoint("unknown") == ""
     assert session.requests == []
     assert all(token not in endpoint for endpoint in (
-        eastmoney.request_endpoint("news"), cninfo.request_endpoint("download"),
+        eastmoney.request_endpoint("financial"), cninfo.request_endpoint("download"),
     ) for token in ("?", "#", "@", "600001", "private"))

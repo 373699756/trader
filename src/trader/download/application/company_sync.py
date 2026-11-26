@@ -22,7 +22,7 @@ from trader.download.domain.company_sync import (
 )
 from trader.download.domain.company_evidence import CompanyInputValidationFailure, CompanySourceFailure
 from trader.download.domain.download_failure import DownloadValidationFailure
-from trader.download.application.company_failures import CompanyFailureCode
+from trader.download.application.company_failures import CompanyFailureCode, IsRetryableCompanySourceFailure
 
 
 _RECOMMENDATION_FAMILIES = frozenset({
@@ -59,7 +59,7 @@ class CompanySyncProducer(Protocol):
 
 
 class CompanySyncRoundJournal(Protocol):
-    def begin(self,scope:CompanySyncRoundScope,plans:tuple[CompanySyncPhasePlan,...],*,max_source_calls:int)->str: ...
+    def begin(self,scope:CompanySyncRoundScope,plans:tuple[CompanySyncPhasePlan,...],*,max_source_calls:int | None)->str: ...
     def source_calls(self,round_id:str)->int: ...
     def family(self,round_id:str,family:CompanySyncFamily)->CompanySyncFamilyResult|None: ...
     def outstanding(self,round_id:str,family:CompanySyncFamily)->CompanySyncPhaseState|None: ...
@@ -80,6 +80,7 @@ class _FamilyProgress:
     steps: int = 0
     result: CompanySyncFamilyResult | None = None
     deferred: bool = False
+    retry_at: float | None = None
 
 
 def RunCompanySyncRound(
@@ -95,6 +96,8 @@ def RunCompanySyncRound(
     recover_directory: CompanyDirectoryRecovery | None = None,
     source_ready: Callable[[], bool] | None = None,
     after_resume: Callable[[CompanySyncRoundScope], None] | None = None,
+    sleeper: Callable[[float], None] | None = None,
+    transient_retry_seconds: float | None = None,
 )->CompanySyncRoundResult:
     """Run bounded steps, retain accepted work and never reissue an unconfirmed request.
 
@@ -134,13 +137,17 @@ def RunCompanySyncRound(
             recommendation = family in _RECOMMENDATION_FAMILIES
             if not recommendation and recommendation_advanced:
                 continue
-            if item.deferred or item.steps>=budget.steps_per_family:
+            if item.deferred or (budget.steps_per_family is not None and item.steps >= budget.steps_per_family):
                 continue
             cancelled = cancel_requested()
             if cancelled or monotonic()>=budget.deadline:
                 pause_reason = None if cancelled else "deadline"
                 stopped=True
                 break
+            if item.retry_at is not None:
+                if monotonic() < item.retry_at:
+                    continue
+                item.retry_at = None
             current=journal.family(round_id,family)
             if current is not None:
                 item.result=current
@@ -151,10 +158,12 @@ def RunCompanySyncRound(
                 state = producer.state(scope)
                 refresh = completed != state
             if current is not None and not current.result.can_continue and not refresh and family is not pending_family:
-                if "source_budget_exhausted" in current.result.gaps:
+                if "source_budget_exhausted" not in current.result.gaps:
+                    continue
+                if budget.max_source_calls is not None:
                     pause_reason = "request_limit"
-                continue
-            if steps>=budget.max_steps:
+                    continue
+            if budget.max_steps is not None and steps >= budget.max_steps:
                 pause_reason = "step_limit"
                 stopped=True
                 break
@@ -168,7 +177,8 @@ def RunCompanySyncRound(
                     result=_unconfirmed_source_result(journal,round_id,family,outstanding,state) or CompanySyncStepResult(
                         False,True,accepted_inputs=None,gaps=("accepted_input_count_unconfirmed",))
             else:
-                source_budget_exhausted = state.source_required and journal.source_calls(round_id) >= budget.max_source_calls
+                source_budget_exhausted = (state.source_required and budget.max_source_calls is not None
+                    and journal.source_calls(round_id) >= budget.max_source_calls)
                 if outstanding is None and state.source_required and not source_budget_exhausted and source_ready is not None and not source_ready():
                     if pause_reason is None:
                         pause_reason = "source_window"
@@ -181,7 +191,10 @@ def RunCompanySyncRound(
                 else:
                     try:
                         with activity(family) if activity is not None else nullcontext():
-                            result=_invoke_step(producer,scope,budget,monotonic,cancel_requested)
+                            result=_invoke_step(producer,scope,budget,monotonic,cancel_requested,
+                                transient_retry_seconds=transient_retry_seconds)
+                            if IsRetryableCompanySourceFailure(result.failure) and journal.outstanding_has_unobserved_request(round_id,family):
+                                result = CompanySyncStepResult(False, False, gaps=("source_attempt_unconfirmed",), failure="source_attempt_unconfirmed")
                     except CompanySyncInterrupted:
                         item.result=_interrupted_family(item.result,producer.plan,state.source_required)
                         pause_reason = None if cancel_requested() else "deadline"
@@ -189,6 +202,10 @@ def RunCompanySyncRound(
                         break
                 if "source_budget_exhausted" in result.gaps:
                     pause_reason = "request_limit"
+            if (result.deferred and result.retry_after_seconds is not None and state.source_required
+                and budget.max_source_calls is not None and journal.source_calls(round_id) >= budget.max_source_calls):
+                result = replace(result, retry_after_seconds=None)
+                pause_reason = "request_limit"
             steps+=1
             item.steps+=1
             advanced=True
@@ -201,16 +218,29 @@ def RunCompanySyncRound(
             if current is not None:
                 item.result=current
                 if observe is not None:
-                    observe(current)
+                    observe(current if result.retry_after_seconds is None else replace(current,
+                        result=replace(current.result, retry_after_seconds=result.retry_after_seconds)))
             if finished_resume and after_resume is not None and not cancel_requested() and monotonic() < budget.deadline:
                 after_resume(scope)
             if result.deferred and not reconciled:
-                item.deferred=True
+                if sleeper is not None and result.retry_after_seconds is not None:
+                    item.retry_at = monotonic() + result.retry_after_seconds
+                else:
+                    item.deferred=True
             if cancel_requested():
                 stopped=True
                 break
         if not advanced:
-            break
+            waits = [item.retry_at for item in progress if item.retry_at is not None
+                and (budget.steps_per_family is None or item.steps < budget.steps_per_family)]
+            if stopped or not waits or sleeper is None:
+                break
+            if budget.max_steps is not None and steps >= budget.max_steps:
+                pause_reason = "step_limit"
+                break
+            wake_at = min(min(waits), budget.deadline)
+            while (remaining := wake_at - monotonic()) > 0 and not cancel_requested():
+                sleeper(min(remaining, 0.5))
         pass_progress = progress
     # Do not open another database after cancellation to manufacture a final
     # inventory or publication count. The last acknowledged head stays explicit.
@@ -298,7 +328,8 @@ def _interrupted_family(
 
 
 def _invoke_step(producer:CompanySyncProducer,scope:CompanySyncRoundScope,budget:CompanySyncBudget,
-    monotonic:Callable[[],float],cancel_requested:Callable[[],bool])->CompanySyncStepResult:
+    monotonic:Callable[[],float],cancel_requested:Callable[[],bool], *,
+    transient_retry_seconds: float | None = None)->CompanySyncStepResult:
     try:
         return producer.advance(scope,cancel_requested=cancel_requested,deadline=budget.deadline)
     except CompanySyncSourceBudgetExceeded:
@@ -312,7 +343,13 @@ def _invoke_step(producer:CompanySyncProducer,scope:CompanySyncRoundScope,budget
         if not cancel_requested() and monotonic()<budget.deadline:
             raise
         raise CompanySyncInterrupted("company_sync_source_interrupted") from exc
-    except (CompanyInputValidationFailure,CompanySourceFailure,DownloadValidationFailure) as exc:
+    except CompanySourceFailure as exc:
+        code = CompanyFailureCode(exc)
+        if IsRetryableCompanySourceFailure(code):
+            return CompanySyncStepResult(False, True, deferred=True, failure=code, gaps=("source_retry_pending",),
+                retry_after_seconds=transient_retry_seconds)
+        return CompanySyncStepResult(False,False,failure=code,gaps=("supplier_input_rejected",))
+    except (CompanyInputValidationFailure,DownloadValidationFailure) as exc:
         return CompanySyncStepResult(False,False,failure=CompanyFailureCode(exc),gaps=("supplier_input_rejected",))
 
 

@@ -82,6 +82,7 @@ class CompanySyncRuntime:
         observe_financial_scoring: Callable[[CompanySyncRoundScope], None] | None = None,
         activity: Callable[[CompanySyncFamily], AbstractContextManager[None]] | None = None,
         source_ready: Callable[[], bool] | None = None,
+        sleeper: Callable[[float], None] | None = None,
         financial_revision_proofs: tuple[CompanyFinancialRevisionProof, ...] = (),
     ) -> None:
         paths = (material.path, facts.path, journal.path)
@@ -103,6 +104,7 @@ class CompanySyncRuntime:
         self._observe_financial_scoring = observe_financial_scoring
         self._activity = activity
         self._source_ready = source_ready
+        self._sleeper = sleeper
         self._financial_revision_proofs = financial_revision_proofs
         self._execution_scope: CompanySyncRoundScope | None = None
         self._execution_round_id = ""
@@ -205,13 +207,13 @@ class CompanySyncRuntime:
         requested_scope = CompanySyncRoundScope(codes, cutoff)
         active = self.journal.active()
         current_codes = frozenset(codes)
-        exhausted_same_day = active is not None and cutoff.astimezone(active.scope.cutoff.tzinfo).date() == active.scope.cutoff.date() and (
-            self.journal.source_calls(active.round_id) >= active.max_source_calls
-        )
+        exhausted = active is not None and active.max_source_calls is not None and active.source_calls >= active.max_source_calls
+        resume_exhausted = active is not None and exhausted and (
+            budget.max_source_calls is None or cutoff.astimezone(active.scope.cutoff.tzinfo).date() == active.scope.cutoff.date())
         if active is not None and new_refresh and (codes != active.scope.codes or cutoff != active.scope.cutoff) and self.journal.can_refresh(active.round_id):
             if cutoff < active.scope.cutoff:
                 raise ValueError("company_sync_refresh_cutoff_before_active")
-            if not exhausted_same_day:
+            if not resume_exhausted:
                 # A terminal predecessor can contribute its closed batch before
                 # its round is released for a new network scope.
                 self._publish_financial_scoring(
@@ -227,7 +229,8 @@ class CompanySyncRuntime:
             active = None
         if active is not None:
             scope = active.scope
-            budget = replace(budget, max_source_calls=active.max_source_calls)
+            if budget.max_source_calls is not None and active.max_source_calls is not None:
+                budget = replace(budget, max_source_calls=active.max_source_calls)
         else:
             scope = requested_scope
         self._execution_scope = scope
@@ -287,7 +290,8 @@ class CompanySyncRuntime:
             if recovered:
                 if budget.max_steps == 1:
                     return CompanySyncRoundResult(round_id, scope, (), False, True, "", pause_reason="step_limit")
-                budget = replace(budget, max_steps=budget.max_steps - 1)
+                if budget.max_steps is not None:
+                    budget = replace(budget, max_steps=budget.max_steps - 1)
             pending = self.journal.outstanding(round_id, CompanySyncFamily.FIELDS)
             if pending is None:
                 self.journal.start(round_id, CompanySyncFamily.FIELDS, CompanySyncPhaseState(CanonicalDigest("field_preflight"), False))
@@ -307,11 +311,14 @@ class CompanySyncRuntime:
                 current = self.journal.family(round_id, CompanySyncFamily.FIELDS)
                 return CompanySyncRoundResult(round_id, scope, (current,) if current is not None else (), False, True, "",
                     pause_reason="step_limit")
-            budget = replace(budget, max_steps=budget.max_steps - 1)
+            if budget.max_steps is not None:
+                budget = replace(budget, max_steps=budget.max_steps - 1)
         try:
             result = RunCompanySyncRound(self.journal, producers, scope, budget, monotonic=monotonic,
                 cancel_requested=cancel_requested, observe=self._observe, activity=self._activity,
                 recover_directory=announcements.recover_directory, source_ready=self._source_ready,
+                sleeper=self._sleeper, transient_retry_seconds=(
+                    self._document_configuration.document_transient_retry_seconds if self._document_configuration else None),
                 after_resume=publish_financial_scoring if self._wall_clock is not None else None)
         except CompanySyncInterrupted:
             return self._stopped(round_id, scope, budget, cancel_requested, monotonic)

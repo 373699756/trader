@@ -11,7 +11,7 @@ class CompanyRequestProgress:
     """A committed request-ledger snapshot for one fixed company round."""
 
     round_id: str
-    limit: int
+    limit: int | None
     used: int
     unknown: int
 

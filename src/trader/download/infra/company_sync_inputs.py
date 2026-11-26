@@ -135,6 +135,26 @@ class SQLiteCompanySyncInputStore:
         with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
             return connection.run("SELECT 1 FROM company_source_task WHERE scope=? AND family=? AND task=?", (scope, family, task)).fetchone() is not None
 
+    def announcement_turn(self, scope: str, partition: str) -> Literal["directory", "risk", "unlock"]:
+        with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
+            row = connection.run("""SELECT
+                EXISTS(SELECT 1 FROM company_source_task WHERE scope=? AND family='announcement_document_turn' AND task=?),
+                EXISTS(SELECT 1 FROM company_source_task WHERE scope=? AND family='announcements' AND task='prefer_unlock')""",
+                (scope, partition, scope)).require_one()
+            if row[0]:
+                return "directory"
+            return "unlock" if row[1] else "risk"
+
+    def complete_announcement_turn(self, scope: str, partition: str, *, chose_unlock: bool) -> None:
+        with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
+            recorded = connection.run("INSERT OR IGNORE INTO company_source_task VALUES(?,'announcement_document_turn',?,0,?)",
+                (scope, partition, partition))
+            if recorded.rowcount:
+                if chose_unlock:
+                    connection.run("DELETE FROM company_source_task WHERE scope=? AND family='announcements' AND task='prefer_unlock'", (scope,))
+                else:
+                    connection.run("INSERT OR IGNORE INTO company_source_task VALUES(?,'announcements','prefer_unlock',0,?)", (scope, partition))
+
 
     def field_input_identity(self, scope: str) -> str:
         """Bind only the structured inputs consumed by local field compilation."""

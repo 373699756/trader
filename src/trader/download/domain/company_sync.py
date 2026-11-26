@@ -150,15 +150,16 @@ class CompanySyncPhasePlan:
 
 @dataclass(frozen=True,slots=True)
 class CompanySyncBudget:
-    max_steps:int
-    max_source_calls:int
-    steps_per_family:int
+    max_steps:int | None
+    max_source_calls:int | None
+    steps_per_family:int | None
     deadline:float
 
     def __post_init__(self)->None:
-        if (any(type(value) is not int for value in (self.max_steps,self.max_source_calls,self.steps_per_family))
-            or not 1<=self.max_steps<=4096 or not 0<=self.max_source_calls<=2048
-            or not 1<=self.steps_per_family<=256 or not isfinite(self.deadline)):
+        if ((self.max_steps is not None and (type(self.max_steps) is not int or not 1 <= self.max_steps <= 4096))
+            or (self.max_source_calls is not None and (type(self.max_source_calls) is not int or not 0 <= self.max_source_calls <= 2048))
+            or (self.steps_per_family is not None and (type(self.steps_per_family) is not int or not 1 <= self.steps_per_family <= 256))
+            or not (isfinite(self.deadline) or self.deadline == float("inf"))):
             raise ValueError("company_sync_budget_invalid")
 
 
@@ -185,10 +186,13 @@ class CompanySyncStepResult:
     pending_count:int|None=None
     failure:str|None=None
     deferred:bool=False
+    retry_after_seconds:float|None=None
 
     def __post_init__(self)->None:
         if (any(type(flag) is not bool for flag in (self.processed_scope_complete,self.can_continue,self.deferred))
             or self.deferred and not self.can_continue
+            or self.retry_after_seconds is not None and (
+                not self.deferred or not isfinite(self.retry_after_seconds) or self.retry_after_seconds < 0)
             or self.processed_scope_complete and self.can_continue
             or self.accepted_inputs is not None and (type(self.accepted_inputs) is not int or self.accepted_inputs<0)
             or type(self.source_calls) is not int or not 0<=self.source_calls<=2048
@@ -266,7 +270,7 @@ class CompanySyncResume:
     round_id: str
     scope: CompanySyncRoundScope
     plans: tuple[CompanySyncPhasePlan, ...]
-    max_source_calls: int
+    max_source_calls: int | None
     source_calls: int
 
 

@@ -30,13 +30,15 @@ from trader.infra.sqlite_connection import SqliteSession
 from trader.download.entrypoints.sync_progress import SyncProgress
 
 
-def _settings(tmp_path, monkeypatch, *, allowance=0):
+def _settings(tmp_path, monkeypatch, *, allowance=0, timeout=None):
     settings = replace(RuntimeSettingsFixture(), data_paths=DataPaths(tmp_path / "data"))
-    configuration = replace(LoadCompanySyncConfiguration(settings.project_root), round_request_limit=allowance)
+    if allowance is not None or timeout is not None:
+        configuration = replace(LoadCompanySyncConfiguration(settings.project_root), round_request_limit=allowance,
+                                round_timeout_seconds=timeout)
+        monkeypatch.setattr("trader.download.infra.download_settings.LoadCompanySyncConfiguration", lambda _: configuration)
     monkeypatch.setattr(bootstrap, "LoadRuntimeSettings", lambda _: settings)
     monkeypatch.setattr(bootstrap, "_prepare_reference", lambda *args, **kwargs: PreparedFixture(NOW))
     monkeypatch.setattr(bootstrap, "_utc_now", lambda: NOW)
-    monkeypatch.setattr("trader.download.infra.download_settings.LoadCompanySyncConfiguration", lambda _: configuration)
     calls = []
 
     def forbidden(request):
@@ -81,10 +83,50 @@ def test_normal_composition_projects_confirmed_step_progress_without_http(tmp_pa
     assert len(messages) == before
 
 
-def test_company_deadline_reports_last_checked_fields_without_a_final_read(tmp_path, monkeypatch):
-    settings, physical = _settings(tmp_path, monkeypatch)
+def test_normal_sync_can_request_after_30_minutes_until_user_cancels(tmp_path, monkeypatch):
+    settings, physical = _settings(tmp_path, monkeypatch, allowance=None)
     clock = [100.0]
-    timeout = LoadCompanySyncConfiguration(settings.project_root).round_timeout_seconds
+    monkeypatch.setattr(bootstrap.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr("trader.download.infra.company_document_ocr.DetectCompanyOcr", lambda languages, **kwargs:
+        CompanyOcrCapability("unavailable", None, None, languages, "disclosure_document_ocr_unavailable"))
+    monkeypatch.setattr("trader.download.infra.company_document_parser.DetectCompanyText", lambda **kwargs:
+        CompanyTextCapability("unavailable", None, None, "disclosure_document_text_unavailable"))
+    run = CompanySyncRuntime.run
+
+    def continue_after_half_hour(runtime, codes, cutoff, budget, **kwargs):
+        assert budget.deadline == float("inf")
+        assert budget.max_source_calls is budget.max_steps is budget.steps_per_family is None
+        clock[0] += 1801.0
+        return run(runtime, codes, cutoff, budget, **kwargs)
+
+    def execute(request):
+        physical.append(request.url)
+        return HttpResponse(200, b"fixture")
+
+    def financial(source, query, *, observed_at):
+        source._session.get("https://example.test/financial", timeout=1)
+        return CompanyFinancialSourcePage(query.page, 1, 0, 0, (), "a" * 64)
+
+    monkeypatch.setattr(CompanySyncRuntime, "run", continue_after_half_hour)
+    monkeypatch.setattr(bootstrap, "OpenExternalHttp", lambda **kwargs: RequestsHttpTransport(execute_request=execute, **kwargs))
+    monkeypatch.setattr(EastmoneyCompanySource, "financial_observations", financial)
+    messages = []
+    result = bootstrap.ExecuteSync(settings.config_path, "company", report=SyncProgress(messages.append, lambda: clock[0]),
+        cancel_requested=lambda: bool(physical))
+    company = result.tasks[0].company
+    assert company is not None and company.cancelled and not company.budget_exhausted
+    assert result.exit_code == 130 and physical == ["https://example.test/financial"]
+    with SqliteSession(settings.data_paths.company_sync) as ledger:
+        assert ledger.run("SELECT COUNT(*) FROM company_sync_request").require_one()[0] == 1
+    logs = "\n".join(RenderProgress(message) for message in messages)
+    assert "用时1801.00秒，无单次时限" in logs and "不限步数" in logs
+    assert "轮次累计1次（不限次数）" in logs and "收到取消请求" in logs
+
+
+def test_company_deadline_reports_last_checked_fields_without_a_final_read(tmp_path, monkeypatch):
+    timeout = 1800.0
+    settings, physical = _settings(tmp_path, monkeypatch, timeout=timeout)
+    clock = [100.0]
     monkeypatch.setattr(bootstrap.time, "monotonic", lambda: clock[0])
     calls = []
     read_counts = SQLiteCompanyEvidenceReader.read_field_counts
@@ -160,7 +202,7 @@ def test_company_cli_reports_three_stores_and_fixed_ledger_on_resume(tmp_path, m
         assert "来源库·EPS" in first.err and "有值1/1（100.00%）股" in first.err
         assert "来源库·每股净资产" in first.err and "缺值1/1（100.00%）股" in first.err
 
-    assert Main([*argv, "fill"]) == 1
+    assert Main(argv) == 1
     resumed = capsys.readouterr()
     assert "本次新增0次" in resumed.err and "轮次累计1/1次" in resumed.err and len(physical) == 1
     with SqliteSession(settings.data_paths.company_sources) as sources, SqliteSession(settings.data_paths.company_sync) as ledger:
@@ -216,7 +258,7 @@ def test_company_sync_uses_current_database_names_when_other_files_exist(tmp_pat
 
 @pytest.mark.parametrize("cancelled", (False, True))
 def test_local_probe_budget_or_user_cancel_pauses_before_creating_company_stores(tmp_path, monkeypatch, cancelled):
-    settings, physical = _settings(tmp_path, monkeypatch)
+    settings, physical = _settings(tmp_path, monkeypatch, timeout=60)
     clock, cancel = [100.0], [False]
     monkeypatch.setattr(bootstrap.time, "monotonic", lambda: clock[0])
 

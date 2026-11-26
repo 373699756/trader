@@ -309,9 +309,10 @@ def _prepare_reference(
             ).fetch
         else:
             cached_industry = CurrentIndustryCache(industry_path, sqlite_policy=sqlite_policy)
-            def industries(cut: datetime, _eligible: tuple[BaoStockSecurity, ...],
+            def industries(cut: datetime, eligible: tuple[BaoStockSecurity, ...],
                            _calendar: tuple[date, ...]) -> tuple[IndustryVersionPort, ...]:
-                return cached_industry.load(cut)
+                eligible_codes = {security.code for security in eligible}
+                return tuple(row for row in cached_industry.load(cut) if row.subject_key in eligible_codes)
         dependencies = ReferencePreparationDependencies(
             source.fetch,
             partial(publication.calendar, observed_at.date(), fetch=calendar, progress=progress, source="新浪/Akshare"),
@@ -1332,9 +1333,10 @@ def ExecuteCompanySync(
     event_policy = LoadStrategySettings(settings.strategy_config_path).company_scoring.events
     sqlite_policy, paths = BuildSqlitePolicy(settings), settings.data_paths
     cutoff = ShanghaiClock(lambda: scope.cutoff).now()
-    deadline = time.monotonic() + configuration.round_timeout_seconds
+    duration = configuration.round_timeout_seconds
+    deadline = None if duration is None else time.monotonic() + duration
     # Leave bounded time for the already authorized response and journal confirmation.
-    source_deadline = deadline - 2.0
+    source_deadline = None if deadline is None else deadline - 2.0
     io_budget = CompanySyncIoBudget(deadline=deadline, monotonic=time.monotonic, cancel_requested=cancel_requested)
     codes = scope.codes
     progress = company_evidence_progress.CompanyRoundProgress(report, time.monotonic)
@@ -1342,14 +1344,14 @@ def ExecuteCompanySync(
 
     def paused() -> CompanySyncRoundResult:
         cancelled = cancel_requested()
-        deadline_reached = not cancelled and time.monotonic() >= deadline
+        deadline_reached = not cancelled and deadline is not None and time.monotonic() >= deadline
         result = CompanySyncRoundResult("", CompanySyncRoundScope(codes, cutoff), (), cancelled, not cancelled, "",
             pause_reason="deadline" if deadline_reached else None)
         progress.finish(result, time_limit_seconds=configuration.round_timeout_seconds, step_limit=configuration.round_step_limit)
         return result
 
     def stopped() -> bool:
-        return cancel_requested() or time.monotonic() >= deadline
+        return io_budget.stopped()
 
     with ExitStack() as resources:
         resources.enter_context(ProcessLock(paths.company_raw / "evidence.lock", label="sync company"))
@@ -1428,14 +1430,15 @@ def ExecuteCompanySync(
         runtime = CompanySyncRuntime(normalized, facts, material, journal, inputs=inputs,
             event_policy=event_policy, sqlite_policy=sqlite_policy, read_document=read_document,
             financial_source=structured, ratio_source=structured, annual_source=structured,
-            official_source=official, io_budget=io_budget,
+            official_source=official, io_budget=io_budget, sleeper=time.sleep,
             document_configuration=configuration, document_policies=policies, wall_clock=ShanghaiClock(_utc_now).now,
             observe_scope=progress.begin_scope, observe=progress.observe_family, activity=progress.activity,
             observe_financial_scoring=progress.observe_financial_scoring,
             observe_download=lambda event: progress.download(event, journal.executing_step),
-            source_ready=lambda: time.monotonic() < source_deadline)
+            source_ready=lambda: source_deadline is None or time.monotonic() < source_deadline)
         budget = CompanySyncBudget(configuration.round_step_limit, configuration.round_request_limit,
-            min(256, configuration.round_step_limit), deadline)
+            None if configuration.round_step_limit is None else min(256, configuration.round_step_limit),
+            float("inf") if deadline is None else deadline)
         try:
             runtime.initialize(codes, cutoff)
             result = runtime.run(codes, cutoff, budget, cancel_requested=cancel_requested, monotonic=time.monotonic)

@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 
-from trader.download.application.company_failures import CompanyFailureCode
+from trader.download.application.company_failures import CompanyFailureCode, IsRetryableCompanySourceFailure
 from trader.download.application.company_source_ports import CompanyAnnualIncomeSource
 from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest, PlanCompanyAnnualIncome
 from trader.download.domain.company_evidence import CompanyInputValidationFailure, CompanySourceFailure
@@ -104,6 +104,8 @@ class CompanyAnnualIncomeProducer:
                 raise CompanyInputValidationFailure("company_annual_income_response_scope_mismatch")
         except (CompanyInputValidationFailure, CompanySourceFailure, DownloadValidationFailure) as exc:
             failure = CompanyFailureCode(exc)
+            if isinstance(exc, CompanySourceFailure) and IsRetryableCompanySourceFailure(failure):
+                raise
             self._inputs.reject_annual(scope.identity, request, failure)
             if self._observe_download is not None:
                 self._observe_download(CompanyDownloadIssue(operation, failure, material_accepted=False, action="defer"))

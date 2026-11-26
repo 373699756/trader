@@ -53,8 +53,11 @@ def PrepareCompanySyncCliAudit(
     path.write_text(json.dumps(runtime, ensure_ascii=False), encoding="utf-8")
     download_path = root / "download.json"
     download = json.loads(download_path.read_bytes())
-    download["company"]["round_request_limit"] = min(request_limit, download["company"]["round_request_limit"])
-    download["company"]["round_timeout_seconds"] = min(round_seconds, download["company"]["round_timeout_seconds"])
+    policy = download["company"]
+    requests = policy["round_request_limit"]
+    duration = policy["round_timeout_seconds"]
+    policy["round_request_limit"] = request_limit if requests is None else min(request_limit, requests)
+    policy["round_timeout_seconds"] = round_seconds if duration is None else min(round_seconds, duration)
     download_path.write_text(json.dumps(download, ensure_ascii=False), encoding="utf-8")
     return path
 
@@ -77,7 +80,8 @@ def AuditCompanySyncRounds(
     isolated = replace(settings, data_paths=DataPaths(directory / "data"), runtime_dir=directory / "runtime")
     if request_limit is not None:
         configuration = json.loads((settings.project_root / "config/download.json").read_bytes())
-        configuration["company"]["round_request_limit"] = min(configuration["company"]["round_request_limit"], request_limit)
+        configured = configuration["company"]["round_request_limit"]
+        configuration["company"]["round_request_limit"] = request_limit if configured is None else min(configured, request_limit)
         policy_root = directory / "policy"
         (policy_root / "config").mkdir(parents=True)
         (policy_root / "config/download.json").write_text(json.dumps(configuration, ensure_ascii=False), encoding="utf-8")
@@ -142,6 +146,10 @@ def AuditCompanySyncRestart(
         raise ValueError("company_sync_restart_audit_options_invalid")
     RequireIsolatedReplay(directory, (settings.project_root, settings.data_paths.root, settings.runtime_dir))
     isolated = replace(settings, data_paths=DataPaths(directory / "data"), runtime_dir=directory / "runtime")
+    for root in (directory / "policy", directory):
+        if (root / "config/download.json").is_file():
+            isolated = replace(isolated, project_root=root)
+            break
     policy = BuildSqlitePolicy(isolated)
     reader = SQLiteCompanyEvidenceReader(isolated.data_paths.company,
         event_policy=LoadStrategySettings(isolated.strategy_config_path).company_scoring.events, sqlite_policy=policy)
@@ -154,7 +162,7 @@ def AuditCompanySyncRestart(
     if requested_cutoff is not None and (
         requested_cutoff.utcoffset() is None or requested_cutoff < scope.cutoff
         or requested_cutoff.astimezone(scope.cutoff.tzinfo).date() != scope.cutoff.date()
-        or before_calls < active.max_source_calls
+        or active.max_source_calls is None or before_calls < active.max_source_calls
     ):
         raise ValueError("company_sync_restart_audit_cutoff_invalid")
     requested_scope = CompanySyncRoundScope(scope.codes, requested_cutoff or scope.cutoff)

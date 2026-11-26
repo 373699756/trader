@@ -367,7 +367,71 @@ def test_new_original_dispatch_uses_one_attempt_and_continues_after_parser_failu
         assert tuple(row) == ((0, 0) if failure else (1, 1))
 
 
-def test_risk_originals_across_the_population_precede_positive_material_without_starving_directory(tmp_path):
+@pytest.mark.parametrize("failure", ("temporary", "repeated", "unavailable", "directory_timeout"))
+def test_same_round_document_and_directory_cooldowns_keep_other_work_and_clear_recovered_errors(tmp_path, failure):
+    from trader.download.domain.company_evidence import CompanySourceFailure
+
+    runtime, _, _, _ = _runtime(tmp_path)
+    scope = replace(_SCOPE, families=(CompanySyncFamily.ANNOUNCEMENTS,))
+    runtime.initialize(scope.codes, scope.cutoff)
+    item = Disclosure("cninfo", "retry-doc", scope.codes, "关于收到立案告知书的公告", scope.cutoff - timedelta(days=1),
+        "https://example.test/retry.pdf", "a" * 64)
+    runtime.material.register_disclosures((item,))
+    clock = [0.0]
+    downloads, pages = [], []
+
+    class Source:
+        def document_payload_hash(self, disclosure):
+            return None
+        def document_ready(self, disclosure):
+            return False
+        def download_document(self, disclosure, *, attempt_limit):
+            downloads.append(clock[0])
+            if failure == "unavailable":
+                raise CompanyDocumentFailure("disclosure_document_unavailable")
+            if failure == "repeated" and len(downloads) <= 4 or failure == "temporary" and len(downloads) == 1:
+                raise CompanySourceFailure("http_transport_error")
+        def extract_document(self, disclosure, **kwargs):
+            return CompanyDocumentExtraction(_INVESTIGATION, "text", b"p" * 32, "test_text")
+        def fetch(self, partition, *, order):
+            pages.append((partition, clock[0]))
+            if failure == "directory_timeout" and len(pages) == 1:
+                raise CompanySourceFailure("timeout")
+            rows = (item,) if partition.start <= item.published_at.date() <= partition.end else ()
+            return DisclosurePage(rows, len(rows), False)
+
+    config = CompanySyncConfigurationFixture()
+    policies = BuildCompanyDocumentPolicies(config, "ocr-test", text_identity="text-test")
+    producer = CompanyAnnouncementProducer(runtime.inputs, runtime.material, Source(), scope,
+        sqlite_policy=SqlitePolicyFixture(), extraction_hash=runtime.facts.extraction_hash, configuration=config,
+        policies=policies, wall_clock=lambda: scope.cutoff + timedelta(seconds=clock[0]))
+    def sleep(seconds):
+        assert pages and downloads
+        clock[0] += seconds
+        assert clock[0] <= 5 * config.document_transient_retry_seconds
+    result = RunCompanySyncRound(runtime.journal, (producer,), scope, CompanySyncBudget(None, None, None, float("inf")),
+        monotonic=lambda: clock[0], cancel_requested=lambda: False, sleeper=sleep, transient_retry_seconds=config.document_transient_retry_seconds)
+    family, = result.families
+    with SqliteSession(runtime.material.path) as connection:
+        checked = connection.run("SELECT body_checked FROM disclosures WHERE source_key=?", (item.identity,)).require_one()[0]
+    if failure == "unavailable":
+        assert downloads == [0] and clock[0] == 0 and not checked
+        assert not family.result.can_continue and family.result.failure == "disclosure_document_unavailable"
+    elif failure == "repeated":
+        assert downloads == [n * config.document_transient_retry_seconds for n in range(5)] and checked
+        assert family.result.failure is None and "announcement_retry_pending" not in family.result.gaps
+    else:
+        assert checked and family.result.failure is None and "announcement_document_failed" not in family.result.gaps
+        assert clock[0] == config.document_transient_retry_seconds
+        if failure == "directory_timeout":
+            assert len(pages) == 3 and pages[0][0] == pages[2][0] and downloads == [0]
+            assert pages[1][0] != pages[0][0] and pages[1][1] == 0 and pages[2][1] == clock[0]
+        else:
+            assert downloads == [0, config.document_transient_retry_seconds] and all(at == 0 for _, at in pages)
+
+
+@pytest.mark.parametrize("with_unlock", (False, True))
+def test_risk_and_observed_unlock_originals_share_turns_without_starving_directory(tmp_path, with_unlock):
     runtime, _, _, _ = _runtime(tmp_path)
     codes = tuple(f"600{index:03d}" for index in range(1, 130))
     scope = replace(_SCOPE, codes=codes)
@@ -381,8 +445,16 @@ def test_risk_originals_across_the_population_precede_positive_material_without_
             scope.cutoff - timedelta(days=2), "https://example.test/reduction-ended.PDF", "c" * 64),
         Disclosure("cninfo", "commitment", (codes[0],), "关于控股股东自愿承诺不减持公司股份的公告",
             scope.cutoff - timedelta(days=1), "https://example.test/commitment.PDF", "d" * 64),
+        Disclosure("cninfo", "unlock", (codes[1],), _UNLOCK_TITLE,
+            scope.cutoff - timedelta(days=4), "https://example.test/unlock.PDF", "e" * 64),
+        Disclosure("cninfo", "date-only", (codes[1],), _UNLOCK_TITLE,
+            scope.cutoff.replace(hour=0, minute=0, second=0, microsecond=0), "https://example.test/date-only.PDF", "f" * 64),
     )
     runtime.material.register_disclosures(items)
+    day = scope.cutoff.date() + timedelta(days=10)
+    observed_code = codes[1] if with_unlock else codes[0]
+    runtime.inputs.accept_ratios(scope.identity, StructuredCompanyQuery("unlock", scope.cutoff.date(), day),
+        StructuredCompanyPage("unlock", 1, 1, 1, ratios=(CompanyRatio(observed_code, day, 12),)), scope.cutoff)
     calls = []
 
     class Source:
@@ -426,12 +498,16 @@ def test_risk_originals_across_the_population_precede_positive_material_without_
     producer.advance(scope, cancel_requested=lambda: False, deadline=100)
     first_partition = producer._partitions[0]
     assert producer.state(scope).identity == CanonicalDigest(first_partition)
-    for _ in range(5):
+    # A fresh producer must honor both the saved directory turn and the next document class.
+    producer = CompanyAnnouncementProducer(runtime.inputs, runtime.material, Source(), scope,
+        sqlite_policy=SqlitePolicyFixture(), extraction_hash=runtime.facts.extraction_hash,
+        configuration=config, policies=policies, wall_clock=lambda: scope.cutoff)
+    for _ in range(6 if with_unlock else 5):
         result = producer.advance(scope, cancel_requested=lambda: False, deadline=100)
         assert result.can_continue and result.source_calls == 1
-    assert calls == [
-        "reduction-ended", first_partition, "investigation", producer._partitions[1], "commitment", "positive",
-    ]
+    second_turn = "unlock" if with_unlock else "investigation"
+    assert calls == ["reduction-ended", first_partition, second_turn, producer._partitions[1],
+        *(["investigation"] if with_unlock else []), "commitment", "positive"]
 
 
 def test_supplemental_unlock_original_dispatch_requires_the_same_scope_issuer_observation(tmp_path):

@@ -94,6 +94,9 @@ _ROUND_REASON_EXPLANATIONS = {
     "cninfo_page_count_inconsistent": "巨潮目录分页计数不一致",
     "cninfo_duplicate_page_links": "巨潮目录出现重复公告链接",
     "supplier_input_rejected": "来源返回内容未通过校验，具体原因见错误码",
+    "source_retry_pending": "来源请求暂时失败，冷却到期后继续复核",
+    "announcement_retry_pending": "公告资料正在冷却或等待续传，其余可处理资料已调度",
+    "announcement_directory_retry": "本页目录已暂缓，继续处理其他可用目录和公告正文",
     "population_members_became_ineligible": "原轮次中部分股票已不符合当前资格",
     "new_population_members_wait_for_refresh": "新增合格股票等待下一轮次",
 }
@@ -141,13 +144,18 @@ def BuildCompanyRoundFinishMessage(
     else:
         summary, state = ProgressField("本次调度结束，仍有工作待继续"), "待继续"
     usage: list[ProgressField] = []
-    if elapsed_seconds is not None and time_limit_seconds is not None:
-        usage.append(ProgressField(f"本次公司作业用时{elapsed_seconds:.2f}秒，单次时限{time_limit_seconds:g}秒"))
-    if elapsed_seconds is not None and step_limit is not None:
-        usage.append(ProgressField(f"本次确认调度{confirmed_steps}/{step_limit}步"))
+    if elapsed_seconds is not None:
+        duration = "无单次时限" if time_limit_seconds is None else f"单次时限{time_limit_seconds:g}秒"
+        usage.append(ProgressField(f"本次公司作业用时{elapsed_seconds:.2f}秒，{duration}"))
+        steps = f"{confirmed_steps}步（不限步数）" if step_limit is None else f"{confirmed_steps}/{step_limit}步"
+        usage.append(ProgressField(f"本次确认调度{steps}"))
         occupancy = "已占用" if request_current else "最近确认占用"
-        request_usage = (f"固定轮次请求额度{occupancy}{ledger.used}/{ledger.limit}次" if ledger is not None
-                         else "固定轮次请求额度未核对")
+        if ledger is None:
+            request_usage = "固定轮次请求额度未核对"
+        elif ledger.limit is None:
+            request_usage = f"固定轮次请求{occupancy}{ledger.used}次（不限次数）"
+        else:
+            request_usage = f"固定轮次请求额度{occupancy}{ledger.used}/{ledger.limit}次"
         usage.append(ProgressField(request_usage))
     return ProgressMessage((summary, *usage), task=task, state=state, finished=True)
 

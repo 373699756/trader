@@ -8,12 +8,13 @@ from dataclasses import dataclass, replace
 from datetime import timedelta
 
 from trader.download.application.company_sync import CompanyDirectoryResponseReceipt
+from trader.download.application.company_failures import CompanyFailureCode
 from trader.download.application.company_source_ports import (
     CompanyOfficialDocumentSource, CompanyRatioSource,
 )
 from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview, CompanyDocumentRiskRelevant
 from trader.download.domain.company_evidence import (
-    CompanyInputValidationFailure, CompanyDocumentFailure, CompanyDocumentFailureRules, CompanyDocumentPolicies,
+    CompanyInputValidationFailure, CompanyDocumentFailure, CompanyDocumentPolicies, CompanySourceFailure, IsTransientCompanyDocumentFailure,
     CompanySyncConfiguration, CompanyDocumentRouteForFailure, Disclosure, DisclosurePartition, EvidenceMarket, StructuredCompanyQuery,
 )
 from datetime import datetime
@@ -130,6 +131,7 @@ class CompanyAnnouncementProducer:
         self._current_codes = scope.codes if current_codes is None else current_codes
         self._io_budget = io_budget
         self._configuration, self._policies, self._wall_clock = configuration, policies, wall_clock
+        self._next_retry: datetime | None = None
         self._observe_download = observe_download
         markets = tuple(sorted({EvidenceMarket(code) for code in scope.codes}))
         self._partitions = tuple(DisclosurePartition(market, start, end)
@@ -160,6 +162,15 @@ class CompanyAnnouncementProducer:
     def _initialized(self, scope: CompanySyncRoundScope) -> bool:
         return self._inputs.task_done(scope.identity, "announcements", "initialize")
 
+    def _cooling(self, failure: str, retry_at: datetime) -> bool:
+        if self._wall_clock is None:
+            return False
+        if retry_at <= self._wall_clock():
+            return False
+        if IsTransientCompanyDocumentFailure(failure) and failure != "access_denied":
+            self._next_retry = min(self._next_retry or retry_at, retry_at)
+        return True
+
     def _partition(self, scope: CompanySyncRoundScope) -> DisclosurePartition | None:
         for partition in self._partitions:
             for parent in self._material.pending_partitions(partition):
@@ -173,6 +184,10 @@ class CompanyAnnouncementProducer:
                 else:
                     candidates = (replace(parent, page=1),)
                 for pending in candidates:
+                    if self._wall_clock is not None:
+                        retry = self._material.partition_retry(pending)
+                        if retry is not None and self._cooling(retry.failure, retry.retry_at):
+                            continue
                     if not self._inputs.task_done(scope.identity, "announcements", "ineligible_partition:" + CanonicalDigest(pending)):
                         return pending
         return None
@@ -219,7 +234,7 @@ class CompanyAnnouncementProducer:
                     continue
                 item = DecodeCompanyDisclosure(row)
                 retry = self._material.document_retry(item, self._policies.standard)
-                if retry is not None and retry.retry_after > self._wall_clock():
+                if retry is not None and self._cooling(retry.failure, retry.retry_after):
                     continue
                 required = _RequiredDocument(
                     item, dependency.body_hash, row["payload_hash"],
@@ -234,13 +249,15 @@ class CompanyAnnouncementProducer:
         return deferred
 
     def _work(self, scope: CompanySyncRoundScope) -> _RequiredDocument | _NewDocument | DisclosurePartition | None:
+        self._next_retry = None
         required = self._document(scope)
         if required is not None and required.for_recommendation:
             return required
         partition = self._partition(scope)
-        if partition is not None and self._inputs.task_done(scope.identity, "announcement_document_turn", CanonicalDigest(partition)):
+        turn = self._inputs.announcement_turn(scope.identity, CanonicalDigest(partition)) if partition is not None else "risk"
+        if turn == "directory":
             return partition
-        fresh = self._new_document(scope, risk_only=partition is not None or required is not None)
+        fresh = self._new_document(scope, priority_only=partition is not None or required is not None, prefer_unlock=turn == "unlock")
         if fresh is not None:
             return _NewDocument(fresh, partition)
         return partition if partition is not None else required
@@ -303,8 +320,8 @@ class CompanyAnnouncementProducer:
         if isinstance(work, _NewDocument):
             result = self._accept_new_document(scope, work.disclosure)
             if work.before_partition is not None:
-                partition_identity = CanonicalDigest(work.before_partition)
-                self._inputs.complete_task(scope.identity, "announcement_document_turn", partition_identity, 0, partition_identity)
+                self._inputs.complete_announcement_turn(scope.identity, CanonicalDigest(work.before_partition),
+                    chose_unlock=_supplemental_unlock(work.disclosure.title))
             return result
         if isinstance(work, DisclosurePartition):
             partition = work
@@ -313,7 +330,18 @@ class CompanyAnnouncementProducer:
                 return CompanySyncStepResult(False, True, gaps=("population_members_became_ineligible",))
             operation = CompanyDownloadOperation(self._plan.family, "announcement_page", partition)
             self._emit_download(operation)
-            page = self._source.fetch(partition, order="desc")
+            try:
+                page = self._source.fetch(partition, order="desc")
+            except CompanySourceFailure as exc:
+                code = CompanyFailureCode(exc)
+                if (self._wall_clock is not None and self._configuration is not None
+                    and code != "access_denied" and IsTransientCompanyDocumentFailure(code)):
+                    retry_at = self._wall_clock() + timedelta(seconds=self._configuration.document_transient_retry_seconds)
+                    self._material.partition_failure(partition, code)
+                    self._material.defer_partition(partition, retry_at)
+                    self._emit_download(CompanyDownloadIssue(operation, code, material_accepted=False, action="defer", retry_at=retry_at))
+                    return CompanySyncStepResult(False, True, failure=code, gaps=("announcement_directory_retry",))
+                raise
             if partition.query is None and self._material.disclosure_queries(partition) == ():
                 self._material.commit_query_coverage(partition, page, scope.cutoff)
                 self._emit_download(CompanyDisclosureDownloadProgress(partition, "reconciled", page.total, page.total))
@@ -344,6 +372,10 @@ class CompanyAnnouncementProducer:
             return CompanySyncStepResult(False, True, len(page.rows), 1)
         document = work
         if document is None:
+            if self._next_retry is not None and self._wall_clock is not None:
+                delay = max(0.0, (self._next_retry - self._wall_clock()).total_seconds())
+                return CompanySyncStepResult(False, True, gaps=("announcement_retry_pending",), deferred=True,
+                    retry_after_seconds=delay)
             return CompanySyncStepResult(True, False, pending_count=None, gaps=("announcement_required_material_not_fully_verified",))
         if document.disclosure.codes[0] not in self._current_codes:
             self._inputs.complete_task(scope.identity, "announcements", "ineligible_document:" + _required_identity(document), 0, _required_identity(document))
@@ -360,20 +392,8 @@ class CompanyAnnouncementProducer:
                 operation = replace(operation, kind="document_extract", route="standard")
             self._emit_download(operation)
             extraction = self._source.extract_document(item)
-        except CompanyDocumentFailure as exc:
-            assert self._configuration is not None and self._policies is not None and self._wall_clock is not None
-            transient = next((transient for failure, _route, transient in CompanyDocumentFailureRules() if failure == exc.reason), False)
-            delay = self._configuration.document_transient_retry_seconds if transient else self._configuration.document_failure_retry_seconds
-            attempted_at = self._wall_clock()
-            if attempted_at.utcoffset() is None:
-                raise ValueError("company_document_retry_clock_invalid") from exc
-            retry_at = attempted_at + timedelta(seconds=delay)
-            self._material.document_failure(item, self._policies.standard, exc.reason, attempted_at,
-                retry_at, payload_hash=exc.payload_hash, diagnostic=exc.diagnostic)
-            self._emit_download(CompanyDownloadIssue(
-                operation, exc.reason, material_accepted=False, action="defer", retry_at=retry_at,
-            ))
-            return CompanySyncStepResult(False, False, failure=exc.reason, gaps=("required_original_recovery_failed",))
+        except (CompanyDocumentFailure, CompanySourceFailure) as exc:
+            return self._document_failure(item, operation, exc, called, "required_original_recovery_failed")
         except CompanyRawCapacityError:
             self._emit_download(CompanyDownloadIssue(
                 operation, "company_raw_capacity_unavailable", material_accepted=False, action="stop",
@@ -406,51 +426,60 @@ class CompanyAnnouncementProducer:
         ))
         return CompanySyncStepResult(False, True, 1, int(called))
 
-    def _new_document(self, scope: CompanySyncRoundScope, *, risk_only: bool) -> Disclosure | None:
+    def _new_document(self, scope: CompanySyncRoundScope, *, priority_only: bool, prefer_unlock: bool) -> Disclosure | None:
         if self._configuration is None or self._policies is None or self._wall_clock is None:
             return None
-        now = self._wall_clock()
-        if now.utcoffset() is None:
+        if self._wall_clock().utcoffset() is None:
             raise ValueError("company_document_retry_clock_invalid")
         current_codes = frozenset(scope.codes).intersection(self._current_codes)
         if not current_codes:
             return None
+        alternate: Disclosure | None = None
         other: Disclosure | None = None
-        unlock_codes: frozenset[str] | None = None
+        today = scope.cutoff.date()
+        scope_id = scope.identity
+        unlock_window = (today.isoformat(), (today + timedelta(days=180)).isoformat())
+        date_only_cutoff = scope.cutoff.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
         with self._session(self._material.path) as connection:
-            rows = connection.run("""SELECT d.*,c.code FROM disclosures d
+            rows = connection.run("""SELECT d.*,c.code,retry.failure AS retry_failure,retry.retry_at FROM disclosures d
                 JOIN disclosure_codes c ON c.disclosure_id=d.id
                 JOIN company_document_requirements required ON required.disclosure_id=d.id
+                LEFT JOIN document_retries retry ON retry.disclosure_id=d.id AND retry.record_hash=d.record_hash AND retry.retry_policy_id=?
                 WHERE d.source='cninfo' AND d.kind='announcement' AND d.body_checked=0
                 AND d.published_at>=? AND d.published_at<=?
                 AND (SELECT COUNT(*) FROM disclosure_codes members WHERE members.disclosure_id=d.id)=1
-                AND NOT EXISTS(SELECT 1 FROM document_retries retry WHERE retry.disclosure_id=d.id
-                    AND retry.record_hash=d.record_hash AND retry.retry_policy_id=? AND retry.retry_at>?)
                 ORDER BY d.published_at DESC,d.source_key""",
-                ((scope.cutoff.date() - timedelta(days=365)).isoformat(), scope.cutoff.isoformat(),
-                    self._policies.standard, now.isoformat()))
+                (self._policies.standard, (scope.cutoff.date() - timedelta(days=365)).isoformat(), scope.cutoff.isoformat()))
             for row in rows:
                 if row["code"] not in current_codes:
                     continue
                 title = row["title"]
                 is_risk = _risk_priority(title)
-                if not is_risk and (risk_only or other is not None):
+                is_unlock = _supplemental_unlock(title)
+                if not is_risk and not is_unlock and (priority_only or other is not None):
                     continue
-                if IsCompanyUnlockListingNotice(title) and not CompanyDocumentNeedsReview(title):
-                    if unlock_codes is None:
-                        unlock_codes = frozenset(item.code for item in self._inputs.ratios(scope.identity, "unlock")
-                            if item.ratio_pct > 0 and item.day >= scope.cutoff.date())
-                    if row["code"] not in unlock_codes:
+                if is_unlock:
+                    if row["published_at"] == date_only_cutoff or connection.run("""SELECT 1 FROM company_ratio_observation
+                        WHERE scope=? AND component='unlock' AND code=? AND day BETWEEN ? AND ? AND ratio>0 LIMIT 1""",
+                        (scope_id, row["code"], *unlock_window)).fetchone() is None:
                         continue
                 if IsCompanyUnlockListingRevision(title) and not CompanyDocumentNeedsReview(title):
                     continue
                 item = DecodeCompanyDisclosure(row)
-                if self._inputs.task_done(scope.identity, "new_announcement_document", CanonicalDigest((item, self._policies))):
+                failure = row["retry_failure"]
+                if failure and self._cooling(failure, datetime.fromisoformat(row["retry_at"])):
                     continue
-                if is_risk:
-                    return item
-                other = item
-        return other
+                if (failure and (failure == "access_denied" or not IsTransientCompanyDocumentFailure(failure))
+                    and self._inputs.task_done(scope.identity, "new_announcement_document", CanonicalDigest((item, self._policies)))):
+                    continue
+                if is_unlock or is_risk:
+                    if is_unlock == prefer_unlock:
+                        return item
+                    if alternate is None:
+                        alternate = item
+                elif other is None:
+                    other = item
+        return alternate or other
 
     def _accept_new_document(self, scope: CompanySyncRoundScope, item: Disclosure) -> CompanySyncStepResult:
         assert self._configuration is not None and self._policies is not None and self._wall_clock is not None
@@ -477,29 +506,39 @@ class CompanyAnnouncementProducer:
                 extraction = self._source.extract_document(item, route=route)
             if not self._material.commit_document(item, extraction, scope.cutoff):
                 raise ValueError("company_announcement_material_changed")
-        except CompanyDocumentFailure as failure:
-            transient = next((transient for reason, _route, transient in CompanyDocumentFailureRules() if reason == failure.reason), False)
-            delay = self._configuration.document_transient_retry_seconds if transient else self._configuration.document_failure_retry_seconds
-            attempted_at = self._wall_clock()
-            retry_at = attempted_at + timedelta(seconds=delay)
-            self._material.document_failure(item, self._policies.standard, failure.reason, attempted_at,
-                retry_at, payload_hash=failure.payload_hash, diagnostic=failure.diagnostic)
-            self._inputs.complete_task(scope.identity, "new_announcement_document", key, 0, CanonicalDigest(failure.reason))
-            self._emit_download(CompanyDownloadIssue(
-                operation, failure.reason, material_accepted=False, action="defer", retry_at=retry_at,
-            ))
-            return CompanySyncStepResult(False, True, source_calls=int(called), gaps=("announcement_document_failed",))
+        except (CompanyDocumentFailure, CompanySourceFailure) as failure:
+            code = CompanyFailureCode(failure)
+            if code == "access_denied" or not IsTransientCompanyDocumentFailure(code):
+                if not self._inputs.task_done(scope.identity, "new_announcement_document", key):
+                    self._inputs.complete_task(scope.identity, "new_announcement_document", key, 0, CanonicalDigest(code))
+            return self._document_failure(item, operation, failure, called, "announcement_document_failed")
         except CompanyRawCapacityError:
             self._emit_download(CompanyDownloadIssue(
                 operation, "company_raw_capacity_unavailable", material_accepted=False, action="stop",
             ))
             return CompanySyncStepResult(False, False, gaps=("company_raw_capacity_unavailable",), pending_count=None)
-        self._inputs.complete_task(scope.identity, "new_announcement_document", key, 1,
-            CanonicalDigest((extraction.payload_hash.hex(), hashlib.sha256(extraction.text.encode()).hexdigest())))
         self._emit_download(CompanyDocumentDownloadProgress(
             code=target.code, source=target.source, reused=not called, recovered=False, official_id=target.official_id,
         ))
         return CompanySyncStepResult(False, True, accepted_inputs=1, source_calls=int(called))
+
+    def _document_failure(
+        self, item: Disclosure, operation: CompanyDownloadOperation, exc: CompanyDocumentFailure | CompanySourceFailure,
+        called: bool, gap: str,
+    ) -> CompanySyncStepResult:
+        assert self._configuration is not None and self._policies is not None and self._wall_clock is not None
+        code = CompanyFailureCode(exc)
+        transient = IsTransientCompanyDocumentFailure(code) and code != "access_denied"
+        delay = self._configuration.document_transient_retry_seconds if transient else self._configuration.document_failure_retry_seconds
+        attempted_at = self._wall_clock()
+        if attempted_at.utcoffset() is None:
+            raise ValueError("company_document_retry_clock_invalid") from exc
+        retry_at = attempted_at + timedelta(seconds=delay)
+        self._material.document_failure(item, self._policies.standard, code, attempted_at, retry_at,
+            payload_hash=exc.payload_hash if isinstance(exc, CompanyDocumentFailure) else None,
+            diagnostic=exc.diagnostic if isinstance(exc, CompanyDocumentFailure) else None)
+        self._emit_download(CompanyDownloadIssue(operation, code, material_accepted=False, action="defer", retry_at=retry_at))
+        return CompanySyncStepResult(False, True, source_calls=int(called), gaps=(gap,), failure=code)
 
     def _download_document(
         self, item: Disclosure, target: CompanyDocumentDownloadTarget, *, recovered: bool,
@@ -516,6 +555,10 @@ class CompanyAnnouncementProducer:
 
 
 __all__ = ["CompanyRatioProducer", "CompanyAnnouncementProducer"]
+
+
+def _supplemental_unlock(title: str) -> bool:
+    return IsCompanyUnlockListingNotice(title) and not CompanyDocumentNeedsReview(title)
 
 
 def _risk_priority(title: str) -> bool:

@@ -13,13 +13,13 @@ from trader.infra.sqlite_policy import SqliteIoPolicy
 
 
 class CompanySyncIoBudget:
-    def __init__(self, *, deadline: float, monotonic: Callable[[], float], cancel_requested: Callable[[], bool]) -> None:
-        if not isfinite(deadline):
+    def __init__(self, *, deadline: float | None, monotonic: Callable[[], float], cancel_requested: Callable[[], bool]) -> None:
+        if deadline is not None and not isfinite(deadline):
             raise ValueError("company_sync_io_deadline_invalid")
         self.deadline, self._monotonic, self._cancel_requested = deadline, monotonic, cancel_requested
 
     def stopped(self) -> bool:
-        return self._cancel_requested() or self._monotonic() >= self.deadline
+        return self._cancel_requested() or (self.deadline is not None and self._monotonic() >= self.deadline)
 
     def check(self) -> None:
         if self.stopped():
@@ -27,6 +27,8 @@ class CompanySyncIoBudget:
 
     def remaining_policy(self, policy: SqliteIoPolicy) -> SqliteIoPolicy:
         self.check()
+        if self.deadline is None:
+            return policy
         remaining = self.deadline - self._monotonic()
         self.check()
         return replace(policy, connection_timeout_seconds=min(policy.connection_timeout_seconds, remaining))

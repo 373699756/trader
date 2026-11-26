@@ -275,6 +275,16 @@ def test_unsplittable_single_day_duplicates_remain_rejected(tmp_path):
     transport.close()
 
 
+def _assert_only_directory_coverage_advanced(initial, current):
+    reason, = current.review_reasons
+    assert (reason.scope, reason.reason_code, reason.evidence_id, reason.detected_at) == (
+        "risk", "initial_risk_state_unverified", None, _SCOPE.cutoff,
+    )
+    assert current.announcement_state.value == "partial"
+    assert current == replace(initial, announcement_state=current.announcement_state, review_reasons=(reason,),
+        announcement_coverage_start=_SCOPE.cutoff.date() - timedelta(days=365), announcement_coverage_end=_SCOPE.cutoff.date())
+
+
 def test_real_empty_target_initializes_unavailable_and_runs_finite_families_with_explicit_source_gaps(tmp_path):
     runtime, reader, transport, physical = _runtime(tmp_path)
     runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
@@ -287,7 +297,7 @@ def test_real_empty_target_initializes_unavailable_and_runs_finite_families_with
     assert tuple(item.family for item in result.families) == _SCOPE.families
     assert len(physical) == sum(item.source_calls for item in result.families)
     assert result.publication_hash == reader.publication_identity()
-    assert reader.read(_SCOPE.codes) == (initial,)
+    _assert_only_directory_coverage_advanced(initial, reader.read(_SCOPE.codes)[0])
     assert runtime.journal.can_refresh(result.round_id)
 
 
@@ -427,7 +437,9 @@ def test_normal_financial_download_collects_multiple_issuers_in_one_page_without
     before = reader.read(codes)
     with transport:
         result = runtime.run(codes, _SCOPE.cutoff, CompanySyncBudget(100, 20, 20, 10), cancel_requested=lambda: False, monotonic=lambda: 0)
-    assert result.processing_complete and not result.business_complete and reader.read(codes) == before
+    assert result.processing_complete and not result.business_complete
+    for previous, current in zip(before, reader.read(codes), strict=True):
+        _assert_only_directory_coverage_advanced(previous, current)
     assert physical.count("https://example.test/financial") == 1
     with SqliteSession(runtime.normalized.path) as normalized, SqliteSession(runtime.facts.path) as formal:
         assert ReadCompanyFinancialObservations(normalized, codes) == tuple(observations)
@@ -519,7 +531,9 @@ def test_resume_filters_newly_ineligible_members_without_losing_fixed_scope_or_f
             cancel_requested=lambda: False, monotonic=lambda: 0)
     assert result.scope.codes == codes and result.scope.cutoff == _SCOPE.cutoff
     assert runtime.journal.active().max_source_calls == 20
-    assert reader.read(codes) == before and result.processing_complete
+    current, ineligible = reader.read(codes)
+    _assert_only_directory_coverage_advanced(before[0], current)
+    assert ineligible == before[1] and result.processing_complete
     assert all("population_members_became_ineligible" in item.result.gaps for item in result.families)
 
 

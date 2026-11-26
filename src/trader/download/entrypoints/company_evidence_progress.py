@@ -238,6 +238,7 @@ class CompanyRoundProgress:
         self._starting_requests = 0
         self._pages: dict[CompanySyncFamily, CompanyStructuredDownloadProgress] = {}
         self._latest_directory: CompanyDisclosureDownloadProgress | None = None
+        self._accepted_directory_pages = 0
         self._last_material_at: float | None = None
         self._documents_downloaded = 0
         self._documents_reused = 0
@@ -355,6 +356,8 @@ class CompanyRoundProgress:
                 self._pages[event.family] = event
             elif isinstance(event, CompanyDisclosureDownloadProgress):
                 self._latest_directory = event
+                if event.state == "accepted":
+                    self._accepted_directory_pages += 1
             elif isinstance(event, CompanyDocumentDownloadProgress):
                 if event.state == "downloaded":
                     self._documents_downloaded += 1
@@ -424,7 +427,7 @@ class CompanyRoundProgress:
         message = ProgressMessage(
             (
                 ProgressField(f"本次请求总体 {requested}股"),
-                ProgressField("核对固定轮次、资料完整性及必要本地恢复。沿用原请求额度。"),
+                ProgressField("核对固定轮次、请求账本和资料完整性，恢复本地断点。"),
             ),
             task=_COMPANY_ROUND_TASK,
             state="开始",
@@ -574,7 +577,7 @@ class CompanyRoundProgress:
             financial_batch = self._financial_batch
             requests = self._request_fields()
             ledger = self._requests if self._requests is not None and self._requests.round_id == result.round_id else None
-            source = self._source_fields()
+            source = self._source_fields(stopped_at)
             directory = self._latest_directory
             source_rows = tuple(
                 ProgressRow(f"来源库·{_FAMILY_NAMES[page.family]}", _download_fields(page))
@@ -584,7 +587,7 @@ class CompanyRoundProgress:
         request_current = tuple(family.family for family in result.families) == result.scope.families and all(
             family.source_calls is not None and family.unknown_attempts is not None for family in result.families
         )
-        if result.paused or (started_at is not None and time_limit_seconds is not None):
+        if result.paused or started_at is not None:
             self._report(BuildCompanyRoundFinishMessage(
                 result,
                 _COMPANY_ROUND_TASK,
@@ -650,19 +653,27 @@ class CompanyRoundProgress:
         return (
             ProgressField(f"轮次{latest.round_id[:12]}"),
             ProgressField(f"本次新增{latest.used - self._starting_requests}次"),
-            ProgressField(f"轮次累计{latest.used}/{latest.limit}次"),
+            ProgressField(f"轮次累计{latest.used}次（不限次数）" if latest.limit is None
+                          else f"轮次累计{latest.used}/{latest.limit}次"),
             ProgressField(f"未确认{latest.unknown}次"),
         )
 
-    def _source_fields(self) -> tuple[ProgressField, ...]:
+    def _source_fields(self, now: float) -> tuple[ProgressField, ...]:
         pages = tuple(
             ProgressField(f"{_FAMILY_NAMES[family]} {_rate(page.accepted_pages, page.expected_pages)}页")
             if (page := self._pages.get(family)) is not None
             else ProgressField(f"{_FAMILY_NAMES[family]} 总页数待确认")
             for family in (CompanySyncFamily.FINANCIAL, CompanySyncFamily.PLEDGE, CompanySyncFamily.UNLOCK)
         )
+        elapsed = now - self._started_at if self._started_at is not None else 0.0
+        throughput = (
+            (ProgressField(f"本次目录新入库{self._accepted_directory_pages}页，平均"
+                           f"{60 * self._accepted_directory_pages / elapsed:.2f}页/分"),)
+            if elapsed > 0 and self._accepted_directory_pages else ()
+        )
         return (
             *pages,
+            *throughput,
             ProgressField(f"本次公告正文 下载{self._documents_downloaded}篇／复用{self._documents_reused}篇／"
                 f"入库{self._documents_processed}篇"),
         )
@@ -672,7 +683,7 @@ class CompanyRoundProgress:
             f"距最近入库 {ProgressDuration(now - self._last_material_at)}"
             if self._last_material_at is not None else "本次尚无来源入库回执"
         )
-        return ProgressField(material_age), *self._source_fields(), *self._request_fields()
+        return ProgressField(material_age), *self._source_fields(now), *self._request_fields()
 
     def _heartbeat(self) -> ProgressMessage | None:
         with self._lock:
@@ -919,6 +930,8 @@ def _family_progress_fields(family: CompanySyncFamilyResult) -> tuple[ProgressFi
     progress = ProgressField(
         f"{family.family.value} {accepted}，"
         f"本族请求预算已占用{_quantity(family.source_calls)}，未知{_quantity(family.unknown_attempts)}")
+    if family.result.retry_after_seconds is not None:
+        return progress, ProgressField(f"冷却{family.result.retry_after_seconds:g}秒后自动复核，可随时取消")
     if family.family is CompanySyncFamily.ANNUAL_INCOME and family.result.business_complete and family.accepted_inputs == 0:
         return progress, ProgressField("本轮无待处理的合同营收任务。")
     return (progress,)
