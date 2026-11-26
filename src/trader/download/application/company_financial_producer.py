@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 from typing import Literal, Protocol
 
 from trader.download.application.company_source_ports import CompanyFinancialObservationSource
-from trader.download.domain.company_evidence import StructuredCompanyQuery
+from trader.download.domain.company_evidence import CompanyLatestFinancialQuery, StructuredCompanyQuery
 from trader.download.domain.company_source_records import CompanyFinancialSourcePage
 from trader.download.domain.company_sync import (
     CompanyDownloadOperation, CompanySourceDownloadProgress, CompanyStructuredDownloadProgress,
@@ -21,6 +21,21 @@ def BuildCompanyFinancialRoundQuery(cutoff: datetime) -> StructuredCompanyQuery:
         raise ValueError("company_round_cutoff_timezone_required")
     day = cutoff.astimezone(ZoneInfo("Asia/Shanghai")).date()
     return StructuredCompanyQuery("financial", day - timedelta(days=365), day)
+
+
+def ResolveCompanyFinancialScoringQuery(
+    cutoff: datetime, plan: CompanySyncPhasePlan | None = None,
+) -> StructuredCompanyQuery:
+    """Reopen the frozen source contract, or select the report-ordered market for a new round."""
+    window = BuildCompanyFinancialRoundQuery(cutoff)
+    latest = CompanyLatestFinancialQuery("financial", window.start, window.end)
+    if plan is None:
+        return latest
+    if plan.family is CompanySyncFamily.FINANCIAL:
+        for query in (latest, window):
+            if CompanyFinancialRequestIdentity(query, "observations") == plan.request_hash:
+                return query
+    raise ValueError("company_financial_source_plan_unknown")
 
 
 class CompanyFinancialInputIndex(Protocol):
@@ -77,7 +92,7 @@ class CompanyFinancialProducer:
                 if str(exc) != "company_round_cancelled" or not cancel_requested():
                     raise
                 raise CompanySyncInterrupted("company_financial_accept_cancelled") from exc
-            if self._observe_download is not None:
+            if self._observe_download is not None and not isinstance(cursor, CompanyLatestFinancialQuery):
                 self._observe_download(CompanyStructuredDownloadProgress(
                     family=CompanySyncFamily.FINANCIAL,
                     accepted_pages=page.page,
@@ -102,4 +117,4 @@ class CompanyFinancialProducer:
         return CompanySyncStepResult(True, False, changed_codes=changed, pending_count=0)
 
 
-__all__ = ["BuildCompanyFinancialRoundQuery", "CompanyFinancialInputIndex", "CompanyFinancialProducer"]
+__all__ = ["BuildCompanyFinancialRoundQuery", "ResolveCompanyFinancialScoringQuery", "CompanyFinancialInputIndex", "CompanyFinancialProducer"]

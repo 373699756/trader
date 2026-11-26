@@ -176,7 +176,8 @@ class SQLiteCompanySyncRoundJournal:
             limit = None if row[2] == _UNLIMITED_REQUESTS else row[2]
             return CompanySyncResume(row[0], CompanySyncRoundScope(codes, datetime.fromisoformat(row[1]), tuple(plan.family for plan in plans)), plans, limit, self._request_counts(connection, row[0])[0])
 
-    def begin(self, scope: CompanySyncRoundScope, plans: tuple[CompanySyncPhasePlan, ...], *, max_source_calls: int | None) -> str:
+    def begin(self, scope: CompanySyncRoundScope, plans: tuple[CompanySyncPhasePlan, ...], *, max_source_calls: int | None,
+        after_backfill: str | None = None) -> str:
         if max_source_calls is not None and (type(max_source_calls) is not int or not 0 <= max_source_calls <= 2048):
             raise ValueError("company_sync_source_budget_invalid")
         round_id = CompanySyncRoundIdentity(scope, plans)
@@ -185,6 +186,10 @@ class SQLiteCompanySyncRoundJournal:
             SqliteTransaction(connection, immediate=True) as transaction,
         ):
             limit = _UNLIMITED_REQUESTS if max_source_calls is None else max_source_calls
+            if after_backfill is not None:
+                if not _only_backfill(connection, after_backfill, scope.cutoff, allow_local_step=False):
+                    raise ValueError("company_sync_backfill_handoff_changed")
+                connection.run("UPDATE company_sync_round SET active=0 WHERE round_id=? AND active=1", (after_backfill,))
             self._begin(connection, round_id, scope, plans, limit)
             progress = self._request_progress(connection, round_id)
             transaction.commit()
@@ -235,6 +240,10 @@ class SQLiteCompanySyncRoundJournal:
             if connection.run("SELECT 1 FROM company_sync_request WHERE round_id=? AND observed=0 LIMIT 1", (round_id,)).fetchone() is not None:
                 raise ValueError("company_sync_refresh_has_unknown_request")
             connection.run("UPDATE company_sync_round SET active=0 WHERE round_id=? AND active=1", (round_id,))
+
+    def can_handoff_backfill(self, round_id: str, next_cutoff: datetime) -> bool:
+        with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection):
+            return _only_backfill(connection, round_id, next_cutoff, allow_local_step=True)
 
     def can_refresh(self, round_id: str) -> bool:
         with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection):
@@ -480,6 +489,25 @@ def _phase_family(value: object) -> CompanySyncFamily:
         return CompanySyncFamily(value)
     except ValueError as exc:
         raise CompanyDatabaseIncompatibleError(CompanyDownloadStore.REQUEST_JOURNAL) from exc
+
+
+def _only_backfill(connection: SqliteConnection, round_id: str, next_cutoff: datetime, *, allow_local_step: bool) -> bool:
+    old = connection.run("SELECT cutoff FROM company_sync_round WHERE round_id=? AND active=1", (round_id,)).fetchone()
+    if old is None or next_cutoff.astimezone(ZoneInfo("Asia/Shanghai")).date() <= datetime.fromisoformat(old[0]).date():
+        return False
+    if connection.run("SELECT 1 FROM company_sync_request WHERE round_id=? AND observed=0 LIMIT 1", (round_id,)).fetchone():
+        return False
+    for family in ("financial", "pledge", "unlock", "announcements"):
+        row = connection.run("""SELECT complete,processed,can_continue,failure FROM company_sync_step
+            WHERE round_id=? AND family=? ORDER BY step DESC LIMIT 1""", (round_id, family)).fetchone()
+        if row is None or tuple(row) != ((1, 0, 1, None) if family == "announcements" else (1, 1, 0, None)):
+            return False
+    annual = connection.run("""SELECT complete,failure FROM company_sync_step WHERE round_id=? AND family='annual_income'
+        ORDER BY step DESC LIMIT 1""", (round_id,)).fetchone()
+    if annual is not None and tuple(annual) != (1, None):
+        return False
+    pending = connection.run("SELECT family,source_required FROM company_sync_step WHERE round_id=? AND complete=0", (round_id,)).fetchall()
+    return not pending or allow_local_step and len(pending) == 1 and tuple(pending[0]) == ("fields", 0)
 
 
 def _validate_active_families(connection: SqliteConnection) -> None:

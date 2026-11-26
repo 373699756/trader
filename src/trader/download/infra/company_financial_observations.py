@@ -9,12 +9,14 @@ from trader.download.domain.company_evidence import CompanyFinancial, CompanyInp
 from trader.download.domain.company_source_records import (
     CompanyFinancialBatchCoverage,
     CompanyFinancialField,
+    CompanyFinancialMarketPrefix,
     CompanyFinancialMissingField,
     CompanyFinancialScoringObservation,
     CompanyFinancialSourceObservation,
     CompanyFinancialSourceValues,
 )
 from trader.download.infra.company_facts_protocol import EncodeCompanyTime, RequireCompanyTime
+from trader.download.infra.company_financial_series import CompanyFinancialSeriesState
 from trader.infra.sqlite_connection import SqliteConnection, SqliteSchema
 
 
@@ -127,6 +129,7 @@ def ReadRoundLatestCompanyFinancialObservations(
 
 def ReadRoundCompanyFinancialBatch(
     connection: SqliteConnection, scope: str, population: int,
+    *, series: CompanyFinancialSeriesState | None = None,
 ) -> CompanyFinancialBatchCoverage:
     """Summarize the frozen pagination and latest observed periods in one read transaction."""
     accepted, first, last, expected, maximum_pages, expected_rows, maximum_rows, raw_rows = connection.run(
@@ -140,6 +143,9 @@ def ReadRoundCompanyFinancialBatch(
     ):
         raise CompanyInputValidationFailure("company_financial_batch_pagination_inconsistent")
 
+    if series is not None:
+        accepted, expected = series.accepted_pages, series.expected_pages
+        raw_rows, expected_rows = series.accepted_raw_rows, series.expected_raw_rows
     present = ", ".join(f"COUNT(o.{column})" for _, column in _BATCH_FIELDS)
     all_present = " AND ".join(f"o.{column} IS NOT NULL" for _, column in _BATCH_FIELDS)
     observed, matched, complete, profit_pair, same_day, later, earlier, missing_update, *counts = connection.run(
@@ -164,6 +170,8 @@ def ReadRoundCompanyFinancialBatch(
 
     return CompanyFinancialBatchCoverage(
         population=population,
+        market_prefix=(CompanyFinancialMarketPrefix(series.market_read_pages, series.market_declared_pages,
+            series.market_read_rows, series.market_declared_rows, len(series.exact_codes)) if series is not None else None),
         accepted_pages=accepted,
         expected_pages=expected,
         accepted_raw_rows=raw_rows,

@@ -10,11 +10,14 @@ from zoneinfo import ZoneInfo
 
 from trader.download.infra.company_sync_io import CompanySyncIoBudget
 from trader.download.domain.company_evidence import CompanyInputValidationFailure
-from trader.download.domain.company_evidence import StructuredCompanyQuery
+from trader.download.domain.company_evidence import CompanyLatestFinancialQuery, StructuredCompanyQuery
 from trader.download.domain.company_events import CompanyEventPolicy
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_document_links import CompanyPublishedEvidenceLink
 from trader.download.infra.company_document_link_rows import ReadCompanyDocumentLinks
+from trader.download.infra.company_financial_series import (
+    CompanyFinancialPageScope, CompanyLatestFinancialScope, ReadCompanyLatestFinancialSeries, RecordCompanyFinancialSeriesPage,
+)
 from trader.download.domain.company_field_results import CompanyFieldConclusion
 from trader.download.domain.company_normalization import CompanyNormalizationCommit, NormalizeCompanyFinancialFacts
 from trader.download.domain.company_source_records import (
@@ -95,6 +98,12 @@ class SQLiteCompanyNormalizedIndex:
             with SqliteSession(path, actual_options, sqlite_policy=sqlite_policy, cancel_requested=cancel_requested) as connection:
                 yield connection
 
+    def has_pending_publication(self) -> bool:
+        with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
+            return connection.run("""SELECT 1 FROM company_round_intent WHERE confirmed_content_hash IS NULL
+                UNION ALL SELECT 1 FROM company_round_generation g WHERE NOT EXISTS(
+                    SELECT 1 FROM company_round_intent i WHERE i.scope=g.scope) LIMIT 1""").fetchone() is not None
+
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._session(self.path, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy) as connection:
@@ -159,13 +168,17 @@ class SQLiteCompanyNormalizedIndex:
         today = cutoff.astimezone(ZoneInfo("Asia/Shanghai")).date()
         if query.start < today - timedelta(days=365) or query.end > today:
             raise ValueError("company_round_window_invalid")
+        if isinstance(query, CompanyLatestFinancialQuery):
+            return CompanyLatestFinancialScope(query, codes, cutoff)
         return CanonicalDigest((query.component, query.start, query.end, codes, cutoff))
 
     def cursor(self, query: StructuredCompanyQuery, codes: tuple[str, ...], cutoff: datetime) -> StructuredCompanyQuery | None:
         scope = self._scope(query, codes, cutoff)
-        with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection:
+        with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection):
             if connection.run("SELECT 1 FROM company_normalization_seed WHERE singleton=1 AND complete=1").fetchone() is None:
                 raise ValueError("company_normalization_baseline_missing")
+            if isinstance(query, CompanyLatestFinancialQuery):
+                return ReadCompanyLatestFinancialSeries(connection, query, codes, cutoff).cursor
             row = connection.run("SELECT MAX(page),pages,total,SUM(raw_count) FROM company_round_page WHERE scope=?", (scope,)).require_one()
         if row[0] is None:
             return replace(query, page=1, received_rows=0, expected_rows=None)
@@ -183,7 +196,8 @@ class SQLiteCompanyNormalizedIndex:
         with self._session(
             self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy,
         ) as connection, SqliteTransaction(connection):
-            return ReadRoundCompanyFinancialBatch(connection, scope, len(codes))
+            series = ReadCompanyLatestFinancialSeries(connection, query, codes, cutoff) if isinstance(query, CompanyLatestFinancialQuery) else None
+            return ReadRoundCompanyFinancialBatch(connection, scope, len(codes), series=series)
 
     def latest_financial_observations(
         self, query: StructuredCompanyQuery, codes: tuple[str, ...], cutoff: datetime,
@@ -194,7 +208,7 @@ class SQLiteCompanyNormalizedIndex:
         with self._session(
             self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy,
         ) as connection, SqliteTransaction(connection):
-            if _closed_financial_observation_watermark(connection, scope) is None:
+            if _financial_watermark(connection, query, scope, codes, cutoff) is None:
                 return ()
             return ReadRoundLatestCompanyFinancialObservations(connection, scope)
 
@@ -207,10 +221,11 @@ class SQLiteCompanyNormalizedIndex:
         with self._session(
             self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy,
         ) as connection, SqliteTransaction(connection):
-            return _closed_financial_observation_watermark(connection, scope)
+            return _financial_watermark(connection, query, scope, codes, cutoff)
 
     def accept(self, query: StructuredCompanyQuery, page: CompanyFinancialSourcePage, codes: tuple[str, ...], cutoff: datetime, *, eligible_codes: tuple[str, ...] | None = None) -> None:
-        scope = self._scope(query, codes, cutoff)
+        root = self._scope(query, codes, cutoff)
+        scope = CompanyFinancialPageScope(root, query) if isinstance(query, CompanyLatestFinancialQuery) else root
         if query.page != page.page:
             raise CompanyInputValidationFailure("company_round_page_number_mismatch")
         if query.expected_rows is not None and page.total != query.expected_rows:
@@ -221,6 +236,8 @@ class SQLiteCompanyNormalizedIndex:
             raise CompanyInputValidationFailure("company_round_notice_outside_window")
         self._check_cancelled()
         with self._session(self.path, SqliteConnectionOptions(foreign_keys=True), sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
+            if isinstance(query, CompanyLatestFinancialQuery) and ReadCompanyLatestFinancialSeries(connection, query, codes, cutoff).cursor != query:
+                raise CompanyInputValidationFailure("company_financial_group_cursor_changed")
             previous = connection.run("SELECT MAX(page),pages,total FROM company_round_page WHERE scope=?", (scope,)).require_one()
             if (page.page != (previous[0] or 0) + 1 or previous[0] is not None and (page.pages, page.total) != (previous[1], previous[2])):
                 raise CompanyInputValidationFailure("company_round_pagination_changed")
@@ -242,6 +259,8 @@ class SQLiteCompanyNormalizedIndex:
                                   item.record_hash if item.record_hash in selected_hashes else None)
                                  for item in page.observations))
             connection.run("INSERT INTO company_round_page VALUES(?,?,?,?,?,?)", (scope, page.page, page.pages, page.total, page.raw_count, page.response_hash))
+            if isinstance(query, CompanyLatestFinancialQuery):
+                RecordCompanyFinancialSeriesPage(connection, root, scope, query, page, codes)
 
     def normalize(self, query: StructuredCompanyQuery, codes: tuple[str, ...], cutoff: datetime) -> tuple[str, ...]:
         scope = self._scope(query, codes, cutoff)
@@ -301,7 +320,7 @@ class SQLiteCompanyNormalizedIndex:
             raise ValueError("company_financial_scoring_scope_invalid")
         self._check_cancelled()
         with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as source, SqliteTransaction(source):
-            watermark = _closed_financial_observation_watermark(source, financial_scope)
+            watermark = _financial_watermark(source, query, financial_scope, codes, cutoff)
             if watermark is None:
                 return False
             scope = CanonicalDigest(("financial_scoring", financial_scope, watermark))
@@ -580,7 +599,11 @@ def _intent_parent(row: tuple[object, ...]) -> CompanyPublicationIdentity | None
     return CompanyPublicationIdentity(row[1], row[2], RequireCompanyTime(row[3]))
 
 
-def _closed_financial_observation_watermark(connection: SqliteConnection, scope: str) -> str | None:
+def _financial_watermark(
+    connection: SqliteConnection, query: StructuredCompanyQuery, scope: str, codes: tuple[str, ...], cutoff: datetime,
+) -> str | None:
+    if isinstance(query, CompanyLatestFinancialQuery):
+        return ReadCompanyLatestFinancialSeries(connection, query, codes, cutoff).watermark
     pages = tuple(tuple(row) for row in connection.run(
         "SELECT page,pages,total,raw_count,response_hash FROM company_round_page WHERE scope=? ORDER BY page", (scope,),
     ))

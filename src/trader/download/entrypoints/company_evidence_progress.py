@@ -28,19 +28,22 @@ from trader.download.application.progress_message import (
     ProgressTask,
 )
 from trader.download.application.company_round_progress import (
-    CompanyEventFieldCoverage, CompanyFieldOutcomeCounts, CompanyFormalCoverage, CompanyRequestProgress,
+    CompanyFieldOutcomeCounts, CompanyFormalCoverage, CompanyRequestProgress,
 )
 from trader.download.infra.progress_projection import ProgressNumber
 from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.download.infra.terminal_progress import TerminalDownloadProgress
 from trader.download.domain.company_evidence import (
-    CompanyInputValidationFailure, CompanyOperationKind, CompanyOperationProgress, CompanyPublicationProgress,
+    CompanyInputValidationFailure, CompanyLatestFinancialQuery, CompanyOperationKind, CompanyOperationProgress, CompanyPublicationProgress,
     CompanySourceFailure, CompanyStockProgress, DisclosurePartition, EvidenceSyncProgress, StructuredCompanyQuery,
 )
 from trader.download.domain.company_annual_income import CompanyAnnualIncomeRequest
 from trader.download.domain.history_sync import HistoryStCheckFailure, HistoryStCheckProgress
 from trader.download.domain.company_events import CompanyDataState
-from trader.download.domain.company_field_results import CompanyFieldName
+from trader.download.entrypoints.company_coverage_progress import (
+    CompanyCoverageRate, CompanyFinancialBatchRows, CompanyFinancialBatchTotals, CompanyFormalCoverageRows,
+    CompanyFormalCoverageSummary, CompanyProgressQuantity,
+)
 from trader.download.domain.company_source_records import CompanyFinancialBatchCoverage
 from trader.download.domain.company_sync import (
     CompanyAnnualIncomeDownloadProgress, CompanyDisclosureDownloadProgress, CompanyDocumentDownloadProgress,
@@ -166,10 +169,6 @@ def _source_label(sources: tuple[str, ...]) -> str:
     return "/".join(dict.fromkeys(_SOURCES.get(source, source) for source in sources))
 
 
-def _quantity(value: int | None) -> str:
-    return "未核对" if value is None else str(value)
-
-
 _COMPANY_ROUND_TASK = ProgressTask("company", "prepare", "公司轮次")
 _COMPANY_COVERAGE_TASK = ProgressTask("company", "coverage", "正式库")
 _COMPANY_REQUEST_TASK = ProgressTask("company", "requests", "请求账本")
@@ -185,32 +184,6 @@ _FAMILY_NAMES = {
 _JournalStep = tuple[str, CompanySyncFamily, int]
 _Snapshot = TypeVar("_Snapshot")
 _logger = logging.getLogger(__name__)
-_FINANCIAL_OBSERVATION_LABELS = {
-    "basic_eps": "EPS",
-    "book_value_per_share": "每股净资产",
-    "revenue_growth_pct": "营收同比",
-    "net_profit_growth_pct": "净利同比",
-    "core_profit_growth_pct": "扣非同比",
-    "roe_pct": "ROE",
-    "parent_net_profit": "归母利润",
-    "core_net_profit": "扣非利润",
-}
-_EVENT_FIELD_LABELS: dict[CompanyFieldName, str] = {
-    "start_date": "减持开始日期",
-    "end_date": "减持结束日期",
-    "planned_pct": "计划减持比例",
-    "completion_disclosed_at": "减持完成披露时间",
-    "actual_pct": "回购或增持实际比例",
-    "repurchase_purpose": "回购用途",
-    "contract_amount": "合同金额",
-    "annual_revenue": "年度营业收入",
-    "revenue_report_date": "营收报告期",
-    "revenue_disclosed_at": "营收披露时间",
-    "contract_revenue_pct": "合同金额占营收比例",
-    "amount_basis": "合同金额口径",
-}
-
-
 @dataclass(slots=True)
 class _CompanyFamilyRun:
     seconds: float | None = None
@@ -411,7 +384,9 @@ class CompanyRoundProgress:
         now = self._monotonic()
         if scope is None:
             return
-        if family.family is CompanySyncFamily.FINANCIAL and now >= self._next_financial_check:
+        if family.family is CompanySyncFamily.FINANCIAL and (
+            now >= self._next_financial_check or family.result.processed_scope_complete
+        ):
             self._sample_financial(scope)
         if family.family is CompanySyncFamily.FIELDS and family.result.changed_codes and now >= self._next_coverage_check:
             self._next_coverage_check = now + 30.0
@@ -460,6 +435,8 @@ class CompanyRoundProgress:
             self._last_coverage = (counts, self._monotonic())
             if phase == "同步中" and last_snapshot is not None and last_snapshot[0].publication_hash == counts.publication_hash:
                 return
+        if self._scope is not None:
+            fields += (ProgressField(f"本轮资料截止 {self._scope.cutoff.isoformat(timespec='seconds')}"),)
         if counts is not None:
             fields += (ProgressField(f"发布 {counts.publication_hash[:12]}"),)
         if coverage is None:
@@ -468,12 +445,14 @@ class CompanyRoundProgress:
         else:
             fields += (
                 ProgressField(f"固定总体{coverage.stocks}股"),
-                ProgressField(f"正式荐股资料缺口{_rate(coverage.recommendation_missing, coverage.recommendation_expected)}"
+                ProgressField(f"完整财务与风险覆盖缺口{CompanyCoverageRate(coverage.recommendation_missing, coverage.recommendation_expected)}"
                     "（每股8项财务和3项风险覆盖）"),
             )
+            if coverage.financial_scoring_stocks is not None:
+                fields += (ProgressField(f"D25已发布评分观测{CompanyCoverageRate(coverage.financial_scoring_stocks, coverage.stocks)}股"),)
             if phase == "本轮收尾":
-                fields += _formal_coverage_summary(coverage, previous)
-            rows = tuple(replace(row, label=f"正式库·{row.label}") for row in _coverage_rows(coverage))
+                fields += CompanyFormalCoverageSummary(coverage, previous)
+            rows = tuple(replace(row, label=f"正式库·{row.label}") for row in CompanyFormalCoverageRows(coverage))
         self._report(ProgressMessage(fields, task=_COMPANY_COVERAGE_TASK, finished=phase == "本轮收尾",
             immediate=True, heartbeat=False, compact=True, rows=rows, stage_width=52))
 
@@ -614,14 +593,14 @@ class CompanyRoundProgress:
             ))
         if financial_batch is not None:
             batch, verified_at = financial_batch
-            details = _financial_batch_totals(batch)
+            details = CompanyFinancialBatchTotals(batch)
             if self._scope is not None and not financial_fresh:
                 age = ProgressDuration(self._monotonic() - verified_at)
                 details = (ProgressField(f"收尾未重新核对，以下为{age}前的来源统计", ProgressLevel.WARNING), *details)
             self._report(ProgressMessage(
                 details,
                 task=ProgressTask("company", "financial_values", "来源库·东财财报字段"),
-                rows=_financial_batch_rows(batch), finished=True, heartbeat=False, compact=True, stage_width=52,
+                rows=CompanyFinancialBatchRows(batch), finished=True, heartbeat=False, compact=True, stage_width=52,
             ))
         elif started_at is not None:
             self._report(ProgressMessage(
@@ -659,12 +638,17 @@ class CompanyRoundProgress:
         )
 
     def _source_fields(self, now: float) -> tuple[ProgressField, ...]:
-        pages = tuple(
-            ProgressField(f"{_FAMILY_NAMES[family]} {_rate(page.accepted_pages, page.expected_pages)}页")
-            if (page := self._pages.get(family)) is not None
-            else ProgressField(f"{_FAMILY_NAMES[family]} 总页数待确认")
-            for family in (CompanySyncFamily.FINANCIAL, CompanySyncFamily.PLEDGE, CompanySyncFamily.UNLOCK)
-        )
+        pages = []
+        for family in (CompanySyncFamily.FINANCIAL, CompanySyncFamily.PLEDGE, CompanySyncFamily.UNLOCK):
+            if family is CompanySyncFamily.FINANCIAL and self._financial_batch and self._financial_batch[0].market_prefix:
+                batch = self._financial_batch[0]
+                state = "逐股最新查询已闭合" if batch.pages_complete else "逐股最新查询中"
+                value = f"{state}，已入库{batch.accepted_pages}页，已有报告{batch.latest_observed_stocks}/{batch.population}股"
+            elif (page := self._pages.get(family)) is not None:
+                value = f"{CompanyCoverageRate(page.accepted_pages, page.expected_pages)}页"
+            else:
+                value = "总页数待确认"
+            pages.append(ProgressField(f"{_FAMILY_NAMES[family]} {value}"))
         elapsed = now - self._started_at if self._started_at is not None else 0.0
         throughput = (
             (ProgressField(f"本次目录新入库{self._accepted_directory_pages}页，平均"
@@ -713,7 +697,7 @@ def _invocation_fields(timing: _CompanyFamilyRun, family: CompanySyncFamily) -> 
         return (ProgressField(description),)
     duration = ProgressField(f"本次确认{timing.acknowledged}步，执行用时{timing.seconds:.2f}秒")
     if timing.latest is not None and family is CompanySyncFamily.FIELDS:
-        return duration, ProgressField(f"本次最近确认核验{_quantity(timing.latest.result.accepted_inputs)}股")
+        return duration, ProgressField(f"本次最近确认核验{CompanyProgressQuantity(timing.latest.result.accepted_inputs)}股")
     return (duration,)
 
 
@@ -727,10 +711,6 @@ def _published_field_totals(fields: CompanyFieldOutcomeCounts | None) -> tuple[P
         ),
         ProgressField(f"各股待处理正文合计{fields.pending_documents}篇次（正式库全发布）"),
     )
-
-
-def _rate(count: int, total: int) -> str:
-    return f"{count}/{total}（{count / total:.2%}）" if total else "无适用项"
 
 
 def _step_fields(step: _JournalStep | None) -> tuple[ProgressField, ...]:
@@ -752,6 +732,9 @@ def _operation_text(operation: CompanyDownloadOperation) -> str:
     target, kind = operation.target, operation.kind
     if kind == "pledge_snapshot":
         return "东财·确认质押快照日期"
+    if isinstance(target, CompanyLatestFinancialQuery):
+        group = f"定向查询{'、'.join(target.securities)}" if target.securities else "全市场按报告期倒序"
+        return f"东财财务 {group} 第{target.page}页"
     if isinstance(target, StructuredCompanyQuery):
         return f"{_FAMILY_NAMES[operation.family]} {target.start}至{target.end} 第{target.page}页"
     if isinstance(target, DisclosurePartition):
@@ -772,7 +755,7 @@ _DOCUMENT_ROUTES = {None: "本地", "standard": "标准", "ocr": "OCR", "limits"
 def _raw_rows(rows: int | None, total: int | None) -> str:
     if total == 0:
         return "原始行0条，来源返回空集"
-    return f"原始行{_quantity(rows)}/{_quantity(total)}条"
+    return f"原始行{CompanyProgressQuantity(rows)}/{CompanyProgressQuantity(total)}条"
 
 
 def _download_fields(
@@ -783,7 +766,7 @@ def _download_fields(
         state = "采集已闭合" if event.accepted_pages == event.expected_pages and event.accepted_rows == event.expected_rows else "采集中"
         return (
             ProgressField(f"{_FAMILY_NAMES[event.family]} {state}"),
-            ProgressField(f"已入库{_rate(event.accepted_pages, event.expected_pages)}页"),
+            ProgressField(f"已入库{CompanyCoverageRate(event.accepted_pages, event.expected_pages)}页"),
             ProgressField(_raw_rows(event.accepted_rows, event.expected_rows)),
         )
     if isinstance(event, CompanyPledgeSnapshotProgress):
@@ -797,139 +780,19 @@ def _download_fields(
         return (ProgressField(f"{location} 子查询覆盖已核对"), ProgressField(_raw_rows(event.accepted_rows, event.expected_rows)))
     state = "已恢复" if event.state == "recovered" else "已入库"
     total = max(1, ceil(event.expected_rows / event.partition.page_size)) if event.expected_rows is not None else None
-    pages = f"{_rate(event.partition.page, total)}页" if total is not None else f"{event.partition.page}页，总页数待确认"
+    pages = f"{CompanyCoverageRate(event.partition.page, total)}页" if total is not None else f"{event.partition.page}页，总页数待确认"
     return (ProgressField(f"{location} {state} {pages}"), ProgressField(_raw_rows(event.accepted_rows, event.expected_rows)))
-
-
-def _event_field_counts(coverage: CompanyEventFieldCoverage) -> tuple[ProgressField, ...]:
-    if not coverage.applicable:
-        return (ProgressField(f"无适用项，不适用{coverage.not_applicable}项"),)
-    return (
-        ProgressField(f"适用{coverage.applicable}项"),
-        ProgressField(f"已有值{_rate(coverage.applicable - coverage.missing_values, coverage.applicable)}"),
-        ProgressField(f"已核有值{_rate(coverage.verified, coverage.applicable)}"),
-        ProgressField(f"缺值{_rate(coverage.missing_values, coverage.applicable)}"),
-        ProgressField(f"待补证{_rate(coverage.present_unverified + coverage.pending, coverage.applicable)}"),
-        ProgressField(f"已核有值{coverage.verified}项，有值待核{coverage.present_unverified}项，"
-            f"其他待核{coverage.pending}项，已证未披露{coverage.not_disclosed}项，不适用{coverage.not_applicable}项"),
-    )
-
-
-def _coverage_rows(coverage: CompanyFormalCoverage) -> tuple[ProgressRow, ...]:
-    stocks = coverage.stocks
-    financial = tuple(
-        ProgressRow(_FINANCIAL_OBSERVATION_LABELS[field],
-            (ProgressField(f"完成{_rate(count, stocks)}股，正式缺{_rate(stocks - count, stocks)}股"),))
-        for field, count in coverage.financial_fields
-    )
-    pledge_missing = stocks - coverage.pledge_with_value - coverage.pledge_without_event
-    unlock_missing = stocks - coverage.unlock_with_event - coverage.unlock_without_event
-    scoring = coverage.financial_scoring_stocks
-    scoring_rows = () if scoring is None else (ProgressRow(
-        "D25财务评分输入", (ProgressField(f"已发布来源观测{_rate(scoring, stocks)}股"),),
-    ),)
-    return (
-        *financial,
-        *scoring_rows,
-        ProgressRow("质押比例", (
-            ProgressField(f"已核覆盖{_rate(stocks - pledge_missing, stocks)}股，待核{_rate(pledge_missing, stocks)}，"
-                f"有质押{coverage.pledge_with_value}股，已核无质押{coverage.pledge_without_event}股"),
-        )),
-        ProgressRow("未来解禁", (
-            ProgressField(f"完整覆盖{_rate(stocks - unlock_missing, stocks)}股，覆盖待核{_rate(unlock_missing, stocks)}，"
-                f"完整窗有解禁{coverage.unlock_with_event}股，已核无解禁{coverage.unlock_without_event}股，"
-                f"部分覆盖已核有解禁{coverage.unlock_partial_with_event}股"),
-        )),
-        ProgressRow("公告风险覆盖", (
-            ProgressField(f"完整覆盖{_rate(coverage.announcement_complete, stocks)}股，"
-                f"缺{_rate(stocks - coverage.announcement_complete, stocks)}，"
-                f"其中部分覆盖{_rate(coverage.announcement_partial, stocks)}"),
-        )),
-        ProgressRow("减持事件字段", _event_field_counts(coverage.reduction_fields)),
-        *(ProgressRow(_EVENT_FIELD_LABELS[field], _event_field_counts(counts))
-            for field, counts in coverage.reduction_field_counts),
-        ProgressRow("其他公告字段", _event_field_counts(coverage.other_fields)),
-        *(ProgressRow(_EVENT_FIELD_LABELS[field], _event_field_counts(counts))
-            for field, counts in coverage.other_field_counts),
-    )
-
-
-def _financial_batch_totals(coverage: CompanyFinancialBatchCoverage) -> tuple[ProgressField, ...]:
-    status = "页账本已闭合" if coverage.pages_complete else "页账本待闭合"
-    gaps = "、".join(
-        f"{_FINANCIAL_OBSERVATION_LABELS[field]}缺{count}股"
-        for field, count in coverage.missing_fields if count
-    )
-    fields: tuple[ProgressField, ...] = (
-        ProgressField(
-            f"{status}，财务批量页{coverage.accepted_pages}/{_quantity(coverage.expected_pages)}，"
-            f"原始行{coverage.accepted_raw_rows}/{_quantity(coverage.expected_raw_rows)}"
-        ),
-        ProgressField(
-            f"财务源观察{coverage.latest_observed_stocks}/{coverage.population}股，"
-            f"最新报表八项有值{coverage.latest_complete_stocks}股，"
-            f"归母与扣非同时有值{coverage.latest_profit_pair_stocks}股"
-        ),
-        ProgressField(
-            f"已观察财报原始缺值{_rate(sum(count for _, count in coverage.missing_fields), coverage.latest_observed_stocks * 8)}，"
-            f"观测报告有缺项{_rate(coverage.latest_observed_stocks - coverage.latest_complete_stocks, coverage.latest_observed_stocks)}"
-        ),
-    )
-    if gaps:
-        fields += (ProgressField(f"有观测的最新报表 {gaps}"),)
-    return fields
-
-
-def _financial_batch_rows(coverage: CompanyFinancialBatchCoverage) -> tuple[ProgressRow, ...]:
-    observed = coverage.latest_observed_stocks
-    if observed == 0:
-        return (ProgressRow("来源库·东财财报字段", (ProgressField("无已取得报告，字段有值率待核"),)),)
-    rows = tuple(
-        ProgressRow(
-            f"来源库·{_FINANCIAL_OBSERVATION_LABELS[field]}",
-            (ProgressField(f"已取得报告{_rate(observed, coverage.population)}股，"
-                f"有值{_rate(observed - count, observed)}股，缺值{_rate(count, observed)}股"),),
-        )
-        for field, count in coverage.missing_fields
-    )
-    report_scope = "已入库各股最新报告" if coverage.pages_complete else "已入库页暂计各股最新报告"
-    update_dates = ProgressRow("来源库·东财供应商日期", (
-        ProgressField(
-            f"{report_scope}{observed}股，更新日与披露日同日{_rate(coverage.supplier_updates_same_day, observed)}，"
-            f"晚于{_rate(coverage.supplier_updates_later, observed)}，"
-            f"早于{_rate(coverage.supplier_updates_earlier, observed)}，"
-            f"更新日缺失{_rate(coverage.supplier_updates_missing, observed)}"
-        ),
-        ProgressField("供应商日期元数据，发行人首次披露时间及修订链仍待核"),
-    ))
-    return (*rows, update_dates)
-
-
-def _formal_coverage_summary(
-    coverage: CompanyFormalCoverage, previous: CompanyFormalCoverage | None,
-) -> tuple[ProgressField, ...]:
-    totals = (
-        ProgressField(f"正式完整财报{coverage.financial_complete}/{coverage.stocks}股"),
-        ProgressField(f"最新披露双利润{coverage.latest_profit_values}股"),
-        ProgressField(f"已核风险事件涉及{coverage.verified_risk_stocks}股"),
-    )
-    if previous is None:
-        return totals
-    pledge_delta = coverage.pledge_with_value + coverage.pledge_without_event - previous.pledge_with_value - previous.pledge_without_event
-    unlock_delta = coverage.unlock_with_event + coverage.unlock_without_event - previous.unlock_with_event - previous.unlock_without_event
-    return (*totals, ProgressField(f"同范围完整覆盖净增 财务{coverage.financial_complete - previous.financial_complete:+d}股／"
-        f"质押{pledge_delta:+d}股／解禁{unlock_delta:+d}股／公告{coverage.announcement_complete - previous.announcement_complete:+d}股"))
 
 
 def _family_progress_fields(family: CompanySyncFamilyResult) -> tuple[ProgressField, ...]:
     accepted = (
-        f"累计核验{_quantity(family.accepted_inputs)}股次/{family.steps}步，累计变动{len(family.result.changed_codes)}股"
+        f"累计核验{CompanyProgressQuantity(family.accepted_inputs)}股次/{family.steps}步，累计变动{len(family.result.changed_codes)}股"
         if family.family is CompanySyncFamily.FIELDS
-        else f"累计接纳输入{_quantity(family.accepted_inputs)}项"
+        else f"累计接纳输入{CompanyProgressQuantity(family.accepted_inputs)}项"
     )
     progress = ProgressField(
         f"{family.family.value} {accepted}，"
-        f"本族请求预算已占用{_quantity(family.source_calls)}，未知{_quantity(family.unknown_attempts)}")
+        f"本族请求预算已占用{CompanyProgressQuantity(family.source_calls)}，未知{CompanyProgressQuantity(family.unknown_attempts)}")
     if family.result.retry_after_seconds is not None:
         return progress, ProgressField(f"冷却{family.result.retry_after_seconds:g}秒后自动复核，可随时取消")
     if family.family is CompanySyncFamily.ANNUAL_INCOME and family.result.business_complete and family.accepted_inputs == 0:
@@ -1203,8 +1066,8 @@ class CompanyEvidenceProgress:
     def _overview(self, progress: EvidenceSyncProgress) -> tuple[str, ...]:
         states = tuple(self._group_state(group) for group in _TASK_GROUPS)
         parts = ["事项9项：" + "、".join(f"{label}{states.count(label)}" for label in ("完成", "进行", "待处理", "待续传"))]
-        parts.append(f"本轮已获取{len(self._received_codes)}股、核验{len(self._stocks)}/{_quantity(self._population)}股、提交{len(self._committed_codes)}股（去重）")
-        parts.append(f"已知待补{len(self._waiting_codes)}股；未核验{_quantity(None if self._population is None else max(0, self._population - len(self._stocks)))}股")
+        parts.append(f"本轮已获取{len(self._received_codes)}股、核验{len(self._stocks)}/{CompanyProgressQuantity(self._population)}股、提交{len(self._committed_codes)}股（去重）")
+        parts.append(f"已知待补{len(self._waiting_codes)}股；未核验{CompanyProgressQuantity(None if self._population is None else max(0, self._population - len(self._stocks)))}股")
         parts.append(f"当前{_LABELS[progress.component]}；来源{_source_label(progress.sources) or '未提供'}")
         if self._feedback.has_diagnostics:
             parts.extend(self._feedback.summary()[:1])
@@ -1234,7 +1097,7 @@ class CompanyEvidenceProgress:
         if structured is not None:
             if structured.first_date is not None:
                 parts.append(f"本页资料日期{structured.first_date}～{structured.last_date}")
-            parts.append(f"合格股票已获取{len(self._component_codes.get(progress.component, set()))}/{_quantity(self._population)}股（本查询已见，非覆盖）")
+            parts.append(f"合格股票已获取{len(self._component_codes.get(progress.component, set()))}/{CompanyProgressQuantity(self._population)}股（本查询已见，非覆盖）")
             parts.append("批量接口，无单一当前股票")
         if isinstance(scope, DisclosurePartition):
             pages = None if scope.expected_rows is None or scope.expected_rows > 3000 else max(1, ceil(scope.expected_rows / scope.page_size))
@@ -1307,7 +1170,7 @@ class CompanyEvidenceProgress:
         if documents is not None:
             running = tuple(item for item in self._operations.values() if item.state == "running")
             parts.append(f"执行中：下载{sum(item.kind == 'download' for item in running)}、文本{sum(item.kind == 'text' for item in running)}、OCR{sum(item.kind == 'ocr' for item in running)}；排队{sum(item.state == 'queued' for item in self._operations.values())}")
-            parts.append(f"正文冷却{_quantity(documents.deferred_documents)}篇、不可提取{_quantity(documents.unextractable_documents)}篇、未解决失败{documents.unresolved_document_failures}篇、已分析待发{_quantity(documents.unpublished_documents)}篇")
+            parts.append(f"正文冷却{CompanyProgressQuantity(documents.deferred_documents)}篇、不可提取{CompanyProgressQuantity(documents.unextractable_documents)}篇、未解决失败{documents.unresolved_document_failures}篇、已分析待发{CompanyProgressQuantity(documents.unpublished_documents)}篇")
             if documents.discovering_documents:
                 parts.append("目录仍增长，正文总数待发现")
             elif documents.document_eta_seconds is not None:
@@ -1326,17 +1189,17 @@ class CompanyEvidenceProgress:
             return f"{_LABELS[progress.component]}已保存{progress.completed}/{total}页" + (f"，{progress.completed / (progress.completed + progress.pending) * 100:.1f}%" if progress.pending is not None and progress.completed + progress.pending else "")
         if progress.component == "risk_documents":
             due = max(0, progress.pending - progress.deferred_documents - progress.unextractable_documents) if progress.pending is not None and progress.deferred_documents is not None and progress.unextractable_documents is not None else None
-            return f"正文已入库{progress.completed}篇，可处理待补{_quantity(due)}篇；本轮失败{progress.failed_documents}篇"
+            return f"正文已入库{progress.completed}篇，可处理待补{CompanyProgressQuantity(due)}篇；本轮失败{progress.failed_documents}篇"
         if progress.component == "facts":
             return f"本批核验{progress.completed}/{total}股；本轮去重核验{len(self._stocks)}股"
         if progress.publication is not None:
             return f"本批{'提交' if progress.publication.state == 'committed' else '待发'}{len(progress.publication.codes)}股；本轮去重提交{len(self._committed_codes)}股"
         if progress.component == "publish":
-            return f"正式覆盖{progress.completed}/{_quantity(self._population)}股；本轮提交{len(self._committed_codes)}股"
+            return f"正式覆盖{progress.completed}/{CompanyProgressQuantity(self._population)}股；本轮提交{len(self._committed_codes)}股"
         if progress.component == "announcements":
-            return f"目录已持久推进{progress.completed}个范围，已知待补{_quantity(progress.pending)}个范围（可继续细分）；已知待取{progress.known_pages}页、待发现页数的查询{progress.unknown_queries}个"
+            return f"目录已持久推进{progress.completed}个范围，已知待补{CompanyProgressQuantity(progress.pending)}个范围（可继续细分）；已知待取{progress.known_pages}页、待发现页数的查询{progress.unknown_queries}个"
         if progress.component == "complete":
-            return f"目录待补{_quantity(progress.pending)}个范围；正文待补{_quantity(progress.pending_documents)}篇；本轮变更{len(self._changed_codes)}股（去重）"
+            return f"目录待补{CompanyProgressQuantity(progress.pending)}个范围；正文待补{CompanyProgressQuantity(progress.pending_documents)}篇；本轮变更{len(self._changed_codes)}股（去重）"
         return f"{_LABELS[progress.component]}{progress.completed}/{total}{_UNITS[progress.component]}"
 
     def _summary_message(self, progress: EvidenceSyncProgress) -> ProgressMessage:

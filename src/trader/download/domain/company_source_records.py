@@ -142,6 +142,8 @@ class CompanyFinancialSourcePage:
     raw_count: int
     observations: tuple[CompanyFinancialSourceObservation, ...]
     response_hash: str
+    first_order_key: tuple[date, str] | None = None
+    last_order_key: tuple[date, str] | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -155,8 +157,27 @@ class CompanyFinancialSourcePage:
             or self.total > 0 and self.raw_count == 0
             or re.fullmatch(r"[0-9a-f]{64}", self.response_hash) is None
             or len({item.business_key for item in self.observations}) != len(self.observations)
+            or (self.first_order_key is None) != (self.last_order_key is None)
+            or self.raw_count == 0 and self.first_order_key is not None
         ):
             raise ValueError("company_financial_source_page_invalid")
+
+
+def CompanyFinancialOrderIncreases(previous: tuple[date, str], current: tuple[date, str], *, exact: bool) -> bool:
+    if exact:
+        return (previous[1], -previous[0].toordinal()) < (current[1], -current[0].toordinal())
+    return (-previous[0].toordinal(), previous[1]) < (-current[0].toordinal(), current[1])
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyFinancialMarketPrefix:
+    """Actual market pages examined to find the latest report for each requested issuer."""
+
+    read_pages: int
+    declared_pages: int | None
+    read_rows: int
+    declared_rows: int | None
+    exact_issuer_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,6 +197,7 @@ class CompanyFinancialBatchCoverage:
     supplier_updates_later: int
     supplier_updates_earlier: int
     supplier_updates_missing: int
+    market_prefix: CompanyFinancialMarketPrefix | None = None
 
     @property
     def pages_complete(self) -> bool:
@@ -236,7 +258,9 @@ __all__ = [
     "CompanyFinancialSourceObservation",
     "CompanyFinancialScoringObservation",
     "CompanyFinancialSourcePage",
+    "CompanyFinancialOrderIncreases",
     "CompanyFinancialBatchCoverage",
+    "CompanyFinancialMarketPrefix",
     "CompanyOfficialDirectoryQuery",
     "CompanyOfficialDirectoryObservation",
     "CompanyOfficialDirectoryPage",

@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from trader.download.application.company_financial_producer import BuildCompanyFinancialRoundQuery, CompanyFinancialProducer
+from trader.download.application.company_financial_producer import CompanyFinancialProducer, ResolveCompanyFinancialScoringQuery
 from trader.download.application.company_source_ports import (
     CompanyAnnualIncomeSource, CompanyFinancialObservationSource, CompanyOfficialDocumentSource, CompanyRatioSource,
 )
@@ -28,7 +28,7 @@ from trader.download.domain.company_source_records import CompanyFinancialSource
 from trader.download.domain.company_sync import (
     CompanySourceDownloadProgress, CompanySyncBudget, CompanySyncFamily, CompanySyncFamilyResult, CompanySyncPauseReason,
     CompanySyncInterrupted, CompanySyncPhasePlan, CompanySyncPhaseState,
-    CompanySyncRebuildActiveRound, CompanySyncRoundResult, CompanySyncRoundScope, CompanySyncStepResult, CompanySourceCancelled,
+    CompanySyncRebuildActiveRound, CompanySyncRoundIdentity, CompanySyncRoundResult, CompanySyncRoundScope, CompanySyncStepResult, CompanySourceCancelled,
 )
 from trader.download.domain.company_unlock_notice import IsCompanyUnlockListingNotice
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
@@ -76,7 +76,7 @@ class CompanySyncRuntime:
         io_budget: CompanySyncIoBudget | None = None,
         document_configuration: CompanySyncConfiguration | None = None, document_policies: CompanyDocumentPolicies | None = None,
         wall_clock: Callable[[], datetime] | None = None,
-        observe_scope: Callable[[CompanySyncRoundScope], None] | None = None,
+        observe_scope: Callable[[CompanySyncRoundScope, StructuredCompanyQuery], None] | None = None,
         observe: Callable[[CompanySyncFamilyResult], None] | None = None,
         observe_download: Callable[[CompanySourceDownloadProgress], None] | None = None,
         observe_financial_scoring: Callable[[CompanySyncRoundScope], None] | None = None,
@@ -200,12 +200,13 @@ class CompanySyncRuntime:
     def _run(
         self, codes: tuple[str, ...], cutoff: datetime, budget: CompanySyncBudget, *,
         cancel_requested: Callable[[], bool], monotonic: Callable[[], float],
-        financial_query: StructuredCompanyQuery | None = None, new_refresh: bool = True,
+        financial_query: StructuredCompanyQuery | None = None, new_refresh: bool = True, after_backfill: str | None = None,
     ) -> CompanySyncRoundResult:
         if cancel_requested() or monotonic() >= budget.deadline:
             return self._stopped("", CompanySyncRoundScope(codes, cutoff), budget, cancel_requested, monotonic)
         requested_scope = CompanySyncRoundScope(codes, cutoff)
-        active = self.journal.active()
+        requested_source_limit = budget.max_source_calls
+        active = self.journal.active() if after_backfill is None else None
         current_codes = frozenset(codes)
         exhausted = active is not None and active.max_source_calls is not None and active.source_calls >= active.max_source_calls
         resume_exhausted = active is not None and exhausted and (
@@ -218,7 +219,7 @@ class CompanySyncRuntime:
                 # its round is released for a new network scope.
                 self._publish_financial_scoring(
                     active.scope,
-                    BuildCompanyFinancialRoundQuery(active.scope.cutoff),
+                    ResolveCompanyFinancialScoringQuery(active.scope.cutoff, next(plan for plan in active.plans if plan.family is CompanySyncFamily.FINANCIAL)),
                     tuple(code for code in active.scope.codes if code in current_codes),
                 )
                 self.journal.finish_refresh(active.round_id)
@@ -229,6 +230,7 @@ class CompanySyncRuntime:
             active = None
         if active is not None:
             scope = active.scope
+            self._execution_round_id = active.round_id
             if budget.max_source_calls is not None and active.max_source_calls is not None:
                 budget = replace(budget, max_source_calls=active.max_source_calls)
         else:
@@ -249,7 +251,8 @@ class CompanySyncRuntime:
                     "SELECT DISTINCT code FROM company_positive_event WHERE event_type=? ORDER BY code",
                     (POSITIVE_TYPES[CompanyPositiveType.OPERATING_CONTRACT],)) if row[0] in eligible_codes)
                 return ReadCompanyFactRows(formal, selected)
-        query = financial_query or BuildCompanyFinancialRoundQuery(scope.cutoff)
+        plan = next(plan for plan in active.plans if plan.family is CompanySyncFamily.FINANCIAL) if active else None
+        query = financial_query or ResolveCompanyFinancialScoringQuery(scope.cutoff, plan)
         def publish_financial_scoring(selected: CompanySyncRoundScope) -> None:
             check()
             self._publish_financial_scoring(selected, query, eligible_codes)
@@ -259,6 +262,8 @@ class CompanySyncRuntime:
             sqlite_policy=self._sqlite_policy, extraction_hash=self.facts.extraction_hash, io_budget=self._io_budget,
             current_codes=eligible_codes, configuration=self._document_configuration, policies=self._document_policies,
             wall_clock=self._wall_clock, observe_download=self._observe_download)
+        annual = CompanyAnnualIncomeProducer(self.inputs, self._annual_source, annual_facts,
+            current_codes=eligible_codes, observe_download=self._observe_download)
         producers: tuple[CompanySyncProducer, ...] = (
             CompanyFinancialProducer(self.normalized, self._financial_source, query, qualification_gaps=(
                 "latest_financial_population_unverified", "financial_first_disclosure_revision_unverified"),
@@ -270,16 +275,57 @@ class CompanySyncRuntime:
                 StructuredCompanyQuery("unlock", scope.cutoff.date(), scope.cutoff.date() + timedelta(days=min(180, self._event_policy.unlock_days))),
                 current_codes=eligible_codes, observe_download=self._observe_download),
             announcements,
-            CompanyAnnualIncomeProducer(self.inputs, self._annual_source, annual_facts,
-                current_codes=eligible_codes, observe_download=self._observe_download),
+            annual,
             fields,
         )
         plans = tuple(producer.plan for producer in producers)
-        round_id = self.journal.begin(scope, plans, max_source_calls=budget.max_source_calls)
+        if (new_refresh and active is not None and requested_scope.cutoff.date() > scope.cutoff.date()
+            and CompanySyncRoundIdentity(scope, plans) == active.round_id and self.journal.can_handoff_backfill(active.round_id, requested_scope.cutoff)
+            and self.normalized.cursor(query, scope.codes, scope.cutoff) is None
+            and self._ratio_inputs_closed(scope)
+            and self.material.can_retain_backfill(tuple(sorted({EvidenceMarket(code) for code in scope.codes})), scope.cutoff.date(), requested_scope.cutoff.date())
+            and self.inputs.pending_annual_request(scope.identity) is None and not annual.state(scope).source_required):
+            # Source plans are frozen. The journal retains both local proof-rule
+            # identities when the same scope needs a new proof before handoff.
+            self.journal.begin(scope, plans, max_source_calls=budget.max_source_calls)
+            finished = ResumeCompanySyncPendingStep(self.journal, (fields,), scope, active.round_id, budget,
+                monotonic=monotonic, cancel_requested=cancel_requested)
+            if finished and budget.max_steps is not None:
+                if budget.max_steps == 1:
+                    return CompanySyncRoundResult(active.round_id, scope, (), False, True, "", pause_reason="step_limit")
+                budget = replace(budget, max_steps=budget.max_steps - 1)
+            check()
+            publish_financial_scoring(scope)
+            scoring_may_be_deferred = self.normalized.has_pending_publication()
+            state = fields.state(scope)
+            previous = self.journal.family(active.round_id, CompanySyncFamily.FIELDS)
+            if self.journal.completed_state(active.round_id, CompanySyncFamily.FIELDS) != state or previous is None or previous.result.can_continue:
+                self.journal.start(active.round_id, CompanySyncFamily.FIELDS, state)
+                prepared = fields.advance(scope, cancel_requested=cancel_requested, deadline=budget.deadline)
+                self.journal.finish(active.round_id, CompanySyncFamily.FIELDS, prepared)
+                if budget.max_steps is not None:
+                    if budget.max_steps == 1:
+                        return CompanySyncRoundResult(active.round_id, scope, (), False, True, "", pause_reason="step_limit")
+                    budget = replace(budget, max_steps=budget.max_steps - 1)
+            last_field = self.journal.family(active.round_id, CompanySyncFamily.FIELDS)
+            if (last_field is not None and last_field.result.processed_scope_complete and not last_field.result.failure
+                and not self.normalized.has_pending_publication() and not self.inputs.pending_recovered(scope.identity)
+                and self._annual_inputs_settled(scope, check) and not annual.state(scope).source_required):
+                if scoring_may_be_deferred:
+                    publish_financial_scoring(scope)
+                check()
+                return self._run(codes, cutoff, replace(budget, max_source_calls=requested_source_limit), cancel_requested=cancel_requested, monotonic=monotonic,
+                    financial_query=financial_query, new_refresh=new_refresh, after_backfill=active.round_id)
+        round_id = (self.journal.begin(scope, plans, max_source_calls=budget.max_source_calls) if after_backfill is None else
+            self.journal.begin(scope, plans, max_source_calls=budget.max_source_calls, after_backfill=after_backfill))
+        if after_backfill is not None:
+            logging.getLogger(__name__).warning("公司跨日交接：旧轮次 %s 公告回补未完成，已确认目录页与请求账本保留。新轮次 %s 截止 %s，优先获取新日资料，并复核上次盘中所查日期。", after_backfill[:12], round_id[:12], scope.cutoff.isoformat())
         self._execution_round_id = round_id
         if self._observe_scope is not None:
-            self._observe_scope(scope)
+            self._observe_scope(scope, query)
         self.material.set_population(eligible_codes)
+        if not self.inputs.task_done(scope.identity, "announcements", "initialize"):
+            self.material.recheck_prior_intraday(tuple(sorted({EvidenceMarket(code) for code in scope.codes})), scope.cutoff.date())
         # Current local proof and exact material needs precede any optional
         # network. The same fields owner runs again after source acceptance.
         preflight_task = "preflight:" + fields.plan.request_hash
@@ -326,6 +372,22 @@ class CompanySyncRuntime:
             result = replace(result, families=tuple(replace(item, result=replace(item.result,
                 gaps=item.result.gaps + tuple(gap for gap in population_gaps if gap not in item.result.gaps))) for item in result.families))
         return result
+
+    def _ratio_inputs_closed(self, scope: CompanySyncRoundScope) -> bool:
+        identity = scope.identity
+        if self.inputs.pledge_day(identity) is None:
+            return False
+        return all(p is not None and p.accepted_pages == p.expected_pages and p.accepted_rows == p.expected_rows for p in (
+            self.inputs.ratio_download_progress(identity, "pledge"), self.inputs.ratio_download_progress(identity, "unlock")))
+
+    def _annual_inputs_settled(self, scope: CompanySyncRoundScope, check: Callable[[], None]) -> bool:
+        incomes = self.inputs.annuals(scope.identity)
+        if not incomes:
+            return True
+        with self._session(self.facts.path, check=check, read_only=True) as formal:
+            return all(formal.run("""SELECT 1 FROM company_input_receipt WHERE source='eastmoney_annual_income'
+                AND source_key=? AND code=? AND record_hash=? AND extraction_hash=? AND outcome='valid' LIMIT 1""",
+                (row.source_key, row.code, row.record_hash, self.facts.extraction_hash)).fetchone() is not None for row in incomes)
 
     def _publish_financial_scoring(
         self,
@@ -401,7 +463,7 @@ class CompanySyncRuntime:
             if unlock_observations:
                 inputs += (unlock_observations,)
         if financial_proofs:
-            query = financial_query or BuildCompanyFinancialRoundQuery(scope.cutoff)
+            query = financial_query or ResolveCompanyFinancialScoringQuery(scope.cutoff)
             inputs += (
                 self.normalized.financial_observation_watermark(query, scope.codes, scope.cutoff),
                 tuple((proof.original, proof.report_date, proof.checked_from, proof.checked_through,

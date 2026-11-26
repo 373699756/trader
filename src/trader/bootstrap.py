@@ -20,7 +20,6 @@ from uuid import uuid4
 from flask import Flask
 
 from trader.download.application.company_exclusions import PublishCompanyExclusions
-from trader.download.application.company_financial_producer import BuildCompanyFinancialRoundQuery
 from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.application.history_ports import HistorySyncDependencies
 from trader.download.application.prepare_reference import IndustryVersionPort, PrepareReference, ReferencePreparationDependencies, ReferencePreparationSources
@@ -1417,22 +1416,24 @@ def ExecuteCompanySync(
             pacer=CompanyRequestPacer(configuration.request_interval_seconds, time.monotonic, time.sleep, stopped),
             text_reserve_bytes=configuration.text_task_reserve_bytes, ocr_reserve_bytes=configuration.ocr_task_reserve_bytes)
 
-        progress.configure_snapshots(
-            stopped=stopped,
-            read_fields=lambda selected: reader.read_field_counts(
-                codes=selected.codes, as_of=selected.cutoff, scoring_as_of=ShanghaiClock(_utc_now).now(),
-                cancel_requested=stopped),
-            read_financial=lambda selected: normalized.financial_batch(
-                BuildCompanyFinancialRoundQuery(selected.cutoff), selected.codes, selected.cutoff),
-            read_ratio=inputs.ratio_download_progress,
-            read_pending=lambda selected: material.pending_registered_documents(selected.codes, selected.cutoff),
-        )
+        def begin_scope(selected: CompanySyncRoundScope, financial: company_evidence.StructuredCompanyQuery) -> None:
+            progress.configure_snapshots(
+                stopped=stopped,
+                read_fields=lambda frozen: reader.read_field_counts(
+                    codes=frozen.codes, as_of=frozen.cutoff, scoring_as_of=ShanghaiClock(_utc_now).now(),
+                    cancel_requested=stopped),
+                read_financial=lambda frozen: normalized.financial_batch(financial, frozen.codes, frozen.cutoff),
+                read_ratio=inputs.ratio_download_progress,
+                read_pending=lambda frozen: material.pending_registered_documents(frozen.codes, frozen.cutoff),
+            )
+            progress.begin_scope(selected)
+
         runtime = CompanySyncRuntime(normalized, facts, material, journal, inputs=inputs,
             event_policy=event_policy, sqlite_policy=sqlite_policy, read_document=read_document,
             financial_source=structured, ratio_source=structured, annual_source=structured,
             official_source=official, io_budget=io_budget, sleeper=time.sleep,
             document_configuration=configuration, document_policies=policies, wall_clock=ShanghaiClock(_utc_now).now,
-            observe_scope=progress.begin_scope, observe=progress.observe_family, activity=progress.activity,
+            observe_scope=begin_scope, observe=progress.observe_family, activity=progress.activity,
             observe_financial_scoring=progress.observe_financial_scoring,
             observe_download=lambda event: progress.download(event, journal.executing_step),
             source_ready=lambda: source_deadline is None or time.monotonic() < source_deadline)

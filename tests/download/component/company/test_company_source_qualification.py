@@ -18,7 +18,7 @@ from tests.helpers.download.company.company_evidence import _disclosure, _extrac
 from tests.helpers.download.company.company_financial_report import BODY
 from tests.helpers.download.configuration import CompanyEventPolicyFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
-from trader.download.domain.company_evidence import CompanyRatio, StructuredCompanyPage, StructuredCompanyQuery
+from trader.download.domain.company_evidence import CompanyLatestFinancialQuery, CompanyRatio, StructuredCompanyPage, StructuredCompanyQuery
 from trader.download.domain.company_sync import (
     CompanyFinancialRequestIdentity,
     CompanySyncFamily,
@@ -46,7 +46,7 @@ class _UnusedSource:
         raise AssertionError(f"unexpected_source_call:{operation}")
 
 
-def _inputs(tmp_path: Path):
+def _inputs(tmp_path: Path, *, latest: bool = False):
     paths = DataPaths(tmp_path)
     paths.company_sources.parent.mkdir(parents=True)
     sqlite_policy = SqlitePolicyFixture()
@@ -92,7 +92,7 @@ def _inputs(tmp_path: Path):
     scope = CompanySyncRoundScope(_CODES, _CUTOFF)
     today = _CUTOFF.date()
     oldest = today - timedelta(days=365)
-    financial = StructuredCompanyQuery("financial", oldest, today)
+    financial = CompanyLatestFinancialQuery("financial", oldest, today) if latest else StructuredCompanyQuery("financial", oldest, today)
     pledge = StructuredCompanyQuery("pledge", oldest, today)
     unlock = StructuredCompanyQuery("unlock", today, today + timedelta(days=policy.unlock_days))
     source_plans = {
@@ -148,11 +148,17 @@ def _audit(paths, documents, unlock_days, *, stock_fields=None):
     return ProjectCompanySourceQualification(report["summary"]["source_qualification_audit"])
 
 
-def test_source_qualification_reads_original_candidates_without_admitting_observations(tmp_path):
-    paths, documents, unlock_days = _inputs(tmp_path)
+@pytest.mark.parametrize("latest", (False, True))
+def test_source_qualification_reads_original_candidates_without_admitting_observations(tmp_path, latest):
+    paths, documents, unlock_days = _inputs(tmp_path, latest=latest)
     databases = (paths.company, paths.company_sync, paths.company_sources)
     before = [path.read_bytes() for path in databases]
     audit = _audit(paths, documents, unlock_days)
+    assert audit["round_active"]
+    if latest:
+        assert audit["financial"]["pages"]["market_prefix"] == {
+            "read_pages": 1, "declared_pages": 1, "read_rows": 2, "declared_rows": 2, "exact_issuer_count": 0,
+        }
     assert audit["network_requests"] == audit["source_data_writes"] == 0
     assert audit["source_admission_verified"] is audit["production_adopted"] is False
     assert audit["financial"]["latest_incomplete_stocks"] == 1
@@ -220,6 +226,18 @@ def test_stock_fields_keeps_supplier_nulls_and_readable_scoring_separate(tmp_pat
     assert not one["source_unlocks"] and two["source_unlocks"]
     with pytest.raises(FileExistsError):
         _audit(paths, documents, unlock_days, stock_fields=details)
+
+
+def test_audit_reads_closed_round_and_reobserved_unchanged_source_content(tmp_path):
+    paths, documents, unlock_days = _inputs(tmp_path, latest=True)
+    policy = SqlitePolicyFixture()
+    with SqliteSession(paths.company_sync, sqlite_policy=policy) as journal:
+        journal.run("UPDATE company_sync_round SET active=0")
+    with SqliteSession(paths.company_sources, sqlite_policy=policy) as inputs:
+        inputs.run("UPDATE company_financial_observation SET observed_at=?", ((_CUTOFF - timedelta(hours=1)).isoformat(),))
+    audit = _audit(paths, documents, unlock_days)
+    assert not audit["round_active"]
+    assert audit["financial"]["pages"]["closed"] and audit["financial"]["observed_stocks"] == 2
 
 
 def test_field_audit_compares_source_observations_without_certifying_ratio_coverage(tmp_path):

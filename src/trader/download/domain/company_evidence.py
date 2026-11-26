@@ -231,6 +231,19 @@ class StructuredCompanyQuery:
 
 
 @dataclass(frozen=True)
+class CompanyLatestFinancialQuery(StructuredCompanyQuery):
+    """Scan the report-ordered market or resolve a bounded remaining set of issuers."""
+
+    securities: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if (self.component != "financial" or self.securities != tuple(sorted(set(self.securities)))
+            or len(self.securities) > 8 or any(not (len(code) == 6 and code.isascii() and code.isdigit()) for code in self.securities)):
+            raise ValueError("company_latest_financial_query_invalid")
+
+
+@dataclass(frozen=True)
 class Disclosure:
     source: str
     identity: str
@@ -913,6 +926,7 @@ __all__ = [
     "CompanyEvidenceRequest",
     "CompanyListing",
     "StructuredCompanyQuery",
+    "CompanyLatestFinancialQuery",
     "CompanyDocument",
     "DocumentRetry",
     "DocumentRepairMode",

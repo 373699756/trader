@@ -30,7 +30,7 @@ from trader.entrypoints.cli import Main
 from trader.download.domain.company_sync import (
     CompanyDisclosureDownloadProgress, CompanyDownloadOperation, CompanyStructuredDownloadProgress, CompanySyncFamily, CompanySyncFamilyResult, CompanySyncStepResult,
 )
-from trader.download.domain.company_source_records import CompanyFinancialBatchCoverage
+from trader.download.domain.company_source_records import CompanyFinancialBatchCoverage, CompanyFinancialMarketPrefix
 from tests.helpers.download.company_round import CompanySyncFamilyFixture, CompanySyncRoundFixture
 
 
@@ -147,7 +147,8 @@ def test_company_progress_projects_formal_and_event_gaps_during_same_round(pause
     for index, (message, phase) in enumerate(zip(reports, expected_phases, strict=True)):
         header = " | ".join(field.text for field in message.fields)
         assert phase in header and "来源 本地正式公司库" in header
-        assert "正式荐股资料缺口" + ("38/44（86.36%）" if index == 0 else "37/44（84.09%）") in header
+        assert "完整财务与风险覆盖缺口" + ("38/44（86.36%）" if index == 0 else "37/44（84.09%）") in header
+        assert "D25已发布评分观测2/4（50.00%）股" in header
         assert ("以下为00:00:30前已核对的正式快照" in header) is (paused and phase == "本轮收尾")
         rows = {row.label.removeprefix("正式库·"): " | ".join(field.text for field in row.fields) for row in message.rows}
         assert ("正式缺2/4（50.00%）" if index == 0 else "正式缺1/4（25.00%）") in rows["EPS"]
@@ -198,6 +199,23 @@ def test_company_round_financial_observations_do_not_close_qualification_gaps(cl
     assert "更新日与披露日同日4384/4403（99.57%）" in metadata
     assert "晚于15/4403（0.34%），早于1/4403（0.02%），更新日缺失3/4403（0.07%）" in metadata
     assert "供应商日期元数据，发行人首次披露时间及修订链仍待核" in metadata
+
+
+@pytest.mark.parametrize("closed", (False, True))
+def test_latest_financial_progress_separates_market_tail_from_required_pages(closed):
+    messages = []
+    progress = CompanyRoundProgress(SyncProgress(messages.append, lambda: 0.0), lambda: 0.0)
+    batch = CompanyFinancialBatchCoverage(
+        4401, 15 if closed else 14, 15 if closed else None,
+        7007 if closed else 7000, 7007 if closed else None, 4401 if closed else 4400,
+        4365, 4400, (), 4382, 18, 0, 0,
+        market_prefix=CompanyFinancialMarketPrefix(14, 89, 7000, 44500, 1),
+    )
+    progress.set_financial_batch(batch)
+    progress.finish(CompanySyncRoundFixture(_ROUND_AT, families=()))
+    text = " | ".join(field.text for message in messages for field in message.fields)
+    assert "全市场实读14/89页，实读7000/44500行，定向补查1股" in text
+    assert ("页账本已闭合，财务批量页15/15" if closed else "页账本待闭合，财务批量页14/未核对") in text
 
 
 @pytest.mark.parametrize("terminal", (False, True))

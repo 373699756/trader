@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 from trader.download.domain.company_evidence import (
     CompanyFinancial,
     CompanyInputValidationFailure,
+    CompanyLatestFinancialQuery,
     CompanyRatio,
     StructuredCompanyPage,
     StructuredCompanyQuery,
@@ -22,6 +23,7 @@ from trader.download.domain.company_annual_income import CompanyAnnualIncome, Co
 from trader.download.domain.company_source_records import (
     CompanyFinancialMissingField, CompanyFinancialSourceObservation, CompanyFinancialSourcePage, CompanyFinancialSourceValues,
     CompanyFinancialSourceRecordHash,
+    CompanyFinancialOrderIncreases,
 )
 from trader.download.domain.download_failure import DownloadValidationFailure
 from trader.download.infra.company_http import CompanySourceOperation, CheckCompanyResponse
@@ -271,12 +273,20 @@ class EastmoneyCompanySource:
     ) -> CompanyFinancialSourcePage:
         """Explicit metadata observation; the production eleven-column fetch is unchanged."""
         _validate_financial_source_query(query, observed_at)
+        filters = f"(NOTICE_DATE>='{query.start.isoformat()}')(NOTICE_DATE<='{query.end.isoformat()}')"
+        sort, order = "NOTICE_DATE,SECUCODE,REPORT_DATE", "-1,1,-1"
+        if isinstance(query, CompanyLatestFinancialQuery):
+            sort, order = "REPORT_DATE,SECUCODE", "-1,1"
+            if query.securities:
+                identities = ",".join(f'"{_financial_identity(code)}"' for code in query.securities)
+                filters += f"(SECUCODE in ({identities}))"
+                sort, order = "SECUCODE,REPORT_DATE", "1,-1"
         payload, content = self._json_response(
             "https://datacenter.eastmoney.com/securities/api/data/get",
             {
                 "type": "RPT_F10_FINANCE_MAINFINADATA", "sty": ",".join(COMPANY_FINANCIAL_SOURCE_COLUMNS),
-                "quoteColumns": "", "filter": f"(NOTICE_DATE>='{query.start.isoformat()}')(NOTICE_DATE<='{query.end.isoformat()}')",
-                "p": str(query.page), "ps": "500", "sr": "-1,1,-1", "st": "NOTICE_DATE,SECUCODE,REPORT_DATE",
+                "quoteColumns": "", "filter": filters,
+                "p": str(query.page), "ps": "500", "sr": order, "st": sort,
                 "source": "HSF10", "client": "PC",
             },
             max_response_bytes=1024 * 1024,
@@ -284,6 +294,10 @@ class EastmoneyCompanySource:
         return DecodeCompanyFinancialSourcePage(
             payload, query, observed_at=observed_at, response_hash=hashlib.sha256(content).hexdigest(),
         )
+
+def _financial_identity(code: str) -> str:
+    return code + "." + {"sse": "SH", "szse": "SZ", "bse": "BJ"}[EvidenceMarket(code)]
+
 
 def DecodeCompanyFinancialPage(
     payload: Mapping[str, object],
@@ -324,6 +338,8 @@ def DecodeCompanyFinancialSourcePage(
     rows, _, _ = _page_rows(payload, query.page)
     observations: list[CompanyFinancialSourceObservation] = []
     reports = iter(page.financials)
+    ordered_keys: list[tuple[date, str]] = []
+    exact = frozenset(_financial_identity(code) for code in query.securities) if isinstance(query, CompanyLatestFinancialQuery) else frozenset()
     for row in rows:
         if any(field not in row for field in COMPANY_FINANCIAL_SOURCE_COLUMNS):
             raise DownloadValidationFailure("financial_source_fields_missing", "columns", "fifteen_required_columns", "missing")
@@ -333,6 +349,13 @@ def DecodeCompanyFinancialSourcePage(
             raise DownloadValidationFailure("financial_source_identity_invalid", "SECUCODE", "matching_source_security_identity", "invalid")
         _day(row["NOTICE_DATE"])
         notice = _income_time(row["NOTICE_DATE"])
+        if isinstance(query, CompanyLatestFinancialQuery):
+            if exact and identity not in exact:
+                raise DownloadValidationFailure("financial_security_filter_ignored", "SECUCODE", "requested_identities", "unexpected_identity")
+            key = _day(row["REPORT_DATE"]), identity
+            if ordered_keys and not CompanyFinancialOrderIncreases(ordered_keys[-1], key, exact=bool(exact)):
+                raise DownloadValidationFailure("financial_report_order_invalid", "financial_order", "strictly_ordered_unique", "unordered")
+            ordered_keys.append(key)
         if not query.start <= notice.date() <= query.end or notice > observed_at:
             raise DownloadValidationFailure("financial_date_filter_ignored", "NOTICE_DATE", "requested_window_and_cutoff", "outside")
         if not _is_a_share(row):
@@ -364,7 +387,8 @@ def DecodeCompanyFinancialSourcePage(
             raise DownloadValidationFailure(str(exc), "financial_source_row", "valid_source_observation", "invalid") from exc
         observations.append(observation)
     try:
-        return CompanyFinancialSourcePage(query.page, page.pages, page.total, len(rows), tuple(observations), response_hash)
+        return CompanyFinancialSourcePage(query.page, page.pages, page.total, len(rows), tuple(observations), response_hash,
+            ordered_keys[0] if ordered_keys else None, ordered_keys[-1] if ordered_keys else None)
     except ValueError as exc:
         if str(exc) != "company_financial_source_page_invalid":
             raise

@@ -18,7 +18,7 @@ from trader.download.domain.company_events import CompanyEventPolicy
 from trader.download.domain.company_evidence import (
     CompanyDocument, CompanyDocumentExtraction, CompanyInputValidationFailure, CompanyOcrDiagnostic,
     Disclosure, DisclosureCoverageMismatch, DisclosurePage, DisclosurePartition, DisclosurePartitionRetry,
-    DisclosureQuery, DisclosureSecurity, DocumentRetry, EvidenceMarket,
+    DisclosureQuery, DisclosureSecurity, DocumentRetry, EvidenceMarket, Market,
 )
 from trader.download.domain.download_failure import DownloadFailureConfiguration, DownloadFailureRecord
 from trader.download.infra.company_announcement_links import WriteCompanyAnnouncementNumbers
@@ -142,7 +142,32 @@ class SQLiteCompanyMaterialIndex:
         if observed_at.utcoffset() is None or partition.start < observed_at.date() - timedelta(days=365) or partition.end > observed_at.date():
             raise ValueError("company_material_partition_window_invalid")
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+            if partition.start == observed_at.date() - timedelta(days=365) and partition.end == observed_at.date() - timedelta(days=1):
+                edges = _unstarted_edges(connection, partition.market, partition.start)
+                if edges is None:
+                    raise ValueError("company_material_window_requires_prior_cursor")
+                for key in edges:
+                    connection.run("DELETE FROM disclosure_query_contracts WHERE market=? AND start_date=? AND end_date=?", key)
+                    connection.run("DELETE FROM partitions WHERE market=? AND start_date=? AND end_date=?", key)
+                _reopen_intraday_coverage(connection, partition.market, partition.start, partition.end)
             self._add_partition(connection, partition.market, partition.start, partition.end)
+
+    def recheck_prior_intraday(self, markets: tuple[Market, ...], day: date) -> None:
+        """Withdraw provisional prior-day coverage before the new scope checks fields."""
+        with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+            for market in markets:
+                _reopen_intraday_coverage(connection, market, day - timedelta(days=365), day - timedelta(days=1))
+
+    def can_retain_backfill(self, markets: tuple[Market, ...], previous_day: date, next_day: date) -> bool:
+        with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection):
+            for market in markets:
+                key = (market, previous_day.isoformat(), previous_day.isoformat())
+                if connection.run("""SELECT 1 FROM partitions p JOIN coverage c USING(market,start_date,end_date)
+                    WHERE market=? AND start_date=? AND end_date=? AND p.is_complete=1""", key).fetchone() is None:
+                    return False
+                if _unstarted_edges(connection, market, next_day - timedelta(days=365)) is None:
+                    return False
+        return True
 
     def pending_partitions(self, partition: DisclosurePartition) -> tuple[DisclosurePartition, ...]:
         with self._connect() as connection:
@@ -746,6 +771,37 @@ class SQLiteCompanyMaterialIndex:
                     item.digest,
                 ),
             )
+
+
+def _reopen_intraday_coverage(connection: SqliteConnection, market: Market, start: date, end: date) -> None:
+    # A day sampled before midnight needs a fresh, complete source enumeration.
+    rows = connection.run("""SELECT c.market,c.start_date,c.end_date FROM coverage c
+        JOIN partitions p USING(market,start_date,end_date) WHERE c.market=? AND c.start_date=c.end_date
+        AND c.end_date BETWEEN ? AND ? AND substr(c.checked_at,1,10)=c.end_date AND p.is_complete=1""",
+        (market, start.isoformat(), end.isoformat())).fetchall()
+    for row in rows:
+        key = (row[0], row[1], row[2])
+        for table in ("partitions", "disclosure_queries"):
+            connection.run(f"""UPDATE {table} SET next_page=1,expected_rows=NULL,received_rows=0,is_complete=0,failure=''
+                WHERE market=? AND start_date=? AND end_date=?""", key)
+        for table in ("partition_rows", "disclosure_query_rows", "partition_retries", "coverage"):
+            connection.run(f"DELETE FROM {table} WHERE market=? AND start_date=? AND end_date=?", key)
+    if rows:
+        MarkCompanyMarketDirty(connection, market)
+
+
+def _unstarted_edges(connection: SqliteConnection, market: Market, start: date) -> tuple[tuple[str, str, str], ...] | None:
+    day = start.isoformat()
+    keys = []
+    for row in connection.run("""SELECT market,start_date,end_date,next_page,expected_rows,received_rows,failure
+        FROM partitions WHERE market=? AND start_date<? AND end_date>=? AND is_complete=0""", (market, day, day)):
+        key = (row[0], row[1], row[2])
+        if tuple(row)[3:] != (1, None, 0, "") or any(connection.run(
+            f"SELECT 1 FROM {table} WHERE market=? AND start_date=? AND end_date=? LIMIT 1", key).fetchone()
+            for table in ("partition_rows", "disclosure_queries", "partition_retries", "coverage")):
+            return None
+        keys.append(key)
+    return tuple(keys)
 
 
 def _key(partition: DisclosurePartition) -> tuple[str, str, str]:

@@ -349,7 +349,7 @@ def test_new_same_day_cutoff_cannot_refill_an_exhausted_source_budget(tmp_path):
 
 def test_next_day_refresh_keeps_the_old_exhausted_ledger_and_starts_a_dated_round(tmp_path):
     snapshots = []
-    runtime, _reader, transport, physical = _runtime(tmp_path, observe_scope=lambda scope: snapshots.append((scope, len(physical))))
+    runtime, _reader, transport, physical = _runtime(tmp_path, observe_scope=lambda scope, _query: snapshots.append((scope, len(physical))))
     runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
     with transport:
         first = runtime.run(_SCOPE.codes, _SCOPE.cutoff, CompanySyncBudget(100, 1, 20, 10),

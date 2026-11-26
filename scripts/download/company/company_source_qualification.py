@@ -17,11 +17,12 @@ from tempfile import TemporaryDirectory
 
 from scripts.core.projection_values import ProjectMapping, SafeNonnegativeInt, SafeStringList, SafeText
 from scripts.download.company.company_stock_fields import BuildStockFieldReport, StockFieldReport
-from trader.download.domain.company_evidence import CompanyDocument, StructuredCompanyQuery
+from trader.download.application.company_financial_producer import ResolveCompanyFinancialScoringQuery
+from trader.download.domain.company_evidence import CompanyDocument, CompanyLatestFinancialQuery, StructuredCompanyQuery
 from trader.download.domain.company_events import CompanyDataState
 from trader.download.domain.company_financial_report import ExtractCompanyFinancialReport, IsCompanyFinancialReportTitle
-from trader.download.domain.company_source_records import CompanyFinancialSourceObservation
-from trader.download.domain.company_sync import CompanyFinancialRequestIdentity, CompanySyncFamily, CompanySyncRoundScope
+from trader.download.domain.company_source_records import CompanyFinancialMarketPrefix, CompanyFinancialSourceObservation
+from trader.download.domain.company_sync import CompanySyncFamily, CompanySyncPhasePlan, CompanySyncRoundScope
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
@@ -29,6 +30,7 @@ from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceRead
 from trader.download.infra.company_facts_protocol import DATA_STATES
 from trader.download.infra.company_financial_observations import ReadRoundCompanyFinancialObservations
 from trader.download.infra.company_financial_publication import CompanyFinancialReportValue
+from trader.download.infra.company_financial_series import CompanyLatestFinancialScope, ReadCompanyLatestFinancialSeries
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.serialization.sealing import PublishImmutable
 from trader.infra.settings.data_paths import DataPaths
@@ -58,6 +60,7 @@ class _Pages:
     rows: int
     expected_rows: int | None
     closed: bool
+    market_prefix: CompanyFinancialMarketPrefix | None = None
 
     def project(self) -> dict[str, object]:
         return {
@@ -66,6 +69,11 @@ class _Pages:
             "rows": self.rows,
             "expected_rows": self.expected_rows,
             "closed": self.closed,
+            **({"market_prefix": {
+                "read_pages": self.market_prefix.read_pages, "declared_pages": self.market_prefix.declared_pages,
+                "read_rows": self.market_prefix.read_rows, "declared_rows": self.market_prefix.declared_rows,
+                "exact_issuer_count": self.market_prefix.exact_issuer_count,
+            }} if self.market_prefix is not None else {}),
         }
 
 
@@ -238,18 +246,32 @@ def _materials(
     return tuple(known), False
 
 
+def _financial_pages(
+    sources: SqliteConnection, query: StructuredCompanyQuery, scope: CompanySyncRoundScope,
+) -> tuple[str, _Pages]:
+    if isinstance(query, CompanyLatestFinancialQuery):
+        root = CompanyLatestFinancialScope(query, scope.codes, scope.cutoff)
+        series = ReadCompanyLatestFinancialSeries(sources, query, scope.codes, scope.cutoff)
+        return root, _Pages(series.accepted_pages, series.expected_pages, series.accepted_raw_rows,
+            series.expected_raw_rows, series.complete, CompanyFinancialMarketPrefix(
+                series.market_read_pages, series.market_declared_pages, series.market_read_rows,
+                series.market_declared_rows, len(series.exact_codes)))
+    root = CanonicalDigest((query.component, query.start, query.end, scope.codes, scope.cutoff))
+    return root, _pages(sources.run(
+        "SELECT page,pages,total,raw_count FROM company_round_page WHERE scope=? ORDER BY page", (root,),
+    ).fetchall())
+
+
 def _review_financial(
     sources: SqliteConnection,
     documents: CompanyDocumentFiles,
     scope: CompanySyncRoundScope,
     source_scope: str,
+    pages: _Pages,
     round_id: str,
     policy: LongResearchPolicy,
     check: Callable[[], None],
 ) -> dict[str, object]:
-    pages = _pages(sources.run(
-        "SELECT page,pages,total,raw_count FROM company_round_page WHERE scope=? ORDER BY page", (source_scope,),
-    ).fetchall())
     observations = ReadRoundCompanyFinancialObservations(sources, source_scope)
     previous_complete: set[str] = set()
     latest: dict[str, CompanyFinancialSourceObservation] = {}
@@ -257,7 +279,9 @@ def _review_financial(
     for item in observations:
         check()
         code = item.financial.code
-        if code not in population or item.observed_at != scope.cutoff:
+        # Membership and the page receipt belong to this query. Unchanged source
+        # content retains its first observation time across daily queries.
+        if code not in population or item.observed_at > scope.cutoff:
             raise ValueError("company_source_qualification_financial_scope_changed")
         if not item.missing_fields:
             previous_complete.add(code)
@@ -414,7 +438,9 @@ def AuditCompanySourceQualification(
         )
         for connection in (journal, sources, formal):
             stack.enter_context(SqliteTransaction(connection))
-        round_id, cutoff_text = journal.run("SELECT round_id,cutoff FROM company_sync_round WHERE active=1").require_one()
+        round_id, cutoff_text, active = journal.run(
+            "SELECT round_id,cutoff,active FROM company_sync_round ORDER BY active DESC,cutoff DESC,round_id LIMIT 1"
+        ).require_one()
         plans = {row[0]: row[1] for row in journal.run(
             "SELECT family,request_hash FROM company_sync_plan WHERE round_id=? ORDER BY position", (round_id,),
         )}
@@ -425,21 +451,22 @@ def AuditCompanySourceQualification(
         )
         cutoff_day = scope.cutoff.date()
         oldest_day = cutoff_day - timedelta(days=365)
-        financial = StructuredCompanyQuery("financial", oldest_day, cutoff_day)
         pledge = StructuredCompanyQuery("pledge", oldest_day, cutoff_day)
         unlock = StructuredCompanyQuery("unlock", cutoff_day, cutoff_day + timedelta(days=min(180, unlock_days)))
         if (
-            plans.get("financial") != CompanyFinancialRequestIdentity(financial, "observations")
+            "financial" not in plans
             or plans.get("pledge") != CanonicalDigest(pledge)
             or plans.get("unlock") != CanonicalDigest(unlock)
         ):
             raise ValueError("company_source_qualification_plan_identity_mismatch")
-        source_scope = CanonicalDigest((financial.component, financial.start, financial.end, scope.codes, scope.cutoff))
+        financial = ResolveCompanyFinancialScoringQuery(scope.cutoff, CompanySyncPhasePlan(
+            CompanySyncFamily.FINANCIAL, plans["financial"]))
+        source_scope, financial_pages = _financial_pages(sources, financial, scope)
         qualified = ReadCompanyPublicationIdentity(formal)
         if qualified is None:
             raise ValueError("company_source_qualification_publication_missing")
         financial_review = _review_financial(
-            sources, documents, scope, source_scope, round_id, policy, check,
+            sources, documents, scope, source_scope, financial_pages, round_id, policy, check,
         )
         pledge_review = _review_ratios(sources, scope, pledge, policy.pledge_thresholds[0])
         unlock_review = _review_ratios(sources, scope, unlock, policy.unlock_thresholds[0])
@@ -492,6 +519,7 @@ def AuditCompanySourceQualification(
             "source_admission_verified": False,
             "stable_source_read": True,
             "round_id": round_id,
+            "round_active": bool(active),
             "source_cutoff": scope.cutoff.isoformat(),
             "population": len(scope.codes),
             **({"stock_field_rows": len(scope.codes)} if stock_fields is not None else {}),
@@ -505,9 +533,13 @@ def AuditCompanySourceQualification(
 
 def _project_pages(value: object) -> dict[str, object]:
     pages = ProjectMapping(value)
+    market = ProjectMapping(pages.get("market_prefix"))
     return {
         **{key: SafeNonnegativeInt(pages.get(key)) for key in ("saved", "expected", "rows", "expected_rows")},
         "closed": pages.get("closed") is True,
+        **({"market_prefix": {key: SafeNonnegativeInt(market.get(key)) for key in (
+            "read_pages", "declared_pages", "read_rows", "declared_rows", "exact_issuer_count",
+        )}} if market else {}),
     }
 
 
@@ -541,7 +573,7 @@ def ProjectCompanySourceQualification(source: Mapping[str, object]) -> dict[str,
         **{key: SafeNonnegativeInt(source.get(key)) for key in ("population", "source_data_writes", "network_requests")},
         **({"stock_field_rows": SafeNonnegativeInt(source["stock_field_rows"])} if "stock_field_rows" in source else {}),
         **{key: source.get(key) is True for key in (
-            "read_only", "production_adopted", "source_admission_verified", "stable_source_read",
+            "read_only", "production_adopted", "source_admission_verified", "stable_source_read", "round_active",
         )},
         "financial": {
             **{key: SafeNonnegativeInt(financial.get(key)) for key in (
