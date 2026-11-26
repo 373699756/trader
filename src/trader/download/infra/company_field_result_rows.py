@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import cast
 
 from trader.download.domain.company_events import CompanySubject
+from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_field_plan import BuildCompanyFieldResults
 from trader.download.domain.company_field_results import (
     CompanyFieldConclusion,
@@ -39,13 +40,13 @@ def _hash(value: object) -> bytes:
 
 
 def _bindings(
-    connection: SqliteConnection, codes: Sequence[str],
+    facts: tuple[CompanyFacts, ...],
 ) -> tuple[dict[tuple[str, str, str], CompanyFieldConclusionValue], dict[tuple[str, str, str], CompanySubject]]:
     # This pure projection supplies the sole current fact values. Its diagnostic
     # states are deliberately ignored; published conclusions have their own rows.
     values: dict[tuple[str, str, str], CompanyFieldConclusionValue] = {}
     subjects: dict[tuple[str, str, str], CompanySubject] = {}
-    for fact in ReadCompanyFactRows(connection, codes):
+    for fact in facts:
         risks = {event.event_id: event.subject_type for event in fact.risk_events}
         positives = {event.event_id: event.subject_type for event in fact.positive_events}
         for result in BuildCompanyFieldResults(fact):
@@ -70,7 +71,7 @@ def WriteCompanyFieldResults(
         raise ValueError("company_field_result_duplicate")
     if connection.run("SELECT 1 FROM company_facts WHERE code=?", (code,)).fetchone() is None:
         raise ValueError("company_field_result_fact_missing")
-    current, subjects = _bindings(connection, (code,))
+    current, subjects = _bindings(ReadCompanyFactRows(connection, (code,)))
     for item in prepared:
         key = (code, item.event_id, item.field)
         if key not in current or type(item.value) is not type(current[key]) or item.value != current[key]:
@@ -97,12 +98,31 @@ def WriteCompanyFieldResults(
 
 def ReadCompanyFieldResults(connection: SqliteConnection, codes: Sequence[str]) -> tuple[CompanyFieldConclusion, ...]:
     """Read explicit stored conclusions, joining values from the same pinned fact snapshot."""
+    return tuple(field for _, fields in _fact_field_batches(connection, codes) for field in fields)
+
+
+def ReadCompanyFactsWithFieldResults(
+    connection: SqliteConnection, codes: Sequence[str],
+) -> tuple[tuple[CompanyFacts, ...], tuple[CompanyFieldConclusion, ...]]:
+    """Read facts with their complete, checked field bindings in one transaction."""
+    facts: list[CompanyFacts] = []
+    fields: list[CompanyFieldConclusion] = []
+    for batch_facts, batch_fields in _fact_field_batches(connection, codes):
+        facts.extend(batch_facts)
+        fields.extend(batch_fields)
+    return tuple(facts), tuple(fields)
+
+
+def _fact_field_batches(
+    connection: SqliteConnection, codes: Sequence[str],
+) -> Iterator[tuple[tuple[CompanyFacts, ...], tuple[CompanyFieldConclusion, ...]]]:
     requested = tuple(sorted({_code(code) for code in codes}))
-    results: list[CompanyFieldConclusion] = []
     for offset in range(0, len(requested), 512):
         batch = requested[offset:offset + 512]
         slots = ",".join("?" for _ in batch)
-        values, subjects = _bindings(connection, batch)
+        facts = ReadCompanyFactRows(connection, batch)
+        values, subjects = _bindings(facts)
+        results: list[CompanyFieldConclusion] = []
         published: set[tuple[str, str, str]] = set()
         evidence_rows: dict[tuple[str, str, str], list[CompanyFieldEvidence]] = {}
         for row in connection.run(
@@ -142,10 +162,11 @@ def ReadCompanyFieldResults(connection: SqliteConnection, codes: Sequence[str]) 
             raise ValueError("company_field_result_orphan_evidence")
         if published != set(values):
             raise ValueError("company_field_result_coverage_incomplete")
-    return tuple(results)
+        yield facts, tuple(results)
 
 
 __all__ = [
     "WriteCompanyFieldResults",
     "ReadCompanyFieldResults",
+    "ReadCompanyFactsWithFieldResults",
 ]

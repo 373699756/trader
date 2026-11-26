@@ -24,7 +24,7 @@ from trader.download.domain.company_source_records import (
     CompanyFinancialBatchCoverage, CompanyFinancialSourceObservation, CompanyFinancialSourcePage,
 )
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
-from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
+from trader.download.infra.company_field_result_rows import ReadCompanyFactsWithFieldResults, ReadCompanyFieldResults
 from trader.download.infra.company_facts_index import (
     CompanyInputReceipt, CompanyPublicationIdentity, ReadCompanyPublicationIdentity, SQLiteCompanyFactsIndex,
 )
@@ -411,10 +411,9 @@ class SQLiteCompanyNormalizedIndex:
                     sources: tuple[tuple[str, str], ...] = ()
                     receipts = scoring
                 else:
-                    facts = ReadCompanyFactRows(source, codes)
+                    facts, fields = ReadCompanyFactsWithFieldResults(source, codes)
                     previous = {item.code: item for item in ReadCompanyFactRows(formal, codes)}
                     changed = tuple(item for item in facts if item != previous.get(item.code))
-                    fields = ReadCompanyFieldResults(source, codes)
                     observations = ReadRoundCompanyFinancialObservations(source, scope)
                     financial_keys = {(item.financial.code, item.source_key, item.record_hash) for item in observations}
                     receipts = tuple(item for item in _receipts(source, include_financial_scoring=False) if item.source != "eastmoney_financial"

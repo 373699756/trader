@@ -14,7 +14,7 @@ from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_field_results import CompanyFieldConclusion
 from trader.download.domain.company_measurement_corrections import CorrectCompanyRepurchaseDisposalMeasurements, RefineCompanyIsolatedPositiveMeasurements
 from trader.download.infra.company_sync_inputs import CompanyRecoveredInput
-from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash, PrepareCompanyFieldResults
+from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash, PrepareCompanyFieldResults, StoredCompanyFieldResults
 from trader.download.infra.company_announcement_preparation import CompanyAnnouncementCoverage, PrepareCompanyAnnouncements
 from trader.download.infra.company_facts_index import CompanyInputReceipt
 from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
@@ -41,6 +41,7 @@ def PrepareCompanyIssuerInputs(
     unlock_observations: tuple[CompanyRatio, ...] = (),
     field_rules_hash: bytes | None = None,
     announcement_coverage: CompanyAnnouncementCoverage | None = None,
+    stored_fields: StoredCompanyFieldResults | None = None,
 ) -> CompanyIssuerPreparation:
     """Use the sole field proofer and only valid-backed exact bodies for corrections."""
     rules_hash = CompanyFieldProofRulesHash() if field_rules_hash is None else field_rules_hash
@@ -50,6 +51,13 @@ def PrepareCompanyIssuerInputs(
         unlock_observations=unlock_observations, coverage=announcement_coverage) if include_new_announcements and correct_measurements else None
     if announcement is not None:
         previous = announcement.facts
+    if (announcement is not None and announcement_coverage is not None and not announcement_coverage.has_retained_material
+        and not revalidate and stored_fields is not None and stored_fields.code == previous.code and stored_fields.rules_hash == rules_hash
+        and stored_fields.extraction_hash == extraction_hash and not stored_fields.results and not published_links
+        and not previous.risk_events and not previous.positive_events
+        and all(reason.evidence_id is None for reason in previous.review_reasons)
+        and not any(item.code == previous.code for item in recovered)):
+        return CompanyIssuerPreparation(previous, (), announcement.receipts, announcement.links, (), announcement.pending_retained)
     annual_receipts: list[CompanyInputReceipt] = []
     if correct_measurements and annual_incomes:
         annual_incomes = tuple(income for income in annual_incomes if formal.run(
@@ -137,7 +145,7 @@ def PrepareCompanyIssuerInputs(
         facts = RefineCompanyIsolatedPositiveMeasurements(facts, fresh, cutoff, event_policy)
     prepared = PrepareCompanyFieldResults(collected, formal, facts, tuple(documents), observed_at=cutoff,
         extraction_hash=extraction_hash, event_policy=event_policy, read_document=read_document, revalidate=revalidate,
-        field_rules_hash=rules_hash)
+        field_rules_hash=rules_hash, stored=stored_fields)
     corrected = tuple(item.event_id for item in facts.positive_events if item not in original.positive_events)
     return CompanyIssuerPreparation(facts, prepared.results, (*prepared.receipts, *directory_receipts), tuple(links), corrected,
         announcement.pending_retained if announcement is not None else 0)

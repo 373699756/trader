@@ -115,7 +115,7 @@ def test_local_field_watermark_reacts_to_proof_inputs_and_coverage_only(tmp_path
 
 
 @pytest.mark.parametrize("change", ["unchanged", "publication", "global_rules"])
-def test_field_step_only_reuses_fact_rows_for_the_same_publication_and_population(tmp_path, monkeypatch, change):
+def test_field_step_joins_fields_to_facts_in_the_current_formal_transaction(tmp_path, monkeypatch, change):
     runtime, reader, _, physical = _runtime(tmp_path)
     eligible = _SCOPE.codes
     full_population = (*eligible, "600002")
@@ -124,12 +124,20 @@ def test_field_step_only_reuses_fact_rows_for_the_same_publication_and_populatio
     producer = _FieldProducer(runtime, lambda: 0, eligible, BuildCompanyFinancialRoundQuery(_SCOPE.cutoff))
     read_facts = company_sync_runtime.ReadCompanyFactRows
     reads = []
+    read_facts_and_fields = company_sync_runtime.ReadCompanyFactsWithFieldResults
+    prepared_snapshots = []
 
     def read(connection, codes):
         reads.append(tuple(codes))
         return read_facts(connection, codes)
 
     monkeypatch.setattr(company_sync_runtime, "ReadCompanyFactRows", read)
+    def read_prepared(connection, codes):
+        facts, fields = read_facts_and_fields(connection, codes)
+        prepared_snapshots.append((tuple(codes), tuple((fact.code, fact.pending_document_count) for fact in facts)))
+        return facts, fields
+
+    monkeypatch.setattr(company_sync_runtime, "ReadCompanyFactsWithFieldResults", read_prepared)
     producer.state(_SCOPE)
     if change == "publication":
         with SqliteSession(runtime.facts.path, sqlite_policy=sqlite_policy) as formal:
@@ -144,8 +152,10 @@ def test_field_step_only_reuses_fact_rows_for_the_same_publication_and_populatio
         runtime.facts.publish_file()
 
     result = producer.advance(_SCOPE, cancel_requested=lambda: False, deadline=10)
-    expected_reads = {"unchanged": [eligible], "publication": [eligible, eligible], "global_rules": [eligible, full_population]}
-    assert reads == expected_reads[change]
+    assert reads == [eligible]
+    prepared_codes = full_population if change == "global_rules" else eligible
+    expected_pending = tuple((code, int(change == "publication" and code in eligible)) for code in prepared_codes)
+    assert prepared_snapshots == [(prepared_codes, expected_pending)]
     assert result.accepted_inputs == (2 if change == "global_rules" else 1)
     assert physical == []
 

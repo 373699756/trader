@@ -18,7 +18,7 @@ from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_field_plan import BuildCompanyFieldGaps, CompanyFieldGap, CompanyFieldMaterial, CompanyFieldRecovery, PlanCompanyFieldRecovery
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
-from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
+from trader.download.infra.company_field_result_rows import ReadCompanyFactsWithFieldResults
 from trader.download.infra.company_financial_publication import ReadCompanyFinancialMaterials
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_facts_protocol import DecodeCompanyLabel, EVIDENCE_SOURCES, REVIEW_REASONS, REVIEW_SCOPES
@@ -78,6 +78,7 @@ def RegisterCompanyMaterialDependencies(
     This projection can be rebuilt after a formal commit/collection rollback.
     """
     field_required, field_settled = _field_material_requirements(formal, tuple(fact.code for fact in facts), extraction_hash)
+    already_protected = {row[0] for row in collected.run("SELECT DISTINCT code FROM company_material_dependencies")}
     for fact in facts:
         required = frozenset(
             (review.evidence_id, review.scope, review.reason_code)
@@ -118,6 +119,9 @@ def RegisterCompanyMaterialDependencies(
                 "INSERT OR REPLACE INTO company_material_dependencies VALUES(?,?,?,?,?,?,?)",
                 (row[0], fact.code, row[2], body_hash, extraction_hash, scope, reason),
             )
+            already_protected.add(fact.code)
+        if fact.code not in already_protected:
+            continue
         for row in collected.run(
             "SELECT m.disclosure_id,m.record_hash,m.body_hash,m.extraction_hash,m.scope,m.reason_code,"
             "d.source,d.source_key,d.record_hash,d.body_hash,d.body_checked "
@@ -162,14 +166,14 @@ def _field_material_requirements(
     settled: dict[str, set[tuple[str, str, str]]] = {}
     for offset in range(0, len(codes), 128):
         batch = codes[offset:offset + 128]
-        fields = ReadCompanyFieldResults(formal, batch)
+        facts, fields = ReadCompanyFactsWithFieldResults(formal, batch)
         events = {(item.code, item.event_id) for item in fields}
         unverified = {
             (item.code, item.event_id) for item in fields
             if item.applicable and item.state not in {"verified", "not_disclosed", "not_applicable"}
         }
         financial_materials = ReadCompanyFinancialMaterials(formal, batch)
-        for fact in ReadCompanyFactRows(formal, batch):
+        for fact in facts:
             periods = {str(report.report_date) for report in (fact.financial, fact.latest_financial) if report is not None}
             for material in financial_materials:
                 if material.code == fact.code:

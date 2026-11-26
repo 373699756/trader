@@ -53,6 +53,20 @@ def CompanyFieldProofRulesHash() -> bytes:
 
 
 @dataclass(frozen=True, slots=True)
+class StoredCompanyFieldResults:
+    """Validated field rows and publication identities read in the caller's formal transaction."""
+
+    code: str
+    rules_hash: bytes | None
+    extraction_hash: bytes | None
+    results: tuple[CompanyFieldConclusion, ...]
+
+    def __post_init__(self) -> None:
+        if any(item.code != self.code for item in self.results):
+            raise ValueError("company_field_results_issuer_mismatch")
+
+
+@dataclass(frozen=True, slots=True)
 class CompanyFieldPublication:
     results: tuple[CompanyFieldConclusion, ...]
     receipts: tuple[CompanyInputReceipt, ...]
@@ -70,6 +84,7 @@ def PrepareCompanyFieldResults(
     read_document: Callable[[bytes], str],
     revalidate: bool = False,
     field_rules_hash: bytes | None = None,
+    stored: StoredCompanyFieldResults | None = None,
 ) -> CompanyFieldPublication:
     """Reuse current proofs; inspect an unchanged old input once per field rule.
 
@@ -78,16 +93,22 @@ def PrepareCompanyFieldResults(
     a failed attempt complete or force another download of a retained body.
     """
     rules_hash = CompanyFieldProofRulesHash() if field_rules_hash is None else field_rules_hash
-    saved_rules = formal.run("SELECT rules_hash FROM company_field_proof_rule WHERE singleton=1").fetchone()
-    revalidate = revalidate or saved_rules is None or saved_rules[0] != rules_hash
+    if stored is None:
+        saved_rules = formal.run("SELECT rules_hash FROM company_field_proof_rule WHERE singleton=1").fetchone()
+        revalidate = revalidate or saved_rules is None or saved_rules[0] != rules_hash
+        publication = None if revalidate else ReadCompanyPublicationIdentity(formal)
+        previous = ReadCompanyFieldResults(formal, (facts.code,)) if (
+            publication is not None and publication.extraction_hash == extraction_hash
+        ) else ()
+    else:
+        if stored.code != facts.code:
+            raise ValueError("company_field_results_issuer_mismatch")
+        revalidate = revalidate or stored.rules_hash != rules_hash
+        previous = stored.results if not revalidate and stored.extraction_hash == extraction_hash else ()
     baseline = tuple(CompanyFieldConclusion(
         item.code, item.event_id, cast(CompanyFieldName, item.field), item.value,
         cast(CompanyFieldConclusionState, item.state), item.applicable, item.reason, (),
     ) for item in BuildCompanyFieldResults(facts))
-    publication = None if revalidate else ReadCompanyPublicationIdentity(formal)
-    previous = ReadCompanyFieldResults(formal, (facts.code,)) if (
-        not revalidate and publication is not None and publication.extraction_hash == extraction_hash
-    ) else ()
     results = list(baseline)
     for position, item in enumerate(results):
         existing = next((old for old in previous if old.event_id == item.event_id and old.field == item.field), None)
@@ -262,4 +283,5 @@ __all__ = [
     "CompanyFieldPublication",
     "CompanyFieldProofRulesHash",
     "PrepareCompanyFieldResults",
+    "StoredCompanyFieldResults",
 ]
