@@ -54,7 +54,7 @@ COMPANY_SOURCE_AUDIT_RETRY_REASONS = frozenset({
 
 
 @dataclass(frozen=True, slots=True)
-class _Pages:
+class CompanySourcePages:
     saved: int
     expected: int | None
     rows: int
@@ -141,9 +141,9 @@ def _copy_checkpointed_inputs(
     return tuple(destination / database.name for database in databases)
 
 
-def _pages(rows: Sequence[sqlite3.Row]) -> _Pages:
+def _pages(rows: Sequence[sqlite3.Row]) -> CompanySourcePages:
     if not rows:
-        return _Pages(0, None, 0, None, False)
+        return CompanySourcePages(0, None, 0, None, False)
     expected, expected_rows = int(rows[0][1]), int(rows[0][2])
     if not 1 <= expected <= 256 or not 0 <= expected_rows <= expected * 500 or len(rows) > expected:
         raise ValueError("company_source_qualification_bad_page_count")
@@ -156,7 +156,7 @@ def _pages(rows: Sequence[sqlite3.Row]) -> _Pages:
         ):
             raise ValueError("company_source_qualification_page_drift")
         received += received_rows
-    return _Pages(len(rows), expected, received, expected_rows, len(rows) == expected and received == expected_rows)
+    return CompanySourcePages(len(rows), expected, received, expected_rows, len(rows) == expected and received == expected_rows)
 
 
 def _group(observation: CompanyFinancialSourceObservation, policy: LongResearchPolicy) -> str | None:
@@ -246,13 +246,13 @@ def _materials(
     return tuple(known), False
 
 
-def _financial_pages(
+def ReadCompanyFinancialPages(
     sources: SqliteConnection, query: StructuredCompanyQuery, scope: CompanySyncRoundScope,
-) -> tuple[str, _Pages]:
+) -> tuple[str, CompanySourcePages]:
     if isinstance(query, CompanyLatestFinancialQuery):
         root = CompanyLatestFinancialScope(query, scope.codes, scope.cutoff)
         series = ReadCompanyLatestFinancialSeries(sources, query, scope.codes, scope.cutoff)
-        return root, _Pages(series.accepted_pages, series.expected_pages, series.accepted_raw_rows,
+        return root, CompanySourcePages(series.accepted_pages, series.expected_pages, series.accepted_raw_rows,
             series.expected_raw_rows, series.complete, CompanyFinancialMarketPrefix(
                 series.market_read_pages, series.market_declared_pages, series.market_read_rows,
                 series.market_declared_rows, len(series.exact_codes)))
@@ -267,7 +267,7 @@ def _review_financial(
     documents: CompanyDocumentFiles,
     scope: CompanySyncRoundScope,
     source_scope: str,
-    pages: _Pages,
+    pages: CompanySourcePages,
     round_id: str,
     policy: LongResearchPolicy,
     check: Callable[[], None],
@@ -461,7 +461,7 @@ def AuditCompanySourceQualification(
             raise ValueError("company_source_qualification_plan_identity_mismatch")
         financial = ResolveCompanyFinancialScoringQuery(scope.cutoff, CompanySyncPhasePlan(
             CompanySyncFamily.FINANCIAL, plans["financial"]))
-        source_scope, financial_pages = _financial_pages(sources, financial, scope)
+        source_scope, financial_pages = ReadCompanyFinancialPages(sources, financial, scope)
         qualified = ReadCompanyPublicationIdentity(formal)
         if qualified is None:
             raise ValueError("company_source_qualification_publication_missing")

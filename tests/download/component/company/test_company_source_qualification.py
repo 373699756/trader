@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 from datetime import timedelta
 from pathlib import Path
 
 import pytest
+from openpyxl import load_workbook
 
 from scripts.download.company import company_source_qualification
+from scripts.download.company.company_field_coverage import ReadCompanyFieldReport
+from scripts.download.company.company_field_workbook import WriteCompanyFieldWorkbook
 from scripts.download.company.company_field_audit import AuditCompanyFields
 from scripts.download.company.company_source_qualification import AuditCompanySourceQualification, ProjectCompanySourceQualification
 from scripts.download.company.company_stock_fields import StockFieldReport
@@ -146,6 +150,30 @@ def _audit(paths, documents, unlock_days, *, stock_fields=None):
     )
     assert report["status"] == "degraded"
     return ProjectCompanySourceQualification(report["summary"]["source_qualification_audit"])
+
+
+@pytest.mark.parametrize("latest", (False, True))
+def test_field_workbook_uses_frozen_population_and_keeps_formal_and_source_separate(tmp_path, latest):
+    paths, _, _ = _inputs(tmp_path, latest=latest)
+    databases = (paths.company_sync, paths.company_sources, paths.company)
+    before = [path.read_bytes() for path in databases]
+    report = ReadCompanyFieldReport(paths, _CUTOFF)
+    assert report.population == 2
+    assert report.missing_financial == ((_CODES[0], ("每股收益（EPS）",)),)
+    assert next(m.present for m in report.metrics if m.category == "D25正式读取") == 0
+    with BytesIO() as stream:
+        WriteCompanyFieldWorkbook(stream, report)
+        stream.seek(0)
+        book = load_workbook(stream, read_only=True)
+        try:
+            eps = next(row for row in book["来源与正式覆盖"].values if row[1] == "每股收益（EPS）")
+            assert eps[2:6] == (1, 1, 2, 0.5)
+            contract = next(row for row in book["事件字段适用范围"].values if row[0] == "合同金额")
+            assert contract[1] == 0 and contract[7] is None
+            assert book["正式库全部物理列"].max_row == len(report.columns) + 1
+        finally:
+            book.close()
+    assert before == [path.read_bytes() for path in databases]
 
 
 @pytest.mark.parametrize("latest", (False, True))

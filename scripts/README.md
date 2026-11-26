@@ -9,8 +9,11 @@
 .venv/bin/python3 scripts/tools.py --business infra --module disk --action profile
 .venv/bin/python3 scripts/tools.py --business recommendation --module web --action health --scoring-profile v3
 .venv/bin/python3 scripts/tools.py --business download --module company --action coverage --company-database-audit
+.venv/bin/python3 scripts/tools.py --business download --module company --action field-coverage
 .venv/bin/python3 scripts/tools.py --business recommendation --module assets --action consistency
 ```
+
+`download/company/field-coverage` 只读当前公司同步轮次的股票名单、来源库和正式库，输出各字段有值股数、缺值股数和比例。Excel 分列最新财务来源、D25 可读观测、正式覆盖、事件适用股、财务缺值名单及正式库各物理列。默认写到配置的运行目录下的 `reports/`，终端打印文件路径。可追加 `-- --output /path/company-fields.xlsx` 指定新文件，或用 `--runtime-config` 选择配置。统计使用当次冻结的股票数作为分母。
 
 公司资料重下后的旧风险对照沿同一`download/company/coverage`动作，显式组合`--company-database-audit --company-risk-baseline /external/baseline-risks.json`，并用`--company-collection-database`、`--company-evidence-database`选定采集库和正式库。基线只读，上限4MiB、10000条风险、50000条证据及50000条匹配凭证；保存固定发布的摘要／提取身份／时点、全风险业务字段，以及每个来源依据对应的全部valid输入修订／正文hash／原提交时间／策略。当前结构必须包含publication、risks、evidence及每条依据的receipts，旧基线须重新显式导出，不提供兼容或迁移。比较忽略自增ID，分别报告精确保留、缺失及变化待审；同公告编号但原凭证丢失不能签保全，缺valid或正文hash则保留evidence_identity_confirmed=false。比较与原数据库审计共用总期限，公开报告只含发布身份、变更字段名和证据保全状态，不含凭证明细、案件正文或原字段值。缺失不等于解除，快照变化或无正式发布不能签稳定完成；匹配凭证保留不证明具体事件与修订的语义绑定、供应商原值、其它附表或全市场资料正确。此参数不能与隔离回放目录组合，也不会启动同步或初始化数据库。
 
