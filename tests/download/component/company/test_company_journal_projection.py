@@ -2,16 +2,81 @@
 
 from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
+from threading import Event
+from time import monotonic
+import sqlite3
 
 import pytest
 
 from tests.download.component.company.test_company_sync_round import _SCOPE
 from tests.helpers.shared.configuration import SqlitePolicyFixture
-from trader.download.domain.company_sync import CompanySyncFamily, CompanySyncPhasePlan, CompanySyncPhaseState, CompanySyncStepResult
+from trader.download.domain.company_sync import CompanySyncFamily, CompanySyncInterrupted, CompanySyncPhasePlan, CompanySyncPhaseState, CompanySyncStepResult
 from trader.download.infra.company_journal_projection import CompanyJournalProjection
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
+from trader.download.infra.company_sync_io import CompanySyncIoBudget
 from trader.infra.http_contracts import HttpAttempt, HttpRequest
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
+
+
+@pytest.mark.parametrize("mode", ("released", "cancelled", "diagnostic"))
+def test_receipt_commit_waits_for_a_real_reader_without_reissuing_the_request(tmp_path, mode):
+    path = tmp_path / "journal.sqlite3"
+    policy = replace(SqlitePolicyFixture(), connection_timeout_seconds=0.04)
+    cancel, reader_ready, release = Event(), Event(), Event()
+    budget = CompanySyncIoBudget(deadline=monotonic() + 5 if mode == "diagnostic" else None,
+                                 monotonic=monotonic, cancel_requested=cancel.is_set)
+    journal = SQLiteCompanySyncRoundJournal(path, sqlite_policy=policy, publication_identity=lambda: "", io_budget=budget)
+    journal.initialize()
+    family = CompanySyncFamily.ANNOUNCEMENTS
+    scope = replace(_SCOPE, families=(family,))
+    request = HttpRequest("POST", "https://example.test/directory", 1)
+
+    def hold_read_snapshot():
+        with SqliteSession(path, sqlite_policy=policy) as reader, SqliteTransaction(reader):
+            assert reader.run("PRAGMA journal_mode").require_one()[0] == "delete"
+            assert reader.run("SELECT observed FROM company_sync_request").require_one()[0] == 0
+            reader_ready.set()
+            assert release.wait(5)
+
+    statements = []
+    def trace(statement):
+        statements.append(statement)
+        if statement == "COMMIT" and statements.count("COMMIT") == 2:
+            if mode == "released":
+                release.set()
+            elif mode == "cancelled":
+                cancel.set()
+
+    with journal.writer_session():
+        round_id = journal.begin(scope, (CompanySyncPhasePlan(family, "b" * 64),), max_source_calls=None)
+        journal.start(round_id, family, CompanySyncPhaseState("a" * 64, True))
+        journal.authorize_request(request)
+        if journal._writer is not None:
+            journal._writer.observe_statements(trace)
+        with ThreadPoolExecutor(max_workers=1) as worker:
+            future = worker.submit(hold_read_snapshot)
+            try:
+                assert reader_ready.wait(5)
+                attempt = HttpAttempt("example.test", "POST", 0.1, 120, 200, "")
+                if mode == "released":
+                    journal.observe_attempt(attempt)
+                    assert statements.count("COMMIT") >= 2
+                elif mode == "cancelled":
+                    with pytest.raises(CompanySyncInterrupted):
+                        journal.observe_attempt(attempt)
+                    assert statements.count("ROLLBACK") == 1
+                else:
+                    # A bounded diagnostic retains its original single-operation wait.
+                    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+                        journal.observe_attempt(attempt)
+            finally:
+                release.set()
+                cancel.clear()
+                future.result(timeout=5)
+        if mode != "diagnostic":
+            assert sum(sql.startswith("UPDATE company_sync_request SET observed=1") for sql in statements) == 1
+        assert journal.source_calls(round_id) == 1
+        assert journal.outstanding_has_unobserved_request(round_id, family) is (mode != "released")
 
 
 def test_cached_writer_and_independent_reader_follow_recovery_external_update_and_rollback(tmp_path):

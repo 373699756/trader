@@ -159,6 +159,12 @@ class SQLiteCompanySyncRoundJournal:
         with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection:
             EnsureSqliteSchema(connection, _SCHEMA, allow_create=True, exact=True)
 
+    def _write_transaction(self, connection: SqliteConnection) -> SqliteTransaction:
+        # A diagnostic's one-operation native wait already consumes its shrinking
+        # time budget. Only ordinary cancellable writes may wait for a reader again.
+        check = self._io_budget.check if self._io_budget is not None and self._io_budget.deadline is None else None
+        return SqliteTransaction(connection, immediate=True, check_commit_retry=check)
+
     def validate_existing(self) -> None:
         if self.path.exists():
             with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
@@ -183,7 +189,7 @@ class SQLiteCompanySyncRoundJournal:
         round_id = CompanySyncRoundIdentity(scope, plans)
         with (
             self._session(self.path, sqlite_policy=self._sqlite_policy) as connection,
-            SqliteTransaction(connection, immediate=True) as transaction,
+            self._write_transaction(connection) as transaction,
         ):
             limit = _UNLIMITED_REQUESTS if max_source_calls is None else max_source_calls
             if after_backfill is not None:
@@ -231,7 +237,7 @@ class SQLiteCompanySyncRoundJournal:
 
     def finish_refresh(self, round_id: str) -> None:
         """Explicitly release a terminated round; unknown requests require reconciliation."""
-        with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
+        with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, self._write_transaction(connection):
             plans = tuple(row[0] for row in connection.run("SELECT family FROM company_sync_plan WHERE round_id=?", (round_id,)))
             for family in plans:
                 row = connection.run("SELECT complete,can_continue,failure,processed,gaps FROM company_sync_step WHERE round_id=? AND family=? ORDER BY step DESC LIMIT 1", (round_id, family)).fetchone()
@@ -260,7 +266,7 @@ class SQLiteCompanySyncRoundJournal:
         if self.directory_response(round_id) is not None:
             return False
         zone = ZoneInfo("Asia/Shanghai")
-        with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
+        with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, self._write_transaction(connection):
             row = connection.run("SELECT cutoff FROM company_sync_round WHERE round_id=? AND active=1", (round_id,)).fetchone()
             if row is None or datetime.fromisoformat(row[0]).astimezone(zone).date() >= next_cutoff.astimezone(zone).date():
                 return False
@@ -320,7 +326,7 @@ class SQLiteCompanySyncRoundJournal:
             return _phase_family(rows[0][0]) if rows else None
 
     def start(self, round_id: str, family: CompanySyncFamily, state: CompanySyncPhaseState) -> None:
-        with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
+        with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, self._write_transaction(connection):
             if connection.run("SELECT 1 FROM company_sync_step WHERE round_id=? AND complete=0", (round_id,)).fetchone() is not None:
                 raise ValueError("company_sync_unacknowledged_step")
             step = connection.run("SELECT COALESCE(MAX(step),0)+1 FROM company_sync_step WHERE round_id=? AND family=?", (round_id, family.value)).require_one()[0]
@@ -342,7 +348,7 @@ class SQLiteCompanySyncRoundJournal:
                 (round_id, family.value)).fetchone() is not None
 
     def finish(self, round_id: str, family: CompanySyncFamily, result: CompanySyncStepResult) -> None:
-        with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
+        with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, self._write_transaction(connection):
             self._finish(connection, round_id, family.value, result)
         self._executing = None
 
@@ -361,7 +367,7 @@ class SQLiteCompanySyncRoundJournal:
         round_id, family, step = executing
         with (
             self._session(self.path, sqlite_policy=self._sqlite_policy) as connection,
-            SqliteTransaction(connection, immediate=True) as transaction,
+            self._write_transaction(connection) as transaction,
         ):
             row = connection.run("SELECT source_required,complete,state_hash FROM company_sync_step WHERE round_id=? AND family=? AND step=?", (round_id, family.value, step)).require_one()
             if not row[0] or row[1]:
@@ -434,7 +440,7 @@ class SQLiteCompanySyncRoundJournal:
         family = CompanySyncFamily.ANNOUNCEMENTS.value
         with (
             self._session(self.path, sqlite_policy=self._sqlite_policy) as connection,
-            SqliteTransaction(connection, immediate=True) as transaction,
+            self._write_transaction(connection) as transaction,
         ):
             recovered_step = _directory_recovery_step(connection, receipt)
             if recovered_step is None:
@@ -462,7 +468,7 @@ class SQLiteCompanySyncRoundJournal:
         round_id, family, step = executing
         with (
             self._session(self.path, sqlite_policy=self._sqlite_policy) as connection,
-            SqliteTransaction(connection, immediate=True) as transaction,
+            self._write_transaction(connection) as transaction,
         ):
             row = connection.run("SELECT attempt,host,method FROM company_sync_request WHERE round_id=? AND family=? AND step=? AND observed=0 ORDER BY attempt DESC LIMIT 1", (round_id, family.value, step)).fetchone()
             if row is None or (row[1], row[2]) != (attempt.host, attempt.method):

@@ -326,9 +326,13 @@ def SqliteSession(
 class SqliteTransaction:
     """One explicit transaction, optionally spanning methods on a thread-owned session."""
 
-    def __init__(self, connection: SqliteConnection, *, immediate: bool = False) -> None:
+    def __init__(
+        self, connection: SqliteConnection, *, immediate: bool = False,
+        check_commit_retry: Callable[[], None] | None = None,
+    ) -> None:
         self._connection = connection
         self._immediate = immediate
+        self._check_commit_retry = check_commit_retry
         self._is_open = False
 
     def begin(self) -> None:
@@ -341,7 +345,18 @@ class SqliteTransaction:
         if not self._is_open:
             raise ValueError("sqlite_transaction_inactive")
         try:
-            self._connection._driver.commit()
+            while True:
+                try:
+                    self._connection._driver.commit()
+                    break
+                except sqlite3.OperationalError as exc:
+                    # A rollback-journal reader can keep COMMIT busy after a writer
+                    # owns its transaction. SQLite permits retrying only COMMIT here.
+                    if (self._check_commit_retry is None or not self._immediate or not self._connection.in_transaction
+                        or str(exc) != "database is locked"
+                        or getattr(exc, "sqlite_errorname", "SQLITE_BUSY") not in {"SQLITE_BUSY", "SQLITE_BUSY_TIMEOUT"}):
+                        raise
+                    self._check_commit_retry()
         except BaseException:
             self.rollback()
             raise

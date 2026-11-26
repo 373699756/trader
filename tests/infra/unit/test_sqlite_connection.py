@@ -324,6 +324,19 @@ def test_schema_seed_failure_rolls_back_ddl_and_can_retry(tmp_path):
         assert connection.run("SELECT value FROM facts").require_one()[0] == 9
 
 
+@pytest.mark.skipif(sqlite3.sqlite_version_info < (3, 35), reason="SQLite RETURNING requires 3.35")
+def test_busy_from_an_unfinished_statement_is_not_retried_as_an_external_reader(tmp_path):
+    with SqliteSession(tmp_path / "journal.sqlite3") as connection:
+        connection.run("CREATE TABLE receipts(id INTEGER PRIMARY KEY)")
+        with pytest.raises(sqlite3.OperationalError, match="statements in progress"), SqliteTransaction(
+            connection, immediate=True, check_commit_retry=lambda: pytest.fail("cannot wait for the writer's own cursor"),
+        ):
+            open_statement = connection.run("INSERT INTO receipts VALUES(1),(2) RETURNING id")
+        open_statement.close()
+        assert not connection.in_transaction
+        assert connection.run("SELECT COUNT(*) FROM receipts").require_one()[0] == 0
+
+
 def test_deferred_constraint_commit_failure_rolls_back_and_releases_writer(tmp_path):
     path = tmp_path / "index.sqlite3"
     with SqliteSession(path, SqliteConnectionOptions(foreign_keys=True)) as connection:
