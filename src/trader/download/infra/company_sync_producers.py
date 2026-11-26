@@ -176,6 +176,7 @@ class CompanyAnnouncementProducer:
         for parent in sorted(parents, key=lambda item: item.end, reverse=True):
             queries = self._material.disclosure_queries(parent)
             # After the last child, confirm the parent against the complete union.
+            candidates: tuple[DisclosurePartition, ...]
             if queries is None:
                 candidates = (parent,)
             elif queries:
@@ -209,16 +210,21 @@ class CompanyAnnouncementProducer:
                 return None
             if len(dependencies) > 120000:
                 raise ValueError("company_required_material_scope_limit")
+            frozen_codes = frozenset(scope.codes)
+            dependencies = tuple(item for item in dependencies if item.code in frozen_codes)
+            if not dependencies:
+                return None
+            dependency_codes = tuple(sorted({item.code for item in dependencies}))
             with self._session(self._material.facts_path) as formal, SqliteTransaction(formal):
-                recoveries = ReadCompanyFieldRecovery(formal, connection, scope.codes, scope.cutoff, self._material.raw_root, field_rule_hash=CompanyFieldProofRulesHash())
+                recoveries = ReadCompanyFieldRecovery(formal, connection, dependency_codes, scope.cutoff, self._material.raw_root, field_rule_hash=CompanyFieldProofRulesHash())
                 valid = frozenset((item.code, item.source, item.evidence_id, item.record_hash, item.body_hash) for item in dependencies
-                    if item.code in scope.codes and formal.run("SELECT 1 FROM company_input_receipt WHERE code=? AND source=? AND source_key=? AND record_hash=? AND body_hash=? AND extraction_hash=? AND outcome='valid'",
+                    if formal.run("SELECT 1 FROM company_input_receipt WHERE code=? AND source=? AND source_key=? AND record_hash=? AND body_hash=? AND extraction_hash=? AND outcome='valid'",
                     (item.code, item.source, item.evidence_id, item.record_hash, item.body_hash, self._extraction_hash)).fetchone() is not None)
             permitted = frozenset((item.gap.code, item.gap.evidence_id) for item in recoveries if item.action in {"download", "extract"})
             for dependency in dependencies:
                 if ((dependency.code, dependency.evidence_id) not in permitted
                     or (dependency.code, dependency.source, dependency.evidence_id, dependency.record_hash, dependency.body_hash) not in valid
-                    or dependency.code not in scope.codes or dependency.record_hash != dependency.current_record_hash
+                    or dependency.record_hash != dependency.current_record_hash
                     or dependency.current_body_hash not in (None, dependency.body_hash)
                     or dependency.extraction_hash != self._extraction_hash):
                     continue

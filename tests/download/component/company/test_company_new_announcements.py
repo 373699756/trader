@@ -510,6 +510,37 @@ def test_risk_and_observed_unlock_originals_share_turns_without_starving_directo
         *(["investigation"] if with_unlock else []), "commitment", "positive"]
 
 
+@pytest.mark.parametrize("has_frozen_dependency", (False, True))
+def test_required_original_recovery_only_reads_its_distinct_frozen_issuers(tmp_path, monkeypatch, has_frozen_dependency):
+    from trader.download.infra import company_sync_producers
+
+    runtime, _, _, _ = _runtime(tmp_path)
+    scope = replace(_SCOPE, codes=("600001", "600002", "600003"))
+    runtime.initialize(scope.codes, scope.cutoff)
+    codes = ("600004", "600001", "600001") if has_frozen_dependency else ("600004",)
+    for index, code in enumerate(codes):
+        item = _material(runtime, _INVESTIGATION, code=code, key=f"dependency-{index}")
+        with SqliteSession(runtime.material.path) as connection:
+            connection.run("""INSERT INTO company_material_dependencies
+                SELECT id,?,record_hash,body_hash,?,'risk','conclusion_unverified' FROM disclosures WHERE source_key=?""",
+                (code, runtime.facts.extraction_hash, item.identity))
+    inspected = []
+    real_recovery = company_sync_producers.ReadCompanyFieldRecovery
+
+    def read_recovery(formal, collected, requested, *args, **kwargs):
+        inspected.append(requested)
+        return real_recovery(formal, collected, requested, *args, **kwargs)
+
+    monkeypatch.setattr(company_sync_producers, "ReadCompanyFieldRecovery", read_recovery)
+    configuration = CompanySyncConfigurationFixture()
+    producer = CompanyAnnouncementProducer(runtime.inputs, runtime.material, runtime._official_source, scope,
+        sqlite_policy=SqlitePolicyFixture(), extraction_hash=runtime.facts.extraction_hash,
+        current_codes=("600002",), configuration=configuration, wall_clock=lambda: scope.cutoff,
+        policies=BuildCompanyDocumentPolicies(configuration, "ocr-test", text_identity="text-test"))
+    assert producer._document(scope) is None
+    assert inspected == ([("600001",)] if has_frozen_dependency else [])
+
+
 def test_supplemental_unlock_original_dispatch_requires_the_same_scope_issuer_observation(tmp_path):
     runtime, reader, transport, physical = _runtime(tmp_path)
     scope = _SCOPE

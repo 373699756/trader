@@ -34,19 +34,23 @@ class CompanySyncIoBudget:
         return replace(policy, connection_timeout_seconds=min(policy.connection_timeout_seconds, remaining))
 
     @contextmanager
-    def session(self, path: Path, options: SqliteConnectionOptions, *, sqlite_policy: SqliteIoPolicy,
-        cancel_requested: Callable[[], bool] | None = None) -> Iterator[SqliteConnection]:
+    def access(self) -> Iterator[None]:
         self.check()
-        policy = self.remaining_policy(sqlite_policy)
         try:
-            with SqliteSession(path, options, sqlite_policy=policy,
-                cancel_requested=lambda: self.stopped() or cancel_requested is not None and cancel_requested()) as connection:
-                yield connection
-                self.check()
+            yield
+            self.check()
         except sqlite3.OperationalError as exc:
             if str(exc) in {"interrupted", "database is locked"} and self.stopped():
                 raise CompanySyncInterrupted("company_sync_sql_budget_exhausted") from exc
             raise
+
+    @contextmanager
+    def session(self, path: Path, options: SqliteConnectionOptions, *, sqlite_policy: SqliteIoPolicy,
+        cancel_requested: Callable[[], bool] | None = None) -> Iterator[SqliteConnection]:
+        policy = self.remaining_policy(sqlite_policy)
+        with self.access(), SqliteSession(path, options, sqlite_policy=policy,
+            cancel_requested=lambda: self.stopped() or cancel_requested is not None and cancel_requested()) as connection:
+            yield connection
 
 
 __all__ = ["CompanySyncIoBudget"]

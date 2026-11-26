@@ -1441,7 +1441,8 @@ def ExecuteCompanySync(
             float("inf") if deadline is None else deadline)
         try:
             runtime.initialize(codes, cutoff)
-            result = runtime.run(codes, cutoff, budget, cancel_requested=cancel_requested, monotonic=time.monotonic)
+            with journal.writer_session():
+                result = runtime.run(codes, cutoff, budget, cancel_requested=cancel_requested, monotonic=time.monotonic)
         except CompanySyncInterrupted:
             return paused()
         progress.finish(result, time_limit_seconds=configuration.round_timeout_seconds, step_limit=configuration.round_step_limit)
