@@ -169,6 +169,41 @@ def test_failed_refresh_keeps_previous_publication_and_finished_code_documents(f
     assert [(endpoint, code) for endpoint, code, _query in calls] == [("p_stock2110", "600002")]
 
 
+def test_new_stock_timeout_reuses_only_still_eligible_industries_with_original_receipts(fixture):
+    source, now, calls, outcomes = fixture
+    old = _fetch(source, codes=("600001", "600002"))
+    cache = CurrentIndustryCache(source.path, sqlite_policy=source.sqlite_policy)
+    before = cache.snapshot(_AT)
+    now[0] += timedelta(hours=1)
+    outcomes["600003"] = HttpTimeout("fixture")
+    result = _fetch(source, now[0], codes=("600002", "600003"))
+    assert result == (old[1],)
+    assert cache.snapshot(now[0]) == before
+    assert cache.valid_rows(now[0], frozenset(("600002", "600003")), required_start=_START, cancel_requested=lambda: False) == result
+    calls.clear()
+    outcomes.clear()
+    recovered = _fetch(source, now[0], codes=("600002", "600003"))
+    assert tuple(row.subject_key for row in recovered) == ("600002", "600003")
+    assert recovered[0].data_version != old[0].data_version
+    assert [(endpoint, code) for endpoint, code, _query in calls] == [("p_stock2110", "600003")]
+
+
+@pytest.mark.parametrize("reason", ("short_window", "original_damaged", "forbidden"))
+def test_failed_refresh_cannot_downgrade_source_evidence_or_required_window(fixture, reason):
+    from trader.infra.http_contracts import HttpStatusError
+
+    source, now, _calls, outcomes = fixture
+    _fetch(source, codes=("600002",))
+    now[0] += timedelta(hours=1)
+    outcomes["600001"] = HttpStatusError(403) if reason == "forbidden" else HttpTimeout("fixture")
+    if reason == "original_damaged":
+        with SqliteSession(source.path) as connection, SqliteTransaction(connection):
+            connection.run("UPDATE industry_source_document SET receipt_hash=zeroblob(32) WHERE request_key='cninfo:p_stock2110:600002'")
+    failure = {"original_damaged": ValueError, "forbidden": HttpStatusError, "short_window": HttpTimeout}[reason]
+    with pytest.raises(failure):
+        _fetch(source, now[0], codes=("600001", "600002"), start=_START - timedelta(days=int(reason == "short_window")))
+
+
 def test_cancelled_preparation_never_publishes_or_requests(fixture):
     from dataclasses import replace
 

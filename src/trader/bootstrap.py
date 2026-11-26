@@ -309,9 +309,11 @@ def _prepare_reference(
         else:
             cached_industry = CurrentIndustryCache(industry_path, sqlite_policy=sqlite_policy)
             def industries(cut: datetime, eligible: tuple[BaoStockSecurity, ...],
-                           _calendar: tuple[date, ...]) -> tuple[IndustryVersionPort, ...]:
-                eligible_codes = {security.code for security in eligible}
-                return tuple(row for row in cached_industry.load(cut) if row.subject_key in eligible_codes)
+                           calendar: tuple[date, ...]) -> tuple[IndustryVersionPort, ...]:
+                return cached_industry.valid_rows(
+                    cut, frozenset(security.code for security in eligible), required_start=calendar[0],
+                    cancel_requested=cancel_requested,
+                )
         dependencies = ReferencePreparationDependencies(
             source.fetch,
             partial(publication.calendar, observed_at.date(), fetch=calendar, progress=progress, source="新浪/Akshare"),

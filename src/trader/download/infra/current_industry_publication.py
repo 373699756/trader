@@ -31,7 +31,7 @@ from trader.download.infra.cninfo_industry import (
     ResolveCninfoIndustryCategory,
 )
 from trader.download.infra.industry_query_index import IndustryQuery, IndustrySourceDocument, SQLiteIndustryQueryIndex
-from trader.infra.http_contracts import HttpCancelled
+from trader.infra.http_contracts import HttpCancelled, HttpConnectionError, HttpStatusError
 from trader.infra.market_data.observations import JsonScalar, SourceObservation
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
@@ -82,6 +82,31 @@ class CurrentIndustryPublication:
             raise HttpCancelled("cninfo_industry_cancelled")
 
     def fetch(
+        self, observed_at: datetime, universe: tuple[BaoStockSecurity, ...], calendar: tuple[date, ...],
+    ) -> tuple[SourceObservation, ...]:
+        try:
+            return self._refresh(observed_at, universe, calendar)
+        except (HttpConnectionError, TimeoutError, HttpStatusError) as exc:
+            self._check()
+            if isinstance(exc, HttpStatusError) and exc.status_code not in (408, 429) and exc.status_code < 500:
+                raise
+            cache = CurrentIndustryCache(self.path, self.minimum_rows, sqlite_policy=self.sqlite_policy)
+            rows = cache.valid_rows(
+                max(_aware(observed_at), _aware(self.clock())), frozenset(item.code for item in universe),
+                required_start=calendar[0], cancel_requested=self.cancel_requested,
+            )
+            self._check()
+            if not rows:
+                raise
+            if self.report is not None:
+                self.report(ProgressMessage(
+                    (ProgressField(f"巨潮刷新失败（{type(exc).__name__}），沿用有效行业发布 {len(rows)}/{len(universe)} 股",
+                                   ProgressLevel.WARNING),),
+                    task=ProgressTask("参考", "当前行业", "当前行业"), state="处理中",
+                ))
+            return rows
+
+    def _refresh(
         self,
         observed_at: datetime,
         universe: tuple[BaoStockSecurity, ...],
@@ -349,6 +374,23 @@ class CurrentIndustryCache:
 
     def snapshot(self, observed_at: datetime) -> CurrentIndustrySnapshot:
         """Read the latest complete publication, refusing stale or damaged evidence without refresh I/O."""
+        snapshot, _rows = self._validated_publication(observed_at, lambda: False)
+        return snapshot
+
+    def valid_rows(
+        self, observed_at: datetime, codes: frozenset[str], *, required_start: date, cancel_requested: Callable[[], bool],
+    ) -> tuple[SourceObservation, ...]:
+        try:
+            _snapshot, rows = self._validated_publication(observed_at, cancel_requested, required_start=required_start)
+        except ValueError as exc:
+            if str(exc) in {"current_industry_not_published", "current_industry_publication_expired", "current_industry_window_incomplete"}:
+                return ()
+            raise
+        return tuple(row for row in rows if row.subject_key in codes)
+
+    def _validated_publication(
+        self, observed_at: datetime, cancel_requested: Callable[[], bool], *, required_start: date | None = None,
+    ) -> tuple[CurrentIndustrySnapshot, tuple[SourceObservation, ...]]:
         observed_at = _aware(observed_at)
         index = SQLiteIndustryQueryIndex(self.path, _CONTRACT, "current_industry_query", sqlite_policy=self.sqlite_policy)
         query = index.latest(observed_at.date(), strict=True)
@@ -361,7 +403,9 @@ class CurrentIndustryCache:
         received_at, refresh_after = _timestamp(payload, "received_at"), _timestamp(payload, "refresh_after")
         if observed_at >= refresh_after or observed_at - received_at >= _REFRESH_AGE:
             raise ValueError("current_industry_publication_expired")
-        return _query_snapshot(query, payload, index, observed_at)
+        if required_start is not None and date.fromisoformat(_text(payload, "requested_from")) > required_start:
+            raise ValueError("current_industry_window_incomplete")
+        return _query_snapshot(query, payload, index, observed_at, cancel_requested), observations
 
     def latest(self, observed_at: datetime) -> IndustryQuery | None:
         observed_at = _aware(observed_at)
@@ -397,6 +441,7 @@ def _query_snapshot(
     payload: dict[str, object],
     index: SQLiteIndustryQueryIndex,
     observed_at: datetime,
+    cancel_requested: Callable[[], bool],
 ) -> CurrentIndustrySnapshot:
     # Reuse the original-document decoder so both content and receipt hashes remain verified.
     taxonomy = index.read_source_document(_TAXONOMY_KEY, _timestamp(payload, "taxonomy_received_at"))
@@ -424,7 +469,7 @@ def _query_snapshot(
     reads = index.iter_source_documents(
         tuple("cninfo:p_stock2110:" + code for code in codes),
         _timestamp(payload, "received_at"),
-        cancel_requested=lambda: False,
+        cancel_requested=cancel_requested,
     )
     with closing(reads):
         for code, read in zip(codes, reads):

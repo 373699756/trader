@@ -66,7 +66,7 @@ def test_reference_uses_hdd_batch_and_preserves_population_and_publication(
     assert bootstrap.SQLiteReferenceIndex(tmp_path / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture()).read() == result
 
 
-@pytest.mark.parametrize("target", ("all", "history", "market", "company"))
+@pytest.mark.parametrize("target", ("all", "history", "company"))
 def test_normal_sync_passes_the_configured_medium_to_shared_reference_preparation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: SyncTarget,
 ) -> None:

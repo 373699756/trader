@@ -91,6 +91,11 @@ def PrepareReference(
         _report(report, "当前行业", f"准备失败（{type(exc).__name__}），继续资料同步", ProgressLevel.WARNING,
                 source=dependencies.sources.industry, state="失败")
     else:
+        if any(item.received_at.date() > observed_at.date() for item in industries):
+            # This publication remains available at its real receipt time. The ST cut belongs to the opening day.
+            industries = ()
+            _report(report, "当前行业", "行业发布已跨日，保留其实际收到时间，本次参考不绑定次日行业",
+                    ProgressLevel.WARNING, source=dependencies.sources.industry, state="处理中")
         missing = len(eligible) - len(industries)
         _report(
             report,

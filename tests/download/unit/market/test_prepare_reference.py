@@ -328,6 +328,23 @@ def test_reference_completion_cut_preserves_the_actual_industry_received_time():
     assert result.st_evidence == expected.st_evidence
 
 
+def test_reference_across_midnight_allows_sync_without_binding_late_industry_or_same_day_proof(tmp_path):
+    start = _NOW.replace(hour=23, minute=59)
+    completed = start + timedelta(minutes=2)
+    expected = PreparedFixture(start)
+    index = SQLiteReferenceIndex(tmp_path / "company_st.sqlite3", sqlite_policy=SqlitePolicyFixture())
+    dependencies = ReferencePreparationDependencies(
+        lambda *_args: expected.st_evidence, lambda: expected.open_dates,
+        lambda *_args: (_Industry(received_at=completed),),
+        lambda reference, evidence: index.publish(reference, evidence, completed_at=completed),
+        lambda: False, _SOURCES,
+    )
+    reference = PrepareReference(expected.official_universe, start, dependencies)
+    assert index.read() == reference and reference.checked_at == start
+    assert reference.industry_version is None and reference.eligible_universe == expected.eligible_universe
+    assert index.read_as_of(start) is None and index.read_as_of(completed) is None
+
+
 def test_partial_industry_preparation_reports_coverage_and_missing_count():
     first = PreparedFixture(_NOW).official_universe[0]
     expected = PreparedFixture(_NOW, (first, replace(first, code="600002")))
