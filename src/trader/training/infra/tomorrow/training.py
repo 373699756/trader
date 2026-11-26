@@ -53,6 +53,7 @@ from trader.training.domain.tomorrow_probability import (
 )
 from trader.training.domain.v1.learned_rank import V1TrainingSettings
 from trader.training.infra.cpu_admission import TrainingCpuBudget
+from trader.training.infra.history.aligned_training_rows import AlignTrainingFacts, AlignmentReadDates
 from trader.training.infra.logistic_fitting import FitBinaryLogistic
 from trader.training.infra.fitting_settings import LightGBMFittingParameters, RidgeFittingParameters
 from trader.training.infra.ranking import DailyBinaryRankRows
@@ -149,6 +150,10 @@ class TomorrowHistoryInput:
     @property
     def universe_count(self) -> int:
         return len(self.state.universe.securities)
+
+    @property
+    def listing_intervals(self) -> tuple[tuple[str, date, date | None], ...]:
+        return tuple((security.code, security.listed_on, security.delisted_on) for security in self.state.universe.securities)
 
     def iter_training_rows(self, dates: tuple[date, ...]) -> Generator[HistoryTrainingRow, None, None]:
         yield from self.reader.iter_training_rows(
@@ -288,9 +293,11 @@ def _train_sample_group(
         ):
             for reporter in reporters:
                 reporter.stage("training_preparation", "completed")
-            with closing(history.iter_training_rows(calendar)) as rows:
+            read_dates = tuple(sorted(AlignmentReadDates(history.open_dates, frozenset(calendar)))) if sequence else calendar
+            with closing(history.iter_training_rows(read_dates)) as rows:
                 samples = _collect_samples(
                     rows, calendar, cap, check, target, warmup=warmup, source_identity=history.snapshot_hash,
+                    alignment_calendar=read_dates, listing_intervals=history.listing_intervals if sequence else (),
                     progress=publish_samples if any(reporter.notify is not None for reporter in reporters) else None,
                 )
             return tuple(_fit_pending(
@@ -341,6 +348,32 @@ def _label(
     )
 
 
+def _input_days(
+    rows: Iterable[HistoryTrainingRow], calendar: tuple[date, ...], start: date, sequence: bool,
+    listing_intervals: tuple[tuple[str, date, date | None], ...], check: Callable[[], None],
+) -> Iterable[tuple[date, dict[str, HistoryTrainingRow], tuple[HistoryTrainingRow, ...]]]:
+    if sequence:
+        aligned = AlignTrainingFacts(rows, calendar, listing_intervals)
+        for day, facts in groupby(aligned, key=lambda fact: fact.aligned.trade_date):
+            check()
+            if day >= start:
+                source = {}
+                points = []
+                for fact in facts:
+                    if fact.source is not None:
+                        source[fact.source.code] = fact.source
+                    points.append(fact.aligned)
+                yield day, source, tuple(points)
+    else:
+        for day, stock_rows in groupby(rows, key=lambda row: row.trade_date):
+            source = {}
+            for row in stock_rows:
+                if row.code in source:
+                    raise ValueError("tomorrow_history_duplicate_stock_day")
+                source[row.code] = row
+            yield day, source, ()
+
+
 def _collect_samples(
     rows: Iterable[HistoryTrainingRow],
     calendar: tuple[date, ...],
@@ -350,6 +383,8 @@ def _collect_samples(
     *,
     warmup: int = 0,
     source_identity: str = "",
+    alignment_calendar: tuple[date, ...] | None = None,
+    listing_intervals: tuple[tuple[str, date, date | None], ...] = (),
     progress: Callable[[TomorrowTrainingProgress], None] | None = None,
 ) -> _Samples:
     def report(state: TomorrowTrainingProgressState, phase: Literal["warmup", "generation"]) -> None:
@@ -370,21 +405,20 @@ def _collect_samples(
     labels: _FloatArray = np.empty(cap, dtype=np.float64)
     codes: _IntArray = np.empty(cap, dtype=np.int64)
     boards: _IntArray = np.empty(cap, dtype=np.int64)
-    grouped = iter(groupby(rows, key=lambda item: item.trade_date))
+    grouped = iter(_input_days(rows, alignment_calendar or calendar, calendar[0], bool(warmup), listing_intervals, check))
     group = next(grouped, None)
     previous: tuple[HistoryTrainingRow, ...] = ()
+    previous_aligned: tuple[HistoryTrainingRow, ...] = ()
     rolling: dict[str, deque[PriceVolumePoint]] = {}
     offsets = [0]
     for day_index, day in enumerate(calendar):
         check()
         current: dict[str, HistoryTrainingRow] = {}
+        aligned_rows: tuple[HistoryTrainingRow, ...] = ()
         if group is not None and group[0] <= day:
             if group[0] != day:
                 raise ValueError("tomorrow_history_stream_out_of_order")
-            for row in group[1]:
-                if row.code in current:
-                    raise ValueError("tomorrow_history_duplicate_stock_day")
-                current[row.code] = row
+            _, current, aligned_rows = group
             group = next(grouped, None)
         if day_index > warmup:
             sequence_dates = calendar[day_index - warmup - 1:day_index - 1] if warmup else ()
@@ -419,7 +453,8 @@ def _collect_samples(
                 written += 1
             offsets.append(written)
         if warmup:
-            AppendTomorrowSequencePoints(rolling, previous, warmup)
+            AppendTomorrowSequencePoints(rolling, previous_aligned, warmup)
+            previous_aligned = aligned_rows
         previous = tuple(current.values())
         if progress is not None:
             read_days += bool(current)

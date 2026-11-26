@@ -1,4 +1,5 @@
 import json
+import math
 from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
@@ -8,11 +9,14 @@ import pytest
 
 from tests.helpers.training.training_resources import TrainingResourceSettingsFixture
 from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingRow
+from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistorySide, PublishedHistoryWindow
 from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.domain.outcomes.tomorrow_target import TomorrowCloseGain
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS
 from trader.recommendation.infra.settings.loading import LoadPredictionTargets
+from trader.recommendation.infra.market_data.aligned_history_bars import BuildAlignedHistoryBars
+from trader.recommendation.infra.market_data.published_history_cache import _model_sequences
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.memory_admission import TrainingMemoryBudget
 from trader.training.infra.tomorrow.artifact import (
@@ -93,7 +97,9 @@ def test_four_independent_algorithms_fit_and_reload_with_only_two_reads(tmp_path
                     preclose=close(day_index - 1, index),
                 )
 
-    history = SimpleNamespace(open_dates=dates, universe_count=len(codes), snapshot_hash="a" * 64, iter_training_rows=rows)
+    history = SimpleNamespace(
+        open_dates=dates, universe_count=len(codes), snapshot_hash="a" * 64, iter_training_rows=rows, listing_intervals=(),
+    )
     targets = LoadPredictionTargets(_ROOT / "config/strategy.json")
     config = json.loads((_ROOT / "config/training.json").read_text(encoding="utf-8"))
     next(profile for profile in config["profiles"] if profile["profile"] == "v1")["calibration_dates"] = 12
@@ -152,10 +158,10 @@ def test_four_independent_algorithms_fit_and_reload_with_only_two_reads(tmp_path
             ("artifact_publish", "started"), ("artifact_publish", "completed"),
         ]
         scan = next(event for event in events if event.stage == "history_conversion" and event.state == "completed")
-        calendar = reads[1] if head.profile == "v5" else reads[0]
+        days = 173 if head.profile == "v5" else len(reads[0])
         assert scan.sample_progress is not None
-        assert scan.sample_progress.completed_days == scan.sample_progress.total_days == len(calendar)
-        assert scan.sample_progress.processed_rows == len(calendar) * len(codes)
+        assert scan.sample_progress.completed_days == scan.sample_progress.total_days == days
+        assert scan.sample_progress.processed_rows == days * len(codes)
         assert scan.sample_progress.warmup_rows == (61 * len(codes) if head.profile == "v5" else 0)
         assert any(event.state == "running" and event.completed_units > 0 for event in events)
         events.clear()
@@ -244,3 +250,33 @@ def test_training_respects_memory_admission_and_cancellation(tmp_path: Path) -> 
             cancelled=lambda: True, cpu_budget=budget, memory=TrainingMemoryBudget(2**20),
         )
     assert LoadTomorrowProbabilityModel(tmp_path, "v3", _TARGET, project_root=_ROOT) is None
+
+
+@pytest.mark.parametrize("missing", ("unknown_missing", "tencent_inferred_suspended", "supplier_marked_suspended"))
+def test_v5_gap_features_match_serving_without_changing_raw_target(missing):
+    dates = tuple(date(2024, 1, 1) + timedelta(days=n) for n in range(63))
+    rows, cells = [], []
+    for n, day in enumerate(dates):
+        if n in (30, 62):
+            rows.append(replace(_row(day, "600001", 100), cell_status=missing, point=None))
+            raw = PublishedHistorySide(
+                "600001", day, "unadjusted", None, None, None, None, None, None, None, None, None, "suspended",
+            ) if missing == "supplier_marked_suspended" else None
+            cells.append(PublishedHistoryCell("600001", day, missing, raw, replace(raw, adjustment="qfq") if raw else None))
+        else:
+            rows.append(_row(day, "600001", 100))
+            raw = PublishedHistorySide(
+                "600001", day, "unadjusted", 100, 101, 99, 100, 10000, 20000000, 100, 0, 1, "trading",
+            )
+            cells.append(PublishedHistoryCell("600001", day, "complete", raw, replace(
+                raw, adjustment="qfq", preclose=None, pct_change=None, turnover=None,
+            )))
+    samples = _collect_samples(rows, dates, 1, lambda: None, _TARGET, warmup=61, source_identity="a" * 64)
+    online = BuildAlignedHistoryBars(PublishedHistoryWindow("600001", tuple(cells[:61])), dates[:61])
+    sequence, = _model_sequences("600001", online.bars, dates[:61], "a" * 64)
+    assert samples.features.shape == (1, 366)
+    assert samples.features[0, 6:] == pytest.approx(sequence.values)
+    if missing == "supplier_marked_suspended":
+        assert samples.labels[0] == 0
+    else:
+        assert math.isnan(samples.labels[0])

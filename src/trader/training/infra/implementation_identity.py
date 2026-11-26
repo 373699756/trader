@@ -87,6 +87,10 @@ def LaneTrainingImplementationIdentity(strategy: Strategy, profile: ScoringProfi
         dependencies.extend(_TCN)
         if strategy is Strategy.D25:
             dependencies.append("training/domain/v5/early_stopping.py")
+        else:
+            dependencies.extend((
+                "recommendation/domain/market/history_alignment.py", "training/infra/history/aligned_training_rows.py",
+            ))
     lane = root / "training/infra" / strategy.value / profile
     return _digest(root, [*(root / name for name in dependencies), *lane.glob("*.py")])
 

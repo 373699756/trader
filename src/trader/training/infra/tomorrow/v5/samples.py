@@ -20,11 +20,7 @@ def AppendTomorrowSequencePoints(
     rolling: dict[str, deque[PriceVolumePoint]], rows: tuple[HistoryTrainingRow, ...], length: int,
 ) -> None:
     for row in rows:
-        projected = (
-            ProjectSequencePoint(row.point)
-            if row.point is not None and row.cell_status in {"complete", "supplier_marked_suspended"}
-            else None
-        )
+        projected = ProjectSequencePoint(row.point) if row.point is not None else None
         if projected is None:
             rolling.pop(row.code, None)
         else:

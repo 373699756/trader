@@ -36,7 +36,9 @@ def test_changed_download_training_projection_invalidates_implementation_identit
 @pytest.mark.parametrize(("source", "affected"), (
     ("training/infra/tomorrow/v3/model.py", {(Strategy.TOMORROW, "v3")}),
     ("training/infra/d25/v2/probability.py", {(Strategy.D25, "v2")}),
-    ("training/infra/history/aligned_training_rows.py", {(Strategy.D25, profile) for profile in SCORING_PROFILE_IDS}),
+    ("training/infra/history/aligned_training_rows.py", {(Strategy.TOMORROW, "v5")} | {
+        (Strategy.D25, profile) for profile in SCORING_PROFILE_IDS
+    }),
     ("training/domain/tomorrow_probability.py", {(Strategy.TOMORROW, profile) for profile in SCORING_PROFILE_IDS}),
     ("training/infra/tomorrow/dates.py", {(Strategy.TOMORROW, profile) for profile in SCORING_PROFILE_IDS}),
     ("training/infra/tcn/binary_fitting.py", {(Strategy.TOMORROW, "v5"), (Strategy.D25, "v5")}),

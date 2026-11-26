@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator, Iterable, Sequence
-from dataclasses import replace
+from collections.abc import Callable, Generator, Iterable, Sequence
+from dataclasses import dataclass, replace
 from datetime import date
 from itertools import groupby
+from typing import TypeVar
 
 from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingRow
 from trader.recommendation.domain.market.history_alignment import (
@@ -14,6 +15,9 @@ from trader.recommendation.domain.market.history_alignment import (
     MarketDailyObservation,
     SessionKind,
 )
+
+
+_Projected = TypeVar("_Projected")
 
 
 def AlignmentReadDates(calendar: Sequence[date], requested: frozenset[date]) -> frozenset[date]:
@@ -29,6 +33,31 @@ def AlignTrainingRows(
     calendar: Sequence[date],
     listing_intervals: tuple[tuple[str, date, date | None], ...] = (),
 ) -> Generator[HistoryTrainingRow, None, None]:
+    yield from _align(rows, calendar, listing_intervals, False, lambda _source, aligned: aligned)
+
+
+@dataclass(frozen=True, slots=True)
+class AlignedTrainingFact:
+    source: HistoryTrainingRow | None
+    aligned: HistoryTrainingRow
+
+
+def AlignTrainingFacts(
+    rows: Iterable[HistoryTrainingRow],
+    calendar: Sequence[date],
+    listing_intervals: tuple[tuple[str, date, date | None], ...],
+) -> Generator[AlignedTrainingFact, None, None]:
+    """Preserve original target evidence alongside the aligned OHLCV sequence input."""
+    yield from _align(rows, calendar, listing_intervals, True, AlignedTrainingFact)
+
+
+def _align(
+    rows: Iterable[HistoryTrainingRow],
+    calendar: Sequence[date],
+    listing_intervals: tuple[tuple[str, date, date | None], ...],
+    require_ohlcv: bool,
+    project: Callable[[HistoryTrainingRow | None, HistoryTrainingRow], _Projected],
+) -> Generator[_Projected, None, None]:
     """Keep absent sessions in each known stock's timeline without future filling.
 
     A wholly absent source day is a source gap, not evidence of a market-wide
@@ -59,10 +88,13 @@ def AlignTrainingRows(
                 previous.pop(code, None)
                 facts.pop(code, None)
                 continue
-            row = observed.get(code)
-            if row is None:
-                row = replace(facts[code], trade_date=day, point=None, cell_status="unknown_missing")
+            source = observed.get(code)
+            row = source if source is not None else replace(facts[code], trade_date=day, point=None, cell_status="unknown_missing")
             aligned = AlignMarketSession(day, _observation(row), previous.get(code))
+            if require_ohlcv and aligned is not None and None in (
+                aligned.open_price, aligned.high, aligned.low, aligned.volume,
+            ):
+                aligned = None
             if aligned is not None:
                 previous[code] = aligned
                 point = _training_point(day, row.point, aligned)
@@ -70,13 +102,13 @@ def AlignTrainingRows(
                 previous.pop(code, None)
                 point = None
             facts[code] = row
-            yield replace(
+            yield project(source, replace(
                 row,
                 point=point,
                 cell_status="unknown_missing"
                 if aligned is not None and aligned.kind == "estimated"
                 else row.cell_status,
-            )
+            ))
         current = next(groups, None)
     if current is not None:
         raise ValueError("history_alignment_row_outside_calendar")
@@ -130,4 +162,4 @@ def _observation(row: HistoryTrainingRow) -> MarketDailyObservation:
     )
 
 
-__all__ = ["AlignTrainingRows", "AlignmentReadDates"]
+__all__ = ["AlignTrainingRows", "AlignTrainingFacts", "AlignedTrainingFact", "AlignmentReadDates"]
