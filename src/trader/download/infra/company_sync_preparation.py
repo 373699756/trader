@@ -82,7 +82,7 @@ def PrepareCompanyIssuerInputs(
     identities = tuple(sorted({identity for event in previous.risk_events + previous.positive_events for identity in event.evidence_ids}
                               | {review.evidence_id for review in previous.review_reasons if review.evidence_id is not None}))
     documents: list[CompanyDocument] = list(announcement.documents) if announcement is not None else []
-    links: list[CompanyPublishedEvidenceLink] = list(announcement.links) if announcement is not None else []
+    links = {(item.source, item.link.evidence_id): item for item in announcement.links} if announcement is not None else {}
     directory_receipts: list[CompanyInputReceipt] = [*annual_receipts, *(announcement.receipts if announcement is not None else ())]
     recovered_ids = frozenset(item.source_key for item in recovered if item.code == previous.code)
     correction_ids = frozenset(identity for event in previous.positive_events
@@ -113,11 +113,16 @@ def PrepareCompanyIssuerInputs(
         checked = bool(valid and row["body_checked"])
         previous_link = next((item for item in published_links if item.code == previous.code and item.source == disclosure.source
             and item.link.evidence_id == identity), None)
-        if not any(link.link.evidence_id == identity for link in links) and (previous_link is None or previous_link.record_hash == record):
-            links.append(CompanyPublishedEvidenceLink(previous.code, disclosure.source, record,
-                CompanyEvidenceLink(identity, disclosure.title, disclosure.url, disclosure.published_at, checked)))
-        elif previous_link is not None and previous_link.record_hash != record:
-            links.append(previous_link)
+        key = (disclosure.source, identity)
+        candidate = links.get(key)
+        if previous_link is not None and previous_link.record_hash != record and (
+            previous_link.link.body_checked or candidate is None or not candidate.link.body_checked
+        ):
+            # A directory observation alone cannot replace an earlier revision's evidence link.
+            links[key] = previous_link
+        elif candidate is None:
+            links[key] = CompanyPublishedEvidenceLink(previous.code, disclosure.source, record,
+                CompanyEvidenceLink(identity, disclosure.title, disclosure.url, disclosure.published_at, checked))
         if not valid and pending_receipt is None and formal.run("SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=? AND record_hash=? AND extraction_hash=?",
             (disclosure.source, identity, previous.code, record, extraction_hash)).fetchone() is None:
             directory_receipts.append(CompanyInputReceipt(disclosure.source, identity, previous.code, record,
@@ -147,7 +152,7 @@ def PrepareCompanyIssuerInputs(
         extraction_hash=extraction_hash, event_policy=event_policy, read_document=read_document, revalidate=revalidate,
         field_rules_hash=rules_hash, stored=stored_fields)
     corrected = tuple(item.event_id for item in facts.positive_events if item not in original.positive_events)
-    return CompanyIssuerPreparation(facts, prepared.results, (*prepared.receipts, *directory_receipts), tuple(links), corrected,
+    return CompanyIssuerPreparation(facts, prepared.results, (*prepared.receipts, *directory_receipts), tuple(links.values()), corrected,
         announcement.pending_retained if announcement is not None else 0)
 
 

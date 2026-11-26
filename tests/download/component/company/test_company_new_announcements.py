@@ -382,15 +382,50 @@ def test_missing_or_other_issuer_header_cannot_publish_risk_or_valid_receipt(tmp
         assert connection.run("SELECT COUNT(*) FROM company_input_receipt WHERE outcome='valid'").require_one()[0] == 0
 
 
+@pytest.mark.parametrize("verified", (False, True))
+def test_revised_directory_only_announcement_publishes_one_link_with_exact_receipt(tmp_path, verified):
+    runtime, reader, transport, physical = _runtime(tmp_path)
+    runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
+    wrong_issuer = _INVESTIGATION.replace("600001", "600002")
+    original = _material(runtime, wrong_issuer)
+    _run(runtime, transport)
+    original_link, = reader.read_document_links(_SCOPE.codes).links
+    assert original_link.record_hash == original.digest and not original_link.link.body_checked
+
+    revision = _material(runtime, _INVESTIGATION if verified else wrong_issuer + _DETAIL)
+    _run(runtime, transport)
+    link, = reader.read_document_links(_SCOPE.codes).links
+    if verified:
+        assert link.record_hash == revision.digest and link.link.body_checked
+    else:
+        assert link == original_link
+    with SqliteSession(runtime.facts.path) as formal:
+        receipts = formal.run(
+            "SELECT record_hash,outcome FROM company_input_receipt WHERE code=? AND source=? AND source_key=? AND extraction_hash=?",
+            (link.code, link.source, link.link.evidence_id, runtime.facts.extraction_hash),
+        )
+        assert dict(receipts) == {
+            original.digest: "directory_observed",
+            revision.digest: "valid" if verified else "directory_observed",
+        }
+    head = reader.publication_identity()
+    _run(runtime, transport)
+    assert reader.publication_identity() == head and reader.read_document_links(_SCOPE.codes).links == (link,)
+    assert physical == []
+
+
 def test_changed_same_supplier_identity_cannot_clear_previous_risk(tmp_path):
     runtime, reader, transport, _ = _runtime(tmp_path)
     runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
     _material(runtime, _INVESTIGATION)
     _run(runtime, transport)
     previous, = reader.read(_SCOPE.codes)
+    previous_link, = reader.read_document_links(_SCOPE.codes).links
+    assert previous_link.link.body_checked
     _material(runtime, _INVESTIGATION.replace("决定对本公司立案调查", "决定终止对本公司调查"))
     _run(runtime, transport)
     fact, = reader.read(_SCOPE.codes)
+    assert reader.read_document_links(_SCOPE.codes).links == (previous_link,)
     assert fact.risk_events == previous.risk_events
     assert any(review.reason_code == "revision_pending" for review in fact.review_reasons)
 
