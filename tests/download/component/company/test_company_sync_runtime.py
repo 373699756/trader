@@ -198,6 +198,33 @@ def test_candidate_watermark_includes_exact_financial_original_and_authority_dig
     assert physical == []
 
 
+def test_latest_uncovered_directory_precedes_another_markets_older_backfill(tmp_path):
+    scope = replace(_SCOPE, codes=("000001", "600001"))
+    runtime, _, transport, _ = _runtime(tmp_path)
+    runtime.initialize(scope.codes, scope.cutoff)
+    requested = []
+
+    class Source:
+        def fetch(self, partition, *, order=""):
+            requested.append(partition)
+            return DisclosurePage((), 0, False)
+
+    producer = CompanyAnnouncementProducer(runtime.inputs, runtime.material, Source(), scope,
+        sqlite_policy=SqlitePolicyFixture(), extraction_hash=runtime.facts.extraction_hash)
+    day = scope.cutoff.date()
+    with transport:
+        producer.advance(scope, cancel_requested=lambda: False, deadline=10)
+        for market in ("sse", "szse"):
+            runtime.material.commit_page(DisclosurePartition(market, day, day), DisclosurePage((), 0, False), scope.cutoff)
+        older, newer = sorted(runtime.material.split_partition(
+            DisclosurePartition("sse", day - timedelta(days=365), day - timedelta(days=1)), scope.cutoff),
+            key=lambda part: part.end)
+        runtime.material.commit_page(newer, DisclosurePage((), 0, False), scope.cutoff)
+        producer.advance(scope, cancel_requested=lambda: False, deadline=10)
+        producer.advance(scope, cancel_requested=lambda: False, deadline=10)
+    assert [(part.market, part.end) for part in requested] == [("szse", day - timedelta(days=1)), ("sse", older.end)]
+
+
 def test_broad_directory_duplicates_refine_durable_dates_without_accepting_duplicate_rows(tmp_path):
     runtime, reader, transport, _physical = _runtime(tmp_path)
     runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)

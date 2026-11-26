@@ -172,24 +172,23 @@ class CompanyAnnouncementProducer:
         return True
 
     def _partition(self, scope: CompanySyncRoundScope) -> DisclosurePartition | None:
-        for partition in self._partitions:
-            for parent in self._material.pending_partitions(partition):
-                queries = self._material.disclosure_queries(parent)
-                # An empty child queue still needs a fresh parent/union check.
-                candidates: tuple[DisclosurePartition, ...]
-                if queries is None:
-                    candidates = (parent,)
-                elif queries:
-                    candidates = queries
-                else:
-                    candidates = (replace(parent, page=1),)
-                for pending in candidates:
-                    if self._wall_clock is not None:
-                        retry = self._material.partition_retry(pending)
-                        if retry is not None and self._cooling(retry.failure, retry.retry_at):
-                            continue
-                    if not self._inputs.task_done(scope.identity, "announcements", "ineligible_partition:" + CanonicalDigest(pending)):
-                        return pending
+        parents = (parent for window in self._partitions for parent in self._material.pending_partitions(window))
+        for parent in sorted(parents, key=lambda item: item.end, reverse=True):
+            queries = self._material.disclosure_queries(parent)
+            # After the last child, confirm the parent against the complete union.
+            if queries is None:
+                candidates = (parent,)
+            elif queries:
+                candidates = queries
+            else:
+                candidates = (replace(parent, page=1),)
+            for pending in candidates:
+                if self._wall_clock is not None:
+                    retry = self._material.partition_retry(pending)
+                    if retry is not None and self._cooling(retry.failure, retry.retry_at):
+                        continue
+                if not self._inputs.task_done(scope.identity, "announcements", "ineligible_partition:" + CanonicalDigest(pending)):
+                    return pending
         return None
 
     def _refine_partition(self, partition: DisclosurePartition, scope: CompanySyncRoundScope) -> None:

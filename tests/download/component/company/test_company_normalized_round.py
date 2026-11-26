@@ -500,7 +500,7 @@ def test_successor_scope_cannot_be_published_using_the_previous_scope_generation
         assert ReadCompanyPublicationIdentity(formal) == before
 
 
-@pytest.mark.parametrize("case", ("old", "future", "bool_budget", "infinite_deadline"))
+@pytest.mark.parametrize("case", ("old", "future", "bool_budget", "negative_infinite_deadline", "nan_deadline"))
 def test_invalid_round_request_is_rejected_before_source_or_index_access(case):
     query, budget, deadline = _QUERY, 1, 10.0
     if case == "old":
@@ -509,8 +509,10 @@ def test_invalid_round_request_is_rejected_before_source_or_index_access(case):
         query = replace(query, end=_CUTOFF.date() + timedelta(days=1))
     elif case == "bool_budget":
         budget = True
+    elif case == "negative_infinite_deadline":
+        deadline = float("-inf")
     else:
-        deadline = float("inf")
+        deadline = float("nan")
     with pytest.raises(ValueError, match="company_(round_window|sync_budget)_invalid"):
         CompanySyncBudget(budget, 2048, 1, deadline)
         CompanyFinancialProducer(None, None, query, qualification_gaps=()).state(CompanySyncRoundScope(_CODES, _CUTOFF))
