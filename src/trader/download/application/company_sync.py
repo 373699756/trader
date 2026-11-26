@@ -98,6 +98,7 @@ def RunCompanySyncRound(
     after_resume: Callable[[CompanySyncRoundScope], None] | None = None,
     sleeper: Callable[[float], None] | None = None,
     transient_retry_seconds: float | None = None,
+    family_needed: Callable[[CompanySyncFamily], bool] | None = None,
 )->CompanySyncRoundResult:
     """Run bounded steps, retain accepted work and never reissue an unconfirmed request.
 
@@ -144,6 +145,10 @@ def RunCompanySyncRound(
                 pause_reason = None if cancelled else "deadline"
                 stopped=True
                 break
+            if family_needed is not None and family is not pending_family and not family_needed(family):
+                if item.result is None:
+                    item.result = journal.family(round_id, family)
+                continue
             if item.retry_at is not None:
                 if monotonic() < item.retry_at:
                     continue

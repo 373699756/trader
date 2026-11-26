@@ -25,8 +25,9 @@ from trader.download.domain.company_document_links import CompanyPublishedEviden
 from trader.download.domain.company_field_results import CompanyFieldConclusion
 from trader.download.domain.company_normalization import ApplyCompanyFinancialAdmission
 from trader.download.domain.company_source_records import CompanyFinancialSourceObservation
+from trader.download.infra.company_financial_observations import ReadCompanyFinancialScoringObservations
 from trader.download.domain.company_sync import (
-    CompanySourceDownloadProgress, CompanySyncBudget, CompanySyncFamily, CompanySyncFamilyResult, CompanySyncPauseReason,
+    CompanyLatestSnapshot, CompanySourceDownloadProgress, CompanySyncBudget, CompanySyncFamily, CompanySyncFamilyResult, CompanySyncPauseReason,
     CompanySyncInterrupted, CompanySyncPhasePlan, CompanySyncPhaseState,
     CompanySyncRebuildActiveRound, CompanySyncRoundIdentity, CompanySyncRoundResult, CompanySyncRoundScope, CompanySyncStepResult, CompanySourceCancelled,
 )
@@ -169,12 +170,12 @@ class CompanySyncRuntime:
     def run(
         self, codes: tuple[str, ...], cutoff: datetime, budget: CompanySyncBudget, *,
         cancel_requested: Callable[[], bool], monotonic: Callable[[], float],
-        financial_query: StructuredCompanyQuery | None = None, new_refresh: bool = True,
+        financial_query: StructuredCompanyQuery | None = None, new_refresh: bool = True, latest_only: bool = False,
     ) -> CompanySyncRoundResult:
         self._execution_scope, self._execution_round_id = None, ""
         try:
             return self._run(codes, cutoff, budget, cancel_requested=cancel_requested, monotonic=monotonic,
-                financial_query=financial_query, new_refresh=new_refresh)
+                financial_query=financial_query, new_refresh=new_refresh, latest_only=latest_only)
         except (CompanySyncInterrupted, CompanySourceCancelled) as exc:
             if isinstance(exc, CompanySourceCancelled) and not cancel_requested() and monotonic() < budget.deadline:
                 raise
@@ -194,6 +195,7 @@ class CompanySyncRuntime:
         self, codes: tuple[str, ...], cutoff: datetime, budget: CompanySyncBudget, *,
         cancel_requested: Callable[[], bool], monotonic: Callable[[], float],
         financial_query: StructuredCompanyQuery | None = None, new_refresh: bool = True, after_backfill: str | None = None,
+        latest_only: bool = False, retry_handoff: bool = True,
     ) -> CompanySyncRoundResult:
         if cancel_requested() or monotonic() >= budget.deadline:
             return self._stopped("", CompanySyncRoundScope(codes, cutoff), budget, cancel_requested, monotonic)
@@ -254,7 +256,7 @@ class CompanySyncRuntime:
         announcements = CompanyAnnouncementProducer(self.inputs, self.material, self._official_source, scope,
             sqlite_policy=self._sqlite_policy, extraction_hash=self.facts.extraction_hash, io_budget=self._io_budget,
             current_codes=eligible_codes, configuration=self._document_configuration, policies=self._document_policies,
-            wall_clock=self._wall_clock, observe_download=self._observe_download)
+            wall_clock=self._wall_clock, observe_download=self._observe_download, latest_only=latest_only)
         annual = CompanyAnnualIncomeProducer(self.inputs, self._annual_source, annual_facts,
             current_codes=eligible_codes, observe_download=self._observe_download)
         producers: tuple[CompanySyncProducer, ...] = (
@@ -272,11 +274,15 @@ class CompanySyncRuntime:
             fields,
         )
         plans = tuple(producer.plan for producer in producers)
-        if (new_refresh and active is not None and requested_scope.cutoff.date() > scope.cutoff.date()
-            and CompanySyncRoundIdentity(scope, plans) == active.round_id and self.journal.can_handoff_backfill(active.round_id, requested_scope.cutoff)
+        if (new_refresh and active is not None and requested_scope.cutoff > scope.cutoff
+            and CompanySyncRoundIdentity(scope, plans) == active.round_id
+            and self.journal.can_handoff_backfill(active.round_id, requested_scope.cutoff, latest_only=latest_only)
             and self.normalized.cursor(query, scope.codes, scope.cutoff) is None
             and self._ratio_inputs_closed(scope)
-            and self.material.can_retain_backfill(tuple(sorted({EvidenceMarket(code) for code in scope.codes})), scope.cutoff.date(), requested_scope.cutoff.date())
+            and (latest_only or self.material.can_retain_backfill(
+                tuple(sorted({EvidenceMarket(code) for code in scope.codes})), scope.cutoff.date(), requested_scope.cutoff.date()))
+            and (not latest_only or not self.inputs.task_done(scope.identity, "announcements", "initialize_latest")
+                 or announcements.latest_inputs_settled(scope))
             and self.inputs.pending_annual_request(scope.identity) is None and not annual.state(scope).source_required):
             # Source plans are frozen. The journal retains both local proof-rule
             # identities when the same scope needs a new proof before handoff.
@@ -308,16 +314,18 @@ class CompanySyncRuntime:
                     publish_financial_scoring(scope)
                 check()
                 return self._run(codes, cutoff, replace(budget, max_source_calls=requested_source_limit), cancel_requested=cancel_requested, monotonic=monotonic,
-                    financial_query=financial_query, new_refresh=new_refresh, after_backfill=active.round_id)
+                    financial_query=financial_query, new_refresh=new_refresh, after_backfill=active.round_id, latest_only=latest_only)
         round_id = (self.journal.begin(scope, plans, max_source_calls=budget.max_source_calls) if after_backfill is None else
-            self.journal.begin(scope, plans, max_source_calls=budget.max_source_calls, after_backfill=after_backfill))
+            self.journal.begin(scope, plans, max_source_calls=budget.max_source_calls, after_backfill=after_backfill, latest_only=latest_only))
         if after_backfill is not None:
-            logging.getLogger(__name__).warning("公司跨日交接：旧轮次 %s 公告回补未完成，已确认目录页与请求账本保留。新轮次 %s 截止 %s，优先获取新日资料，并复核上次盘中所查日期。", after_backfill[:12], round_id[:12], scope.cutoff.isoformat())
+            logging.getLogger(__name__).warning("公司资料交接：旧轮次 %s 公告回补未完成，已确认目录页与请求账本保留。新轮次 %s 截止 %s，优先获取最新资料，并复核上次盘中所查日期。", after_backfill[:12], round_id[:12], scope.cutoff.isoformat())
         self._execution_round_id = round_id
         if self._observe_scope is not None:
             self._observe_scope(scope, query)
         self.material.set_population(eligible_codes)
-        if not self.inputs.task_done(scope.identity, "announcements", "initialize"):
+        if latest_only:
+            announcements.prepare_latest_coverage(scope)
+        elif not self.inputs.task_done(scope.identity, "announcements", "initialize"):
             self.material.recheck_prior_intraday(tuple(sorted({EvidenceMarket(code) for code in scope.codes})), scope.cutoff.date())
         # Current local proof and exact material needs precede any optional
         # network. The same fields owner runs again after source acceptance.
@@ -353,18 +361,53 @@ class CompanySyncRuntime:
             if budget.max_steps is not None:
                 budget = replace(budget, max_steps=budget.max_steps - 1)
         try:
+            def latest_family_needed(family: CompanySyncFamily) -> bool:
+                if family is CompanySyncFamily.ANNOUNCEMENTS:
+                    return not announcements.latest_inputs_complete(scope)
+                # Annual income is an on-demand denominator for a current
+                # operating contract. It does not enumerate past announcements.
+                return True
+
             result = RunCompanySyncRound(self.journal, producers, scope, budget, monotonic=monotonic,
                 cancel_requested=cancel_requested, observe=self._observe, activity=self._activity,
                 recover_directory=announcements.recover_directory, source_ready=self._source_ready,
                 sleeper=self._sleeper, transient_retry_seconds=(
                     self._document_configuration.document_transient_retry_seconds if self._document_configuration else None),
-                after_resume=publish_financial_scoring if self._wall_clock is not None else None)
+                after_resume=publish_financial_scoring if self._wall_clock is not None else None,
+                family_needed=latest_family_needed if latest_only else None)
         except CompanySyncInterrupted:
             return self._stopped(round_id, scope, budget, cancel_requested, monotonic)
         if population_gaps:
             result = replace(result, families=tuple(replace(item, result=replace(item.result,
                 gaps=item.result.gaps + tuple(gap for gap in population_gaps if gap not in item.result.gaps))) for item in result.families))
+        if latest_only and not result.paused:
+            latest = self._latest_snapshot(result, requested_scope, query, announcements)
+            if (retry_handoff and scope.cutoff < requested_scope.cutoff and announcements.latest_inputs_settled(scope)
+                and self.journal.can_handoff_backfill(round_id, requested_scope.cutoff, latest_only=True)):
+                return self._run(codes, cutoff, budget, cancel_requested=cancel_requested, monotonic=monotonic,
+                    financial_query=financial_query, new_refresh=new_refresh, latest_only=True, retry_handoff=False)
+            result = replace(result, latest=latest)
         return result
+
+    def _latest_snapshot(self, result: CompanySyncRoundResult, requested: CompanySyncRoundScope,
+                         query: StructuredCompanyQuery, announcements: CompanyAnnouncementProducer) -> CompanyLatestSnapshot:
+        scope = result.scope
+        batch = self.normalized.financial_batch(query, scope.codes, scope.cutoff)
+        observations = self.normalized.latest_financial_observations(query, scope.codes, scope.cutoff)
+        records = {item.financial.code: item.record_hash for item in observations}
+        visible_at = self._wall_clock() if self._wall_clock else scope.cutoff
+        with self._session(self.facts.path, read_only=True, check=self._io_budget.check if self._io_budget else lambda: None) as formal, SqliteTransaction(formal):
+            published = ReadCompanyFinancialScoringObservations(formal, scope.codes, visible_at, self.facts.extraction_hash)
+        matched = sum(records.get(item.observation.financial.code) == item.observation.record_hash for item in published)
+        latest_announcements = announcements.latest_inputs_complete(scope)
+        complete = (requested == scope and batch.pages_complete and matched == batch.latest_observed_stocks
+            and self._ratio_inputs_closed(scope) and latest_announcements and bool(result.publication_hash)
+            and all(family.result.failure is None and family.unknown_attempts == 0 for family in result.families)
+            and any(family.family is CompanySyncFamily.FIELDS and family.result.processed_scope_complete
+                    for family in result.families))
+        return CompanyLatestSnapshot(requested.cutoff, batch.latest_observed_stocks, matched,
+            sum(count for _, count in batch.missing_fields), self.inputs.ratio_download_progress(scope.identity, "pledge"),
+            self.inputs.ratio_download_progress(scope.identity, "unlock"), latest_announcements, complete)
 
     def _ratio_inputs_closed(self, scope: CompanySyncRoundScope) -> bool:
         identity = scope.identity

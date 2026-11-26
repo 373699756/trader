@@ -38,5 +38,5 @@ def test_shell_launcher_rejects_retired_fill_before_environment_setup(tmp_path, 
     )
     assert completed.returncode == 2
     assert completed.stdout == ""
-    assert completed.stderr == "用法：./run.sh sync [history|company]。\n"
+    assert completed.stderr == "用法：./run.sh sync [history|company|compnay fill]。\n"
     assert not missing_venv.exists()

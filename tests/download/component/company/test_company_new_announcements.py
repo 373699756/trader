@@ -13,7 +13,7 @@ from tests.helpers.download.configuration import CompanySyncConfigurationFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 from trader.download.application.company_financial_producer import BuildCompanyFinancialRoundQuery
 from trader.download.application.company_sync import ResumeCompanySyncPendingStep, RunCompanySyncRound
-from trader.download.domain.company_evidence import BuildCompanyDocumentPolicies, CompanyDocumentExtraction, CompanyDocumentFailure, CompanyRatio, Disclosure, DisclosurePage, StructuredCompanyPage, StructuredCompanyQuery
+from trader.download.domain.company_evidence import BuildCompanyDocumentPolicies, CompanyDocumentExtraction, CompanyDocumentFailure, CompanyRatio, Disclosure, DisclosurePage, DisclosurePartition, StructuredCompanyPage, StructuredCompanyQuery
 from trader.download.domain.company_events import CompanyDataState, CompanyEventStatus, CompanyRiskType
 from trader.download.domain.company_sync import CompanySyncBudget, CompanySyncFamily, CompanySyncStepResult
 from trader.download.entrypoints.company_evidence_progress import CompanyRoundProgress
@@ -510,6 +510,143 @@ def test_new_original_dispatch_uses_one_attempt_and_continues_after_parser_failu
     with SqliteSession(runtime.material.path) as connection:
         row = connection.run("SELECT body_checked,body_retained FROM disclosures WHERE source_key='new'").require_one()
         assert tuple(row) == ((0, 0) if failure else (1, 1))
+
+
+@pytest.mark.parametrize(("prior_check", "denied"), [(False, False), (True, False), (False, True)])
+def test_latest_announcements_cover_increment_fetch_current_and_preserve_year_cursor(tmp_path, prior_check, denied):
+    from trader.download.domain.company_evidence import CompanySourceFailure
+
+    runtime, _, _, _ = _runtime(tmp_path)
+    scope = _SCOPE
+    runtime.initialize(scope.codes, scope.cutoff)
+    today = scope.cutoff.date()
+    prior = scope.cutoff - timedelta(days=2)
+    historical_day = today - timedelta(days=340)
+    historical_backfill = DisclosurePartition("sse", historical_day, historical_day)
+    backfilled_at = prior - timedelta(days=1)
+    runtime.material.register_partition(historical_backfill, backfilled_at)
+    runtime.material.commit_page(historical_backfill, DisclosurePage((), 0, False), backfilled_at)
+    if prior_check:
+        older = scope.cutoff - timedelta(days=100)
+        unrelated = DisclosurePartition("sse", older.date(), older.date())
+        runtime.material.register_partition(unrelated, older)
+        runtime.material.commit_page(unrelated, DisclosurePage((), 0, False), older)
+        partition = DisclosurePartition("sse", prior.date(), prior.date())
+        runtime.material.register_partition(partition, prior)
+        runtime.material.commit_page(partition, DisclosurePage((), 0, False), prior)
+    current = Disclosure("cninfo", "current-notice", scope.codes, "关于收到立案告知书的公告", scope.cutoff,
+        "https://example.test/current.pdf", "a" * 64)
+    historical = replace(current, identity="old-notice", published_at=scope.cutoff - timedelta(days=90))
+    revised = replace(historical, identity="known-revised", digest="c" * 64)
+    runtime.material.register_disclosures((historical, revised))
+    with SqliteSession(runtime.material.path, sqlite_policy=SqlitePolicyFixture()) as raw:
+        raw.run("""INSERT INTO company_material_dependencies SELECT id,?, ?,?,?, 'risk','risk_material_missing'
+            FROM disclosures WHERE source_key=?""",
+            (scope.codes[0], "b" * 64, b"x" * 32, runtime.facts.extraction_hash, revised.identity))
+    pages, downloads = [], []
+
+    class Source:
+        def fetch(self, partition, *, order):
+            pages.append((partition.start, partition.end))
+            docs = (current,) if partition.end == today else ()
+            return DisclosurePage(docs, len(docs), False)
+
+        def document_ready(self, item):
+            return False
+
+        def document_payload_hash(self, item):
+            return None
+
+        def download_document(self, item, *, attempt_limit):
+            downloads.append(item.identity)
+            if denied and item.identity == revised.identity:
+                raise CompanySourceFailure("access_denied", status_code=403)
+
+        def extract_document(self, item, **kwargs):
+            return CompanyDocumentExtraction(_INVESTIGATION, "text", b"p" * 32, "test_text")
+
+    config = CompanySyncConfigurationFixture()
+    def producer(latest):
+        return CompanyAnnouncementProducer(runtime.inputs, runtime.material, Source(), scope, sqlite_policy=SqlitePolicyFixture(),
+            extraction_hash=runtime.facts.extraction_hash, configuration=config,
+            policies=BuildCompanyDocumentPolicies(config, "ocr-test", text_identity="text-test"),
+            wall_clock=lambda: scope.cutoff, latest_only=latest)
+
+    latest = producer(True)
+    full = producer(False)
+    assert latest.plan == full.plan
+    latest.prepare_latest_coverage(scope)
+    if prior_check:
+        assert runtime.material.pending_partitions(unrelated) == ()
+        assert runtime.material.pending_partitions(partition) == (partition,)
+        with SqliteSession(runtime.material.path) as raw:
+            assert raw.run("SELECT checked_at FROM coverage WHERE market='sse' AND end_date=?",
+                           (unrelated.end.isoformat(),)).require_one()[0] == older.isoformat()
+    for _ in range(12):
+        if latest.latest_inputs_settled(scope):
+            break
+        latest.advance(scope, cancel_requested=lambda: False, deadline=100)
+        latest = producer(True)
+        latest.freeze_latest_window(scope)
+    assert latest.latest_inputs_settled(scope) and latest.latest_inputs_complete(scope) is (not denied)
+    assert sorted(downloads) == sorted((revised.identity, current.identity))
+    if denied:
+        result = latest.advance(scope, cancel_requested=lambda: False, deadline=100)
+        assert result.deferred and result.gaps == ("latest_announcement_original_unverified",)
+    first = prior.date() if prior_check else today
+    covered = {a + timedelta(days=i) for a, b in pages for i in range((b - a).days + 1)}
+    assert covered == {first + timedelta(days=i) for i in range((today - first).days + 1)}
+    following = replace(scope, cutoff=scope.cutoff + timedelta(days=3))
+    # A subsequent historical reconciliation can replace the provisional coverage timestamp.
+    with SqliteSession(runtime.material.path, sqlite_policy=SqlitePolicyFixture()) as raw:
+        raw.run("UPDATE coverage SET checked_at=? WHERE market='sse' AND end_date=?",
+                ((scope.cutoff + timedelta(days=1)).isoformat(), today.isoformat()))
+    assert runtime.inputs.freeze_latest_announcement_windows(following.identity, following.cutoff, ("sse",)) == (
+        DisclosurePartition("sse", today, following.cutoff.date()),)
+    full.advance(scope, cancel_requested=lambda: False, deadline=100)
+    assert runtime.material.pending_partitions(DisclosurePartition("sse", today, today)) == ()
+    assert runtime.material.pending_partitions(DisclosurePartition("sse", today - timedelta(days=365), today))
+
+
+def test_explicit_annual_backfill_after_latest_resumes_the_old_left_edge_page(tmp_path):
+    runtime, _, _, _ = _runtime(tmp_path)
+    old = _SCOPE
+    scope = replace(old, cutoff=old.cutoff + timedelta(days=1))
+    runtime.initialize(old.codes, old.cutoff)
+    material = runtime.material
+    edge = DisclosurePartition("sse", old.cutoff.date() - timedelta(days=365),
+                               old.cutoff.date() - timedelta(days=1))
+    row = Disclosure("cninfo", "left-first", old.codes, "公告", old.cutoff - timedelta(days=2),
+                     "https://example.test/left.pdf", "a" * 64)
+    material.register_partition(edge, old.cutoff)
+    material.commit_page(edge, DisclosurePage((row,), 2, True), old.cutoff)
+    fetched = []
+
+    class Source:
+        def fetch(self, partition, *, order):
+            fetched.append(partition)
+            if partition.start == edge.start:
+                return DisclosurePage((replace(row, identity="left-second", digest="b" * 64),), 2, False)
+            return DisclosurePage((), 0, False)
+
+    def producer(latest):
+        return CompanyAnnouncementProducer(runtime.inputs, material, Source(), scope, sqlite_policy=SqlitePolicyFixture(),
+            extraction_hash=runtime.facts.extraction_hash, latest_only=latest)
+    latest = producer(True)
+    for _ in range(5):
+        if latest.latest_inputs_complete(scope):
+            break
+        latest.advance(scope, cancel_requested=lambda: False, deadline=100)
+    assert latest.latest_inputs_complete(scope) and all(item.start == scope.cutoff.date() for item in fetched)
+    full = producer(False)
+    for _ in range(5):
+        full.advance(scope, cancel_requested=lambda: False, deadline=100)
+        if fetched[-1].start == edge.start:
+            break
+    assert fetched[-1] == replace(edge, page=2, expected_rows=2, received_rows=1)
+    with SqliteSession(material.path) as raw:
+        assert raw.run("SELECT received_rows,is_complete FROM partitions WHERE market=? AND start_date=? AND end_date=?",
+                       ("sse", edge.start.isoformat(), edge.end.isoformat())).require_one()[:] == (2, 1)
 
 
 def test_raw_quota_rejection_reports_the_reservation_before_network_dispatch(tmp_path):

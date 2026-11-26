@@ -19,7 +19,8 @@ usage() {
     "下载与训练:" \
     "  ./run.sh sync                    依次更新参考、历史和公司资料" \
     "  ./run.sh sync history            更新历史，自动续传" \
-    "  ./run.sh sync company            更新公司资料，自动续传" \
+    "  ./run.sh sync company            更新每股最新公司字段，自动续传" \
+    "  ./run.sh sync compnay fill       手动补采年度公告" \
     "  ./run.sh train                   使用本地历史训练全部档位" \
     "  ./run.sh train v1,v5             使用本地历史训练指定档位" \
     "  ./run.sh train tomorrow          训练 Tomorrow 全部档位" \
@@ -54,8 +55,9 @@ esac
 
 FORWARD_ARGS=("$@")
 if [[ "$MODE" == "sync" ]]; then
-  if (($# > 1)) || { (($# > 0)) && [[ "$1" != "history" && "$1" != "company" ]]; }; then
-    printf '%s\n' '用法：./run.sh sync [history|company]。' >&2
+  if (($# > 2)) || { (($# == 2)) && [[ "$1" != "compnay" || "$2" != "fill" ]]; } ||
+    { (($# == 1)) && [[ "$1" != "history" && "$1" != "company" ]]; }; then
+    printf '%s\n' '用法：./run.sh sync [history|company|compnay fill]。' >&2
     exit 2
   fi
 else

@@ -201,6 +201,7 @@ def test_run_script_help_lists_retained_download_and_training_commands(tmp_path:
         "./run.sh sync",
         "./run.sh sync history",
         "./run.sh sync company",
+        "./run.sh sync compnay fill",
         "./run.sh train", "./run.sh train v1,v5",
         "./run.sh train tomorrow", "./run.sh train d25",
         "./run.sh train tomorrow v3", "./run.sh train d25 v5",
@@ -467,7 +468,7 @@ def test_training_command_selects_profiles_and_strategy(arguments, profiles, str
 
 @pytest.mark.parametrize("arguments", (
     (), ("history",),
-    ("company",),
+    ("company",), ("compnay", "fill"),
 ))
 def test_run_script_forwards_retained_sync_commands(tmp_path: Path, arguments: tuple[str, ...]) -> None:
     venv_bin = tmp_path / "venv" / "bin"

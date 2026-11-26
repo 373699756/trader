@@ -84,6 +84,18 @@ def _task(task: SyncTaskResult) -> dict[str, object]:
                 ],
             }
         )
+        latest = company.latest
+        if latest is not None:
+            summary["latest"] = {
+                "ready": latest.ready,
+                "requested_cutoff": latest.requested_cutoff.isoformat(),
+                "financial_observed_stocks": latest.financial_observed_stocks,
+                "financial_published_stocks": latest.financial_published_stocks,
+                "financial_missing_values": latest.financial_missing_values,
+                "announcement_complete": latest.announcement_complete,
+                "pledge_accepted_pages": latest.pledge.accepted_pages if latest.pledge is not None else None,
+                "unlock_accepted_pages": latest.unlock.accepted_pages if latest.unlock is not None else None,
+            }
     return summary
 
 

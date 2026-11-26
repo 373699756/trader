@@ -217,8 +217,10 @@ def BuildSqlitePolicy(settings: RuntimeSettings) -> SqliteIoPolicy:
 
 def ExecuteSync(
     config_path: Path, target: SyncTarget, *, cancel_requested: Callable[[], bool] = lambda: False,
-    report: SyncProgress | None = None,
+    report: SyncProgress | None = None, backfill_announcements: bool = False,
 ) -> SyncResult:
+    if backfill_announcements and target != "company":
+        raise ValueError("annual_announcement_backfill_requires_company")
     settings = LoadRuntimeSettings(config_path)
     sqlite_policy = BuildSqlitePolicy(settings)
     file_verification = SqliteVerificationCache(settings.runtime_dir / "sqlite-verification")
@@ -249,7 +251,7 @@ def ExecuteSync(
         history=AdaptSyncDatabaseFailures(sync_history),
         company=AdaptSyncDatabaseFailures(lambda reference: report.run("company", lambda: ExecuteCompanySync(
             settings, CompanySyncRoundScope(tuple(item.code for item in reference.eligible_universe), clock.now()),
-            cancel_requested=cancel_requested, report=report,
+            cancel_requested=cancel_requested, report=report, latest_only=not backfill_announcements,
         ))),
         cancelled=cancel_requested,
         failures=report.report_failure,
@@ -1314,7 +1316,7 @@ def _build_publication(
 
 def ExecuteCompanySync(
     settings: RuntimeSettings, scope: CompanySyncRoundScope, *,
-    cancel_requested: Callable[[], bool], report: SyncProgress,
+    cancel_requested: Callable[[], bool], report: SyncProgress, latest_only: bool = True,
 ) -> CompanySyncRoundResult:
     from trader.download.domain.company_sync import COMPANY_SYNC_FAMILIES, CompanySyncBudget, CompanySyncInterrupted
     from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
@@ -1449,7 +1451,8 @@ def ExecuteCompanySync(
         try:
             runtime.initialize(codes, cutoff)
             with journal.writer_session():
-                result = runtime.run(codes, cutoff, budget, cancel_requested=cancel_requested, monotonic=time.monotonic)
+                result = runtime.run(codes, cutoff, budget, cancel_requested=cancel_requested, monotonic=time.monotonic,
+                                     latest_only=latest_only)
         except CompanySyncInterrupted:
             return paused()
         progress.finish(result, time_limit_seconds=configuration.round_timeout_seconds, step_limit=configuration.round_step_limit)

@@ -17,7 +17,7 @@
 
 `train`只调用`bootstrap.ExecuteSelectedTraining`，读取已经发布的本地资料。缺资料时提示用户手动执行`./run.sh sync history`。`train`或`train <档位列表>`选择两个策略，`train tomorrow`和`train d25`选择对应策略的全部档位，`train tomorrow v3`和`train d25 v5`分别选择策略和档位。Bash和PowerShell入口转发到同一个CLI，线程和磁盘资源继续由组合根准备。
 
-`run.sh sync`先准备公共参考，再依次更新history和company；`sync history|company`用于单项更新。公司补缺和续传统一使用`sync company`，沿原轮次和请求账本推进；单项公司同步读取本地行业发布，不触发全市场行业刷新。Shell与PowerShell启动器使用相同的精简命令范围，训练支持`train [tomorrow|d25] [档位列表]`；训练JSON／诊断文件参数在环境准备前拒绝，独立`trader-cli`继续提供这两项能力。历史／行情手动补缺、定向范围及专属辅助字段扫描已从启动器、CLI、组合根及业务执行链删除；普通同步的自动缺价处理、断点和有界停牌复核保留。完成条件及限制以d第1章为准。
+`run.sh sync`先准备公共参考，再依次更新history和company；`sync history|company`用于单项更新。日常公司字段使用`sync company`更新至本次截止，较早年度公告仅由显式的`sync compnay fill`沿原材料及断点补采；单项公司同步读取本地行业发布，不触发全市场行业刷新。Shell与PowerShell启动器使用相同的精简命令范围，训练支持`train [tomorrow|d25] [档位列表]`；训练JSON／诊断文件参数在环境准备前拒绝，独立`trader-cli`继续提供这两项能力。历史／行情手动补缺、定向范围及专属辅助字段扫描已从启动器、CLI、组合根及业务执行链删除；普通同步的自动缺价处理、断点和有界停牌复核保留。完成条件及限制以d第1章为准。
 
 正常训练固定一个已发布历史。D25 使用同一份有效 `CurrentIndustrySnapshot`，两项策略各按档位使用独立模型。当前、SSE 和冻结均按所选档位读取。配置、模型或资料更新后按运行采用规则重启加载，缺匹配工件的策略头显示未就绪。此前已共享的冻结保留原历史归属。独立点时研究须具备逐日总体和当时可见的输入证据，训练合同见 [e 第1章](e_训练设计.md#1-输入固定双头独立)。
 

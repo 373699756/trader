@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from trader.download.infra.company_sync_io import CompanySyncIoBudget
 from trader.download.infra.company_source_schema import COMPANY_SOURCE_SCHEMA
 from trader.download.domain.company_annual_income import CompanyAnnualIncome, CompanyAnnualIncomeRequest
-from trader.download.domain.company_evidence import CompanyInputValidationFailure, CompanyRatio, StructuredCompanyPage, StructuredCompanyQuery
+from trader.download.domain.company_evidence import CompanyInputValidationFailure, CompanyRatio, DisclosurePartition, Market, StructuredCompanyPage, StructuredCompanyQuery
 from trader.download.domain.company_sync import CompanyStructuredDownloadProgress, CompanySyncFamily
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_connection import (
@@ -130,6 +130,44 @@ class SQLiteCompanySyncInputStore:
             return tuple(CompanyRatio(row[0], date.fromisoformat(row[1]), row[2]) for row in connection.run(
                 "SELECT code,day,ratio FROM company_ratio_observation WHERE scope=? AND component=? ORDER BY code,day", (scope, component),
             ))
+
+    def freeze_latest_announcement_windows(
+        self, scope: str, cutoff: datetime, markets: tuple[Market, ...],
+    ) -> tuple[DisclosurePartition, ...]:
+        """Bind each increment to its last confirmed directory day before any coverage is reopened."""
+        today = cutoff.date()
+        windows = []
+        with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
+            for market in markets:
+                family = f"latest_announcement_window:{market}"
+                rows = connection.run("SELECT task,input_hash FROM company_source_task WHERE scope=? AND family=?",
+                                      (scope, family)).fetchall()
+                if rows:
+                    start = date.fromisoformat(rows[0][0])
+                    if len(rows) != 1 or not today - timedelta(days=365) < start <= today or rows[0][1] != CanonicalDigest((market, start, cutoff)):
+                        raise ValueError("company_latest_announcement_window_invalid")
+                else:
+                    floor = (today - timedelta(days=365)).isoformat()
+                    # Historical backfill can certify an old directory long after its publication day.
+                    # Only a same-day check or a verified daily increment establishes a daily watermark.
+                    daily = connection.run("""SELECT MAX(end_date) FROM coverage WHERE market=? AND start_date=end_date
+                        AND substr(checked_at,1,10)=end_date AND end_date>? AND end_date<=? AND checked_at<=?""",
+                        (market, floor, today.isoformat(), cutoff.isoformat())).require_one()[0]
+                    checked = connection.run("""SELECT task,input_hash FROM company_source_task WHERE family=?
+                        AND substr(task,1,10)>? AND task<=? ORDER BY task DESC LIMIT 1""",
+                        (f"latest_announcement_checked:{market}", floor, cutoff.isoformat())).fetchone()
+                    confirmed = [] if daily is None else [date.fromisoformat(daily)]
+                    if checked is not None:
+                        previous_cutoff = datetime.fromisoformat(checked[0])
+                        if checked[1] != CanonicalDigest((market, previous_cutoff)):
+                            raise ValueError("company_latest_announcement_check_invalid")
+                        confirmed.append(previous_cutoff.date())
+                    # Reconcile this last sampled day after its close in case it was still in progress.
+                    start = max(confirmed, default=today)
+                    connection.run("INSERT INTO company_source_task VALUES(?,?,?,0,?)",
+                                   (scope, family, start.isoformat(), CanonicalDigest((market, start, cutoff))))
+                windows.append(DisclosurePartition(market, start, today))
+        return tuple(windows)
 
     def task_done(self, scope: str, family: str, task: str) -> bool:
         with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:

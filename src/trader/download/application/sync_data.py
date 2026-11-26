@@ -127,10 +127,25 @@ class SyncData:
 
 
 def _company_reason(result: CompanySyncRoundResult) -> str | None:
-    if result.business_complete:
+    if not result.needs_retry:
         return None
     if result.budget_exhausted:
         return "company_round_budget_exhausted"
+    if result.latest is not None:
+        for family in result.families:
+            if family.result.failure is not None:
+                return f"{family.family.value}:{family.result.failure}"
+            if family.unknown_attempts:
+                return f"{family.family.value}:source_attempt_unconfirmed"
+        if result.scope.cutoff != result.latest.requested_cutoff:
+            return "latest_requested_cutoff_pending"
+        if not result.latest.announcement_complete:
+            if any("latest_announcement_original_unverified" in family.result.gaps for family in result.families):
+                return "latest_announcement_original_unverified"
+            return "latest_announcement_window_pending"
+        if result.latest.financial_observed_stocks != result.latest.financial_published_stocks:
+            return "latest_financial_publication_pending"
+        return "latest_current_inputs_pending"
     for family in result.families:
         if family.result.failure is not None:
             return f"{family.family.value}:{family.result.failure}"

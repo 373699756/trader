@@ -244,6 +244,20 @@ class CompanySyncFamilyResult:
 CompanySyncPauseReason = Literal["deadline", "step_limit", "request_limit", "source_window"]
 
 
+@dataclass(frozen=True, slots=True)
+class CompanyLatestSnapshot:
+    """Current supplier batches and formally readable evidence at the requested cutoff."""
+
+    requested_cutoff: datetime
+    financial_observed_stocks: int
+    financial_published_stocks: int
+    financial_missing_values: int
+    pledge: CompanyStructuredDownloadProgress | None
+    unlock: CompanyStructuredDownloadProgress | None
+    announcement_complete: bool
+    ready: bool
+
+
 @dataclass(frozen=True,slots=True)
 class CompanySyncRoundResult:
     round_id:str
@@ -253,6 +267,7 @@ class CompanySyncRoundResult:
     budget_exhausted:bool
     publication_hash:str
     pause_reason: CompanySyncPauseReason | None = None
+    latest: CompanyLatestSnapshot | None = None
 
     def __post_init__(self)->None:
         families=tuple(item.family for item in self.families)
@@ -273,7 +288,7 @@ class CompanySyncRoundResult:
 
     @property
     def needs_retry(self)->bool:
-        return not self.business_complete
+        return not (self.latest.ready if self.latest is not None else self.business_complete)
 
     @property
     def paused(self)->bool:

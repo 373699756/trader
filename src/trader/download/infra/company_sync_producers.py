@@ -26,7 +26,8 @@ from trader.download.domain.company_sync import (
 )
 from trader.download.domain.company_unlock_notice import IsCompanyUnlockListingNotice, IsCompanyUnlockListingRevision
 from trader.download.infra.company_disclosure_source import DecodeCninfoDirectoryResponse
-from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
+from trader.download.infra.company_disclosure_queries import DISCLOSURE_PAGE_DRIFT
+from trader.download.infra.company_fact_inputs import CompanyCoverageComplete, DecodeCompanyDisclosure
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
 from trader.download.infra.company_field_recovery import ReadCompanyFieldRecovery, ReadRequiredCompanyMaterialDependencies
 from trader.download.infra.company_material_index import SQLiteCompanyMaterialIndex
@@ -125,6 +126,7 @@ class CompanyAnnouncementProducer:
         configuration: CompanySyncConfiguration | None = None, policies: CompanyDocumentPolicies | None = None,
         wall_clock: Callable[[], datetime] | None = None,
         observe_download: Callable[[CompanySourceDownloadProgress], None] | None = None,
+        latest_only: bool = False,
     ) -> None:
         self._inputs, self._material, self._source, self._sqlite_policy = inputs, material, source, sqlite_policy
         self._extraction_hash = extraction_hash
@@ -133,6 +135,10 @@ class CompanyAnnouncementProducer:
         self._configuration, self._policies, self._wall_clock = configuration, policies, wall_clock
         self._next_retry: datetime | None = None
         self._observe_download = observe_download
+        self._latest_only = latest_only
+        self._latest_windows: tuple[DisclosurePartition, ...] = ()
+        self._latest_coverage_recorded = False
+        self._unread_latest_document = False
         markets = tuple(sorted({EvidenceMarket(code) for code in scope.codes}))
         self._partitions = tuple(DisclosurePartition(market, start, end)
             for start, end in ((scope.cutoff.date(), scope.cutoff.date()),
@@ -159,20 +165,61 @@ class CompanyAnnouncementProducer:
         if self._observe_download is not None:
             self._observe_download(progress)
 
-    def _initialized(self, scope: CompanySyncRoundScope) -> bool:
-        return self._inputs.task_done(scope.identity, "announcements", "initialize")
+    def freeze_latest_window(self, scope: CompanySyncRoundScope) -> None:
+        if self._latest_only and not self._latest_windows:
+            markets = tuple(sorted({EvidenceMarket(code) for code in scope.codes}))
+            self._latest_windows = self._inputs.freeze_latest_announcement_windows(scope.identity, scope.cutoff, markets)
 
-    def _cooling(self, failure: str, retry_at: datetime) -> bool:
+    def prepare_latest_coverage(self, scope: CompanySyncRoundScope) -> None:
+        if not self._latest_only:
+            return
+        self.freeze_latest_window(scope)
+        if not self._initialized(scope):
+            for window in self._latest_windows:
+                if window.start < window.end:
+                    self._material.recheck_prior_intraday((window.market,), window.end, since=window.start)
+
+    def latest_inputs_complete(self, scope: CompanySyncRoundScope) -> bool:
+        return self.latest_inputs_settled(scope) and not self._unread_latest_document
+
+    def latest_inputs_settled(self, scope: CompanySyncRoundScope) -> bool:
+        """A later cutoff may proceed when only a recorded unavailable original remains."""
+        if not self._latest_only or not self._initialized(scope):
+            return False
+        self.freeze_latest_window(scope)
+        if self._work(scope) is not None or self._next_retry is not None:
+            return False
+        with self._session(self._material.path) as connection:
+            for w in self._latest_windows:
+                ranges = connection.run("""SELECT start_date,end_date FROM coverage WHERE market=?
+                    AND end_date>=? AND start_date<=? AND (end_date<? OR checked_at>=?) ORDER BY start_date,end_date""",
+                    (w.market, w.start.isoformat(), w.end.isoformat(), w.end.isoformat(), scope.cutoff.isoformat())).fetchall()
+                if not CompanyCoverageComplete(ranges, w.start, w.end):
+                    return False
+        if not self._latest_coverage_recorded:
+            for window in self._latest_windows:
+                self._inputs.complete_task(scope.identity, f"latest_announcement_checked:{window.market}",
+                    scope.cutoff.isoformat(), 0, CanonicalDigest((window.market, scope.cutoff)))
+            self._latest_coverage_recorded = True
+        return True
+
+    def _initialized(self, scope: CompanySyncRoundScope) -> bool:
+        task = "initialize_latest" if self._latest_only else "initialize"
+        return self._inputs.task_done(scope.identity, "announcements", task)
+
+    def _cooling(self, failure: str, retry_at: datetime, *, directory: bool = False) -> bool:
         if self._wall_clock is None:
             return False
         if retry_at <= self._wall_clock():
             return False
-        if IsTransientCompanyDocumentFailure(failure) and failure != "access_denied":
+        if (directory or IsTransientCompanyDocumentFailure(failure)) and failure != "access_denied":
             self._next_retry = min(self._next_retry or retry_at, retry_at)
         return True
 
     def _partition(self, scope: CompanySyncRoundScope) -> DisclosurePartition | None:
-        parents = (parent for window in self._partitions for parent in self._material.pending_partitions(window))
+        windows = self._latest_windows if self._latest_only else self._partitions
+        parents = (parent for window in windows for parent in self._material.pending_partitions(window,
+            include_left_edge=not self._latest_only and window.start < window.end))
         for parent in sorted(parents, key=lambda item: item.end, reverse=True):
             queries = self._material.disclosure_queries(parent)
             # After the last child, confirm the parent against the complete union.
@@ -185,8 +232,10 @@ class CompanyAnnouncementProducer:
                 candidates = (replace(parent, page=1),)
             for pending in candidates:
                 if self._wall_clock is not None:
-                    retry = self._material.partition_retry(pending)
-                    if retry is not None and self._cooling(retry.failure, retry.retry_at):
+                    drift_retry_by = (self._wall_clock() + timedelta(seconds=self._configuration.request_interval_seconds)
+                                      if self._configuration is not None else None)
+                    retry = self._material.partition_retry(pending, drift_retry_by=drift_retry_by)
+                    if retry is not None and self._cooling(retry.failure, retry.retry_at, directory=True):
                         continue
                 if not self._inputs.task_done(scope.identity, "announcements", "ineligible_partition:" + CanonicalDigest(pending)):
                     return pending
@@ -238,8 +287,12 @@ class CompanyAnnouncementProducer:
                 if row is None or not isinstance(row["payload_hash"], bytes) or len(row["payload_hash"]) != 32:
                     continue
                 item = DecodeCompanyDisclosure(row)
+                if self._latest_only and all(item.published_at.date() < w.start for w in self._latest_windows
+                                             if w.market == EvidenceMarket(dependency.code)) and self._source.document_payload_hash(item) is None:
+                    continue
                 retry = self._material.document_retry(item, self._policies.standard)
                 if retry is not None and self._cooling(retry.failure, retry.retry_after):
+                    self._unread_latest_document = True
                     continue
                 required = _RequiredDocument(
                     item, dependency.body_hash, row["payload_hash"],
@@ -255,6 +308,8 @@ class CompanyAnnouncementProducer:
 
     def _work(self, scope: CompanySyncRoundScope) -> _RequiredDocument | _NewDocument | DisclosurePartition | None:
         self._next_retry = None
+        self._unread_latest_document = False
+        self.freeze_latest_window(scope)
         required = self._document(scope)
         if required is not None and required.for_recommendation:
             return required
@@ -287,7 +342,8 @@ class CompanyAnnouncementProducer:
     def recover_directory(
         self, scope: CompanySyncRoundScope, receipt: CompanyDirectoryResponseReceipt,
     ) -> CompanySyncStepResult | None:
-        if not self._initialized(scope):
+        if not (self._inputs.task_done(scope.identity, "announcements", "initialize")
+                or self._inputs.task_done(scope.identity, "announcements", "initialize_latest")):
             return None
         restored = DecodeCninfoDirectoryResponse(
             receipt.request_body, HttpResponse(200, receipt.response_content, encoding=receipt.encoding),
@@ -296,10 +352,8 @@ class CompanyAnnouncementProducer:
             return None
         partition, page = restored
         if (
-            not any(
-                window.market == partition.market and window.start <= partition.start <= partition.end <= window.end
-                for window in self._partitions
-            )
+            not any(window.market == partition.market and window.start <= partition.end <= window.end
+                    and (window.start <= partition.start or window.start < window.end) for window in self._partitions)
             or not any(EvidenceMarket(code) == partition.market for code in self._current_codes)
         ):
             return None
@@ -315,11 +369,21 @@ class CompanyAnnouncementProducer:
 
     def advance(self, scope: CompanySyncRoundScope, *, cancel_requested: Callable[[], bool], deadline: float) -> CompanySyncStepResult:
         if not self._initialized(scope):
-            for initial_partition in self._partitions:
-                self._material.register_partition(initial_partition, scope.cutoff)
-                if initial_partition.start == initial_partition.end == scope.cutoff.date():
+            self.prepare_latest_coverage(scope)
+            windows = self._partitions
+            task, other_task = "initialize", "initialize_latest"
+            if self._latest_only:
+                task, other_task = other_task, task
+                today = scope.cutoff.date()
+                windows = (tuple(DisclosurePartition(w.market, today, today) for w in self._latest_windows)
+                           + tuple(DisclosurePartition(w.market, w.start, today - timedelta(days=1))
+                                   for w in self._latest_windows if w.start < today))
+            other_initialized = self._inputs.task_done(scope.identity, "announcements", other_task)
+            for initial_partition in windows:
+                self._material.register_partition(initial_partition, scope.cutoff, retain_started_edge=not self._latest_only)
+                if initial_partition.start == initial_partition.end == scope.cutoff.date() and not other_initialized:
                     self._material.restart_partition(initial_partition)
-            self._inputs.complete_task(scope.identity, "announcements", "initialize", 0, CanonicalDigest(self._partitions))
+            self._inputs.complete_task(scope.identity, "announcements", task, 0, CanonicalDigest(windows))
             return CompanySyncStepResult(False, True)
         work = self._work(scope)
         if isinstance(work, _NewDocument):
@@ -348,9 +412,13 @@ class CompanyAnnouncementProducer:
                     return CompanySyncStepResult(False, True, failure=code, gaps=("announcement_directory_retry",))
                 raise
             if partition.query is None and self._material.disclosure_queries(partition) == ():
-                self._material.commit_query_coverage(partition, page, scope.cutoff)
-                self._emit_download(CompanyDisclosureDownloadProgress(partition, "reconciled", page.total, page.total))
-                return CompanySyncStepResult(False, True, source_calls=1)
+                complete = self._material.commit_query_coverage(partition, page, scope.cutoff)
+                if complete:
+                    self._emit_download(CompanyDisclosureDownloadProgress(partition, "reconciled", page.total, page.total))
+                else:
+                    self._emit_download(CompanyDownloadIssue(operation, "cninfo_query_coverage_mismatch", material_accepted=True, action="retry"))
+                    self._emit_download(CompanyDisclosureDownloadProgress(partition, "accepted", len(page.rows), page.total))
+                return CompanySyncStepResult(False, True, accepted_inputs=0 if complete else len(page.rows), source_calls=1)
             if page.total > 100 * partition.page_size:
                 self._refine_partition(partition, scope)
                 self._emit_download(CompanyDownloadIssue(
@@ -361,10 +429,21 @@ class CompanyAnnouncementProducer:
             try:
                 self._material.commit_page(partition, page, scope.cutoff)
             except CompanyInputValidationFailure as exc:
-                if str(exc) not in {
-                    "cninfo_partition_changed", "cninfo_page_truncated", "cninfo_page_count_inconsistent", "cninfo_duplicate_page_links",
-                }:
+                if str(exc) not in DISCLOSURE_PAGE_DRIFT:
                     raise
+                if (partition.query is None and page.total <= 100 * partition.page_size
+                    and self._material.disclosure_queries(partition, include_completed=True)):
+                    # commit_page already reopened this parent's first page.
+                    # Keep the accepted child inventory while the live supplier
+                    # is changing, and let the other market run during cooldown.
+                    recheck_at = None
+                    if self._wall_clock is not None and self._configuration is not None:
+                        recheck_at = self._wall_clock() + timedelta(seconds=self._configuration.request_interval_seconds)
+                        self._material.partition_failure(partition, str(exc))
+                        self._material.defer_partition(partition, recheck_at)
+                    self._emit_download(CompanyDownloadIssue(operation, str(exc), material_accepted=False,
+                                                             action="retry", retry_at=recheck_at))
+                    return CompanySyncStepResult(False, True, source_calls=1)
                 # A drifting broad range cannot establish coverage. Refine
                 # its durable owner instead of repeating the rejected page.
                 self._refine_partition(partition, scope)
@@ -381,6 +460,10 @@ class CompanyAnnouncementProducer:
                 delay = max(0.0, (self._next_retry - self._wall_clock()).total_seconds())
                 return CompanySyncStepResult(False, True, gaps=("announcement_retry_pending",), deferred=True,
                     retry_after_seconds=delay)
+            if self._latest_only:
+                # The annual cursor can still have work once today's inputs are exhausted.
+                gap = "latest_announcement_original_unverified" if self._unread_latest_document else "announcement_required_material_not_fully_verified"
+                return CompanySyncStepResult(False, True, deferred=True, gaps=(gap,))
             return CompanySyncStepResult(True, False, pending_count=None, gaps=("announcement_required_material_not_fully_verified",))
         if document.disclosure.codes[0] not in self._current_codes:
             self._inputs.complete_task(scope.identity, "announcements", "ineligible_document:" + _required_identity(document), 0, _required_identity(document))
@@ -446,17 +529,26 @@ class CompanyAnnouncementProducer:
         unlock_window = (today.isoformat(), (today + timedelta(days=180)).isoformat())
         date_only_cutoff = scope.cutoff.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
         with self._session(self._material.path) as connection:
-            rows = connection.run("""SELECT d.*,c.code,retry.failure AS retry_failure,retry.retry_at FROM disclosures d
+            starts = {w.market: w.start.isoformat() for w in self._latest_windows}
+            revision = """EXISTS(SELECT 1 FROM company_material_dependencies m WHERE m.disclosure_id=d.id
+                AND m.code=c.code AND m.record_hash<>d.record_hash)"""
+            projection = revision if self._latest_only else "0"
+            selection = "AND (d.published_at>=? OR revised)" if self._latest_only else ""
+            bounds = (min(starts.values()),) if self._latest_only else ()
+            rows = connection.run(f"""SELECT d.*,c.code,retry.failure AS retry_failure,retry.retry_at,{projection} AS revised FROM disclosures d
                 JOIN disclosure_codes c ON c.disclosure_id=d.id
                 JOIN company_document_requirements required ON required.disclosure_id=d.id
                 LEFT JOIN document_retries retry ON retry.disclosure_id=d.id AND retry.record_hash=d.record_hash AND retry.retry_policy_id=?
                 WHERE d.source='cninfo' AND d.kind='announcement' AND d.body_checked=0
                 AND d.published_at>=? AND d.published_at<=?
+                {selection}
                 AND (SELECT COUNT(*) FROM disclosure_codes members WHERE members.disclosure_id=d.id)=1
                 ORDER BY d.published_at DESC,d.source_key""",
-                (self._policies.standard, (scope.cutoff.date() - timedelta(days=365)).isoformat(), scope.cutoff.isoformat()))
+                (self._policies.standard, (scope.cutoff.date() - timedelta(days=365)).isoformat(), scope.cutoff.isoformat(), *bounds))
             for row in rows:
                 if row["code"] not in current_codes:
+                    continue
+                if self._latest_only and row["published_at"] < starts[EvidenceMarket(row["code"])] and not row["revised"]:
                     continue
                 title = row["title"]
                 is_risk = _risk_priority(title)
@@ -473,9 +565,11 @@ class CompanyAnnouncementProducer:
                 item = DecodeCompanyDisclosure(row)
                 failure = row["retry_failure"]
                 if failure and self._cooling(failure, datetime.fromisoformat(row["retry_at"])):
+                    self._unread_latest_document = True
                     continue
                 if (failure and (failure == "access_denied" or not IsTransientCompanyDocumentFailure(failure))
                     and self._inputs.task_done(scope.identity, "new_announcement_document", CanonicalDigest((item, self._policies)))):
+                    self._unread_latest_document = True
                     continue
                 if is_unlock or is_risk:
                     if is_unlock == prefer_unlock:

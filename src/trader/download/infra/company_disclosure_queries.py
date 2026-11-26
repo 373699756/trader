@@ -17,6 +17,11 @@ from trader.download.domain.company_evidence import (
 from trader.infra.sqlite_connection import SqliteConnection
 
 
+DISCLOSURE_PAGE_DRIFT = frozenset({
+    "cninfo_partition_changed", "cninfo_page_truncated", "cninfo_page_count_inconsistent", "cninfo_duplicate_page_links",
+})
+
+
 def DisclosurePartitionKey(partition: DisclosurePartition) -> tuple[str, str, str]:
     return partition.market, partition.start.isoformat(), partition.end.isoformat()
 

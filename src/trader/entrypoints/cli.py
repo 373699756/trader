@@ -73,7 +73,8 @@ def BuildParser() -> argparse.ArgumentParser:
     training.add_argument("--json", action="store_true", help="Print complete result JSON to stdout.")
     training.add_argument("--diagnostics", type=Path, help="Write full diagnostics to a new file; never overwrite.")
     sync = subparsers.add_parser("sync", help="Prepare references, then synchronize history and company.")
-    sync.add_argument("target", nargs="?", default="all", choices=("all", "company", "history"))
+    sync.add_argument("target", nargs="?", default="all", choices=("all", "company", "history", "compnay"))
+    sync.add_argument("action", nargs="?", choices=("fill",), help="Use sync compnay fill to resume annual announcement collection.")
     subparsers.add_parser(
         "history-automation-status",
         help="Read the persisted history due and reminder state without recalculation.",
@@ -103,6 +104,10 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
     if args.command == "sync":
         if args.profile is not None:
             parser.error("sync does not accept --profile")
+        if (args.target == "compnay") != (args.action == "fill"):
+            parser.error("annual announcement collection requires sync compnay fill")
+        if args.target == "compnay":
+            args.target = "company"
         from trader.bootstrap import CreateSyncProgress
 
         inherited = os.environ.pop("TRADER_COMMAND_STARTED_MONOTONIC", None)
@@ -192,7 +197,8 @@ def _run_sync(args: argparse.Namespace, progress: SyncProgress) -> int:
         progress.keep_alive(shutdown=cancelled),
     ):
         try:
-            result = ExecuteSync(config_path, args.target, cancel_requested=cancelled.is_set, report=progress)
+            result = ExecuteSync(config_path, args.target, cancel_requested=cancelled.is_set, report=progress,
+                                 backfill_announcements=args.action == "fill")
         except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
             progress(ProgressMessage((ProgressField(f"原因 {type(exc).__name__}"),),
                                      task=ProgressTask("sync", "result", "结果汇总"), state="失败", finished=True))

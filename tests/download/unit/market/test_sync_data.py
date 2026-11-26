@@ -13,7 +13,8 @@ from trader.download.application.prepare_reference import ReferenceDatabaseIncom
 from trader.download.application.sync_data import SyncData, SyncDatabaseError, SyncResult, SyncTaskResult
 from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDownloadStore
-from trader.download.domain.company_sync import COMPANY_SYNC_FAMILIES, CompanySyncFamily
+from trader.download.domain.company_sync import COMPANY_SYNC_FAMILIES, CompanyLatestSnapshot, CompanySyncFamily
+from trader.download.entrypoints.company_result_feedback import FormatCompanySyncSummary
 from tests.helpers.download.company_round import CompanySyncFamilyFixture, CompanySyncRoundFixture
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.entrypoints.sync_projection import ProjectSyncResult
@@ -22,6 +23,38 @@ from trader.download.infra.sync_database_failure import AdaptSyncDatabaseFailure
 from trader.infra.sqlite_connection import SqliteSession
 
 _NOW = datetime(2026, 10, 16, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+
+def test_latest_fields_completion_reports_source_nulls_separately_from_history():
+    company = CompanySyncRoundFixture(_NOW, families=(
+        CompanySyncFamilyFixture(CompanySyncFamily.ANNOUNCEMENTS, complete=False, can_continue=True),
+    ))
+    latest = CompanyLatestSnapshot(_NOW, 1, 1, 2, None, None, True, True)
+    company = replace(company, latest=latest)
+    result = SyncResult((SyncTaskResult("company", "completed", company=company),))
+    rendered = FormatCompanySyncSummary(result, "完成")
+    projected = ProjectSyncResult(result)["tasks"][0]
+    assert "D25正式可读 1 股，来源空值 2 项" in rendered and "年度补采断点保留" in rendered
+    assert projected["latest"]["ready"] and not projected["business_complete"]
+
+
+@pytest.mark.parametrize(("arguments", "expected_backfill"), [(("company",), False), (("compnay", "fill"), True)])
+def test_company_command_selects_annual_backfill_only_on_request(tmp_path, monkeypatch, arguments, expected_backfill):
+    from tests.helpers.shared.configuration import RuntimeSettingsFixture
+    from trader.entrypoints import cli
+
+    selected = []
+
+    def execute(_path, target, **options):
+        selected.append((target, options["backfill_announcements"]))
+        return SyncResult((SyncTaskResult("company", "completed"),))
+
+    monkeypatch.setattr(cli, "LoadRuntimeSettings", lambda _path: RuntimeSettingsFixture())
+    monkeypatch.setattr(cli, "_configuration_payload", lambda *_args: {})
+    monkeypatch.setattr("trader.bootstrap.PrepareRuntimeDisk", lambda settings, **_kwargs: settings)
+    monkeypatch.setattr("trader.bootstrap.ExecuteSync", execute)
+    assert cli.Main(["--config", str(tmp_path / "runtime.json"), "sync", *arguments]) == 0
+    assert selected == [("company", expected_backfill)]
 
 
 def _history(state="completed", unresolved_price_cells=0):

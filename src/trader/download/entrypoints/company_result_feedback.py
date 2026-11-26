@@ -108,6 +108,11 @@ _ROUND_REASON_EXPLANATIONS = {
     "supplier_input_rejected": "来源返回内容未通过校验，具体原因见错误码",
     "source_retry_pending": "来源请求暂时失败，冷却到期后继续复核",
     "announcement_retry_pending": "公告资料正在冷却或等待续传，其余可处理资料已调度",
+    "latest_requested_cutoff_pending": "正从上次断点续传，尚未更新到本次截止时刻",
+    "latest_announcement_window_pending": "本次增量公告仍待核对",
+    "latest_announcement_original_unverified": "本次增量公告有未能读取的原件，相关字段保留待核",
+    "latest_financial_publication_pending": "部分最新来源报告仍待正式采用",
+    "latest_current_inputs_pending": "最新来源批次或正式字段仍待核对",
     "announcement_directory_retry": "本页目录已暂缓，继续处理其他可用目录和公告正文",
     "population_members_became_ineligible": "原轮次中部分股票已不符合当前资格",
     "new_population_members_wait_for_refresh": "新增合格股票等待下一轮次",
@@ -149,6 +154,8 @@ def BuildCompanyRoundFinishMessage(
         checkpoint = "已有断点保留" if result.round_id else "本轮断点未核对"
         summary = ProgressField(f"{reason}，{checkpoint}", ProgressLevel.WARNING)
         state = "取消" if result.cancelled else "暂停"
+    elif result.latest is not None and result.latest.ready:
+        summary, state = ProgressField("最新字段检查完成，保留各字段的来源和核验状态"), "完成"
     elif result.business_complete:
         summary, state = ProgressField("本轮处理完成"), "完成"
     elif result.processing_complete:
@@ -205,7 +212,19 @@ def FormatCompanySyncSummary(result: SyncResult, state: ProgressState) -> str:
     heading = f"公司同步：{status}，范围 {len(company.scope.codes):,} 股"
     if state == "暂停" and company.round_id:
         heading += "，断点已保留"
-    lines = [heading, _source_summary(company), _formal_summary(company)]
+    latest = company.latest
+    if latest is None:
+        lines = [heading, _source_summary(company), _formal_summary(company)]
+    else:
+        population = len(company.scope.codes)
+        lines = [heading, f"最新字段检查截止 {company.scope.cutoff.isoformat(timespec='seconds')}。",
+                 f"取得最新来源报告 {latest.financial_observed_stocks:,}/{population:,} 股，"
+                 f"D25正式可读 {latest.financial_published_stocks:,} 股，来源空值 {latest.financial_missing_values:,} 项。"]
+        for label, batch in (("质押", latest.pledge), ("解禁", latest.unlock)):
+            if batch is not None:
+                lines.append(f"{label}来源已接纳 {batch.accepted_pages}/{batch.expected_pages} 页，"
+                             f"{batch.accepted_rows:,} 条，正式字段按各自凭据核验。")
+        lines.append("新增公告检查" + ("完成" if latest.announcement_complete else "待续") + "，年度补采断点保留。")
     failures: list[str] = []
     pending: list[str] = []
     for family in company.families:
@@ -215,12 +234,13 @@ def FormatCompanySyncSummary(result: SyncResult, state: ProgressState) -> str:
             failures.append(f"{label}：{_summary_failure(step.failure)}")
         if step.pending_count:
             pending.append(f"{label} {step.pending_count:,} 项")
-        elif step.failure is None and not step.business_complete:
+        elif step.failure is None and not step.business_complete and latest is None:
             pending.append(label)
     if failures:
         lines.append("异常：" + "。".join(failures) + "。")
     if pending and not result.cancelled:
-        lines.append("待处理：" + "、".join(pending) + "。")
+        label = "仍待补证" if latest is not None and latest.ready else "待处理"
+        lines.append(label + "：" + "、".join(pending) + "。")
     lines.append(_request_totals(company))
     return "\n".join(lines)
 

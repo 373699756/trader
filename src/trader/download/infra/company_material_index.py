@@ -24,7 +24,7 @@ from trader.download.domain.download_failure import DownloadFailureConfiguration
 from trader.download.infra.company_announcement_links import WriteCompanyAnnouncementNumbers
 from trader.download.infra.company_contract_link_rules import WriteCompanyContractLinkRules
 from trader.download.infra.company_disclosure_queries import (
-    ActivateDisclosureQueryPolicy, CommitDisclosureQueryPage, DeferDisclosurePartition, DisclosureQueryKey,
+    DISCLOSURE_PAGE_DRIFT, ActivateDisclosureQueryPolicy, CommitDisclosureQueryPage, DeferDisclosurePartition, DisclosureQueryKey,
     ReadDisclosureQueries, ReconcileDisclosureQueries, RestartDisclosureQuery, SeedDisclosureQueries,
     ValidateDisclosureQueryPage,
 )
@@ -138,25 +138,27 @@ class SQLiteCompanyMaterialIndex:
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             ReplaceCompanyMaterialPopulation(connection, codes)
 
-    def register_partition(self, partition: DisclosurePartition, observed_at: datetime) -> None:
+    def register_partition(self, partition: DisclosurePartition, observed_at: datetime, *, retain_started_edge: bool = False) -> None:
         if observed_at.utcoffset() is None or partition.start < observed_at.date() - timedelta(days=365) or partition.end > observed_at.date():
             raise ValueError("company_material_partition_window_invalid")
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             if partition.start == observed_at.date() - timedelta(days=365) and partition.end == observed_at.date() - timedelta(days=1):
                 edges = _unstarted_edges(connection, partition.market, partition.start)
                 if edges is None:
-                    raise ValueError("company_material_window_requires_prior_cursor")
+                    if not retain_started_edge:
+                        raise ValueError("company_material_window_requires_prior_cursor")
+                    edges = ()  # The earlier owner's accepted prefix is still required to finish this interval.
                 for key in edges:
                     connection.run("DELETE FROM disclosure_query_contracts WHERE market=? AND start_date=? AND end_date=?", key)
                     connection.run("DELETE FROM partitions WHERE market=? AND start_date=? AND end_date=?", key)
                 _reopen_intraday_coverage(connection, partition.market, partition.start, partition.end)
             self._add_partition(connection, partition.market, partition.start, partition.end)
 
-    def recheck_prior_intraday(self, markets: tuple[Market, ...], day: date) -> None:
+    def recheck_prior_intraday(self, markets: tuple[Market, ...], day: date, *, since: date | None = None) -> None:
         """Withdraw provisional prior-day coverage before the new scope checks fields."""
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             for market in markets:
-                _reopen_intraday_coverage(connection, market, day - timedelta(days=365), day - timedelta(days=1))
+                _reopen_intraday_coverage(connection, market, since or day - timedelta(days=365), day - timedelta(days=1))
 
     def can_retain_backfill(self, markets: tuple[Market, ...], previous_day: date, next_day: date) -> bool:
         with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection):
@@ -169,10 +171,11 @@ class SQLiteCompanyMaterialIndex:
                     return False
         return True
 
-    def pending_partitions(self, partition: DisclosurePartition) -> tuple[DisclosurePartition, ...]:
+    def pending_partitions(self, partition: DisclosurePartition, *, include_left_edge: bool = False) -> tuple[DisclosurePartition, ...]:
         with self._connect() as connection:
+            bound = "end_date>=?" if include_left_edge else "start_date>=?"
             rows = connection.run("SELECT start_date,end_date,next_page,expected_rows,received_rows FROM partitions "
-                                  "WHERE market=? AND start_date>=? AND end_date<=? AND is_complete=0 ORDER BY end_date DESC,start_date", _key(partition))
+                                  f"WHERE market=? AND {bound} AND end_date<=? AND is_complete=0 ORDER BY end_date DESC,start_date", _key(partition))
             return tuple(DisclosurePartition(partition.market, date.fromisoformat(row[0]), date.fromisoformat(row[1]), row[2], row[3], row[4]) for row in rows)
 
     def _check_cancelled(self) -> None:
@@ -268,14 +271,21 @@ class SQLiteCompanyMaterialIndex:
         if partition.query is not None:
             return False
         with self._connect() as connection:
-            row = connection.run("""SELECT next_page,expected_rows,received_rows,is_complete,checked_at FROM partitions
-                WHERE market=? AND start_date=? AND end_date=?
-                AND NOT EXISTS(SELECT 1 FROM disclosure_queries q WHERE q.market=partitions.market
-                    AND q.start_date=partitions.start_date AND q.end_date=partitions.end_date)""", _key(partition)).fetchone()
+            row = connection.run("""SELECT next_page,expected_rows,received_rows,is_complete,checked_at,
+                EXISTS(SELECT 1 FROM disclosure_queries q WHERE q.market=p.market AND q.start_date=p.start_date
+                    AND q.end_date=p.end_date AND q.failure='cninfo_query_coverage_mismatch'),
+                EXISTS(SELECT 1 FROM disclosure_queries q WHERE q.market=p.market
+                    AND q.start_date=p.start_date AND q.end_date=p.end_date) FROM partitions p
+                WHERE market=? AND start_date=? AND end_date=?""", _key(partition)).fetchone()
             if row is None:
                 return False
-            next_page, expected, received, complete, checked_at = row
-            if next_page == partition.page and not complete:
+            next_page, expected, received, complete, checked_at, rechecking, split = row
+            reconcile = split and not complete and not rechecking
+            if reconcile:
+                if partition.page != 1 or ReadDisclosureQueries(connection, partition) != ():
+                    return False
+                prior = replace(partition, expected_rows=expected, received_rows=received)
+            elif next_page == partition.page and not complete:
                 prior = replace(partition, expected_rows=expected, received_rows=received)
             elif (
                 next_page == partition.page + 1 and received >= len(page.rows) and expected == page.total
@@ -313,7 +323,10 @@ class SQLiteCompanyMaterialIndex:
         if CanonicalDigest(prior) != state_hash:
             return False
         try:
-            self._commit_page(prior, page, observed_at, reset_invalid_cursor=False)
+            if reconcile:
+                self.commit_query_coverage(prior, page, observed_at)
+            else:
+                self._commit_page(prior, page, observed_at, reset_invalid_cursor=False)
         except CompanyInputValidationFailure:
             return False
         return True
@@ -325,6 +338,7 @@ class SQLiteCompanyMaterialIndex:
         observed_at: datetime,
         *,
         reset_invalid_cursor: bool,
+        recheck_parent: bool = False,
     ) -> int:
         if partition.page_size != 30 or partition.filter_identity != "all_announcements":
             raise ValueError("company_query_contract_unverified")
@@ -344,6 +358,9 @@ class SQLiteCompanyMaterialIndex:
         received = partition.received_rows + len(page.rows)
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
             CheckDisclosureQueryContract(connection, partition)
+            if recheck_parent:
+                connection.run("""UPDATE disclosure_queries SET failure='cninfo_query_coverage_mismatch'
+                    WHERE market=? AND start_date=? AND end_date=?""", _key(partition))
             if partition.page == 1:
                 connection.run("DELETE FROM partition_rows WHERE market=? AND start_date=? AND end_date=?", _key(partition))
             changes = self._write_disclosures(connection, page.rows)
@@ -394,11 +411,16 @@ class SQLiteCompanyMaterialIndex:
         # Rechecks start a fresh generation; completed page membership has no remaining consumer.
         connection.run("DELETE FROM partition_rows WHERE market=? AND start_date=? AND end_date=?", _key(partition))
         connection.run("DELETE FROM disclosure_query_rows WHERE market=? AND start_date=? AND end_date=?", _key(partition))
+        connection.run("""UPDATE disclosure_queries SET failure='' WHERE market=? AND start_date=? AND end_date=?
+            AND failure='cninfo_query_coverage_mismatch'""", _key(partition))
 
     def disclosure_queries(
         self, partition: DisclosurePartition, *, include_completed: bool = False
     ) -> tuple[DisclosurePartition, ...] | None:
         with self._connect() as connection:
+            if not include_completed and connection.run("""SELECT 1 FROM disclosure_queries WHERE market=? AND start_date=?
+                AND end_date=? AND failure='cninfo_query_coverage_mismatch' LIMIT 1""", _key(partition)).fetchone():
+                return None
             return ReadDisclosureQueries(connection, replace(partition, query=None), include_completed=include_completed)
 
     def refresh_disclosure_query(self, partition: DisclosurePartition, page: DisclosurePage) -> int | None:
@@ -438,6 +460,14 @@ class SQLiteCompanyMaterialIndex:
         ):
             raise CompanyInputValidationFailure("cninfo_query_split_invalid")
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
+            if partition.query is None and connection.run("""SELECT 1 FROM disclosure_queries WHERE market=? AND start_date=?
+                AND end_date=? AND failure='cninfo_query_coverage_mismatch' LIMIT 1""", _key(partition)).fetchone():
+                # The bounded parent has itself drifted beyond the provider's
+                # page ceiling. Resume the retained child contracts.
+                connection.run("""UPDATE disclosure_queries SET failure='',next_page=1,expected_rows=NULL,
+                    received_rows=0,is_complete=0 WHERE market=? AND start_date=? AND end_date=?""", _key(partition))
+                connection.run("DELETE FROM disclosure_query_rows WHERE market=? AND start_date=? AND end_date=?", _key(partition))
+                return ReadDisclosureQueries(connection, partition) or ()
             SeedDisclosureQueries(connection, partition, queries)
             pending = ReadDisclosureQueries(connection, replace(partition, query=None))
         if pending is None:
@@ -446,7 +476,7 @@ class SQLiteCompanyMaterialIndex:
 
     def commit_query_coverage(
         self, partition: DisclosurePartition, page: DisclosurePage, observed_at: datetime
-    ) -> None:
+    ) -> bool:
         # A failed parent check does not invalidate successfully saved child pages.
         # Keep them available for targeted issuer repair or a later verification.
         try:
@@ -459,7 +489,15 @@ class SQLiteCompanyMaterialIndex:
                 )
                 self._finish_partition(connection, partition, observed_at)
                 connection.run("DELETE FROM partition_retries WHERE market=? AND start_date=? AND end_date=?", _key(partition))
+            return True
         except DisclosureCoverageMismatch as exc:
+            if partition.page == 1 and page.total <= 100 * partition.page_size:
+                # The checked children describe an earlier supplier population.
+                # Read this one bounded parent from the response already in hand.
+                # Keep every child row until a complete directory proves membership.
+                self._commit_page(replace(partition, expected_rows=None, received_rows=0), page, observed_at,
+                                  reset_invalid_cursor=False, recheck_parent=True)
+                return not page.has_more
             if exc.refresh_required:
                 # A smaller source set or changed sample really invalidates the
                 # saved generation. Preserve its historical issuer membership.
@@ -474,7 +512,7 @@ class SQLiteCompanyMaterialIndex:
                     )
             raise
 
-    def partition_retry(self, partition: DisclosurePartition) -> DisclosurePartitionRetry | None:
+    def partition_retry(self, partition: DisclosurePartition, *, drift_retry_by: datetime | None = None) -> DisclosurePartitionRetry | None:
         with self._connect() as connection:
             row = connection.run(
                 "SELECT r.retry_at,CASE WHEN r.scope='' THEN p.failure ELSE q.failure END "
@@ -485,11 +523,19 @@ class SQLiteCompanyMaterialIndex:
                 "WHERE r.market=? AND r.start_date=? AND r.end_date=? AND r.scope=?",
                 DisclosureQueryKey(partition),
             ).fetchone()
-        if row is None:
-            return None
-        if row[1] is None:
-            raise ValueError("company_disclosure_retry_invalid")
-        return DisclosurePartitionRetry(datetime.fromisoformat(row[0]), row[1])
+            if row is None:
+                return None
+            if row[1] is None:
+                raise ValueError("company_disclosure_retry_invalid")
+            retry_at = datetime.fromisoformat(row[0])
+            if (partition.query is None and row[1] in DISCLOSURE_PAGE_DRIFT and drift_retry_by is not None
+                and retry_at > drift_retry_by and connection.run(
+                    """SELECT 1 FROM disclosure_queries WHERE market=? AND start_date=? AND end_date=?
+                    AND is_complete=1 AND failure='cninfo_query_coverage_mismatch' LIMIT 1""", _key(partition)
+                ).fetchone()):
+                DeferDisclosurePartition(connection, partition, drift_retry_by)
+                retry_at = drift_retry_by
+            return DisclosurePartitionRetry(retry_at, row[1])
 
     def defer_partition(self, partition: DisclosurePartition, retry_after: datetime) -> None:
         with self._connect() as connection, SqliteTransaction(connection, immediate=True):
