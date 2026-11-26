@@ -15,6 +15,7 @@ from threading import RLock
 from typing import Literal
 
 from trader.download.domain.company_evidence import CompanyDocumentExtraction, CompanyDocumentOutputIdentity, CompanyOcrDiagnostic, Disclosure
+from trader.download.domain.company_sync import CompanyRawCapacitySnapshot
 from trader.infra.atomic_files import AtomicReadJson, AtomicWriteJson
 from trader.infra.atomic_files.json import SyncDirectory
 from trader.infra.regular_file import OpenRegularFile, RegularFileStream
@@ -26,20 +27,6 @@ class CompanyLocalDocument:
     path: Path
     payload_hash: bytes
     size: int
-
-
-@dataclass(frozen=True)
-class CompanyRawCapacitySnapshot:
-    used_bytes: int
-    held_bytes: int
-    analysis_held_bytes: int
-    requested_bytes: int
-    capacity_bytes: int
-    analysis_reserve_bytes: int
-    free_bytes: int
-    free_reserve_bytes: int
-    analysis: bool
-    limit: Literal["total_capacity", "download_headroom", "physical_space"]
 
 
 class CompanyRawCapacityError(RuntimeError):
@@ -350,7 +337,6 @@ def _digest_stream(stream: RegularFileStream, header: bytes = b"") -> bytes:
 
 __all__ = [
     "CompanyLocalDocument",
-    "CompanyRawCapacitySnapshot",
     "CompanyRawCapacityError",
     "CompanyRawFiles",
 ]

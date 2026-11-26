@@ -25,7 +25,10 @@ def JournalStrings(value: str) -> tuple[str, ...]:
 
 
 def CanRetryJournalRejection(processed: int, failure: str | None, gaps: tuple[str, ...]) -> bool:
-    return not processed and IsRetryableCompanySourceFailure(failure) and "supplier_input_rejected" in gaps
+    if processed:
+        return False
+    return (failure is None and "company_raw_capacity_unavailable" in gaps
+            or IsRetryableCompanySourceFailure(failure) and "supplier_input_rejected" in gaps)
 
 
 @dataclass
@@ -113,8 +116,11 @@ class _FamilySteps:
         gaps = latest.gaps
         if not self.refresh:
             reasons = set(gaps) | {gap for gap, count in self.gaps.items() if count > 0}
-            if "source_budget_exhausted" not in gaps:
-                reasons.discard("source_budget_exhausted")
+            # Resource blocks describe the latest dispatch. The failed step
+            # remains in the ledger after capacity or request budget returns.
+            for gap in ("source_budget_exhausted", "company_raw_capacity_unavailable"):
+                if gap not in gaps:
+                    reasons.discard(gap)
             gaps = tuple(sorted(gap for gap in reasons if not gap.startswith(DIRECTORY_RECOVERY_GAP_PREFIX)))
         unknown = receipts.unknown[family.value]
         can_retry = not unknown and CanRetryJournalRejection(latest.processed_scope_complete, latest.failure, latest.gaps)

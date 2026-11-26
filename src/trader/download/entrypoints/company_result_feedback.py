@@ -84,6 +84,7 @@ _ROUND_REASON_EXPLANATIONS = {
     "field_proof_incomplete": "仍有适用字段缺值或字段凭据待核",
     "request_counts_unconfirmed": "步骤中断，终态请求数待核",
     "source_budget_exhausted": "本轮来源请求额度已用完",
+    "company_raw_capacity_unavailable": "公告原件空间预约未通过，恢复容量后可沿原轮次续传",
     "step_interrupted": "本次步骤中断，沿原回执续传",
     "company_round_page_number_mismatch": "财务返回的页码与请求不符",
     "company_round_total_changed": "财务分页总数变化",

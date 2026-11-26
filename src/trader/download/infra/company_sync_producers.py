@@ -399,9 +399,9 @@ class CompanyAnnouncementProducer:
             extraction = self._source.extract_document(item)
         except (CompanyDocumentFailure, CompanySourceFailure) as exc:
             return self._document_failure(item, operation, exc, called, "required_original_recovery_failed")
-        except CompanyRawCapacityError:
+        except CompanyRawCapacityError as exc:
             self._emit_download(CompanyDownloadIssue(
-                operation, "company_raw_capacity_unavailable", material_accepted=False, action="stop",
+                operation, "company_raw_capacity_unavailable", material_accepted=False, action="stop", capacity=exc.snapshot,
             ))
             return CompanySyncStepResult(False, False, gaps=("company_raw_capacity_unavailable",), pending_count=None)
         if extraction.payload_hash != document.payload_hash or hashlib.sha256(extraction.text.encode()).digest() != document.body_hash:
@@ -412,9 +412,9 @@ class CompanyAnnouncementProducer:
             return CompanySyncStepResult(False, False, gaps=("required_original_hash_mismatch",), failure="required_original_hash_mismatch")
         try:
             accepted = self._material.recover_required_text(item.identity, extraction.text, scope.cutoff)
-        except CompanyRawCapacityError:
+        except CompanyRawCapacityError as exc:
             self._emit_download(CompanyDownloadIssue(
-                operation, "company_raw_capacity_unavailable", material_accepted=False, action="stop",
+                operation, "company_raw_capacity_unavailable", material_accepted=False, action="stop", capacity=exc.snapshot,
             ))
             return CompanySyncStepResult(False, False, gaps=("company_raw_capacity_unavailable",), pending_count=None)
         if not accepted:
@@ -517,9 +517,9 @@ class CompanyAnnouncementProducer:
                 if not self._inputs.task_done(scope.identity, "new_announcement_document", key):
                     self._inputs.complete_task(scope.identity, "new_announcement_document", key, 0, CanonicalDigest(code))
             return self._document_failure(item, operation, failure, called, "announcement_document_failed")
-        except CompanyRawCapacityError:
+        except CompanyRawCapacityError as exc:
             self._emit_download(CompanyDownloadIssue(
-                operation, "company_raw_capacity_unavailable", material_accepted=False, action="stop",
+                operation, "company_raw_capacity_unavailable", material_accepted=False, action="stop", capacity=exc.snapshot,
             ))
             return CompanySyncStepResult(False, False, gaps=("company_raw_capacity_unavailable",), pending_count=None)
         self._emit_download(CompanyDocumentDownloadProgress(

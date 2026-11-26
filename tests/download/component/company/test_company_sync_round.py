@@ -622,6 +622,34 @@ def test_observed_old_transport_rejection_reopens_but_remains_distinct_from_an_u
     assert physical == ["https://example.test/prior"] and current_calls == ["https://example.test/1", "https://example.test/2"]
 
 
+def test_capacity_block_resumes_in_same_round_after_storage_recovers(tmp_path):
+    journal, producers, budget, physical, _, transport = _resources(tmp_path)
+    announcement = next(p for p in producers if p.plan.family is CompanySyncFamily.ANNOUNCEMENTS)
+    attempts = []
+
+    def blocked(scope, *, cancel_requested, deadline):
+        attempts.append(scope.identity)
+        return CompanySyncStepResult(False, False, gaps=("company_raw_capacity_unavailable",))
+
+    announcement.advance = blocked
+    with transport:
+        first = RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: False)
+        again = RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: False)
+    assert attempts == [_SCOPE.identity] * 2
+    assert first.round_id == again.round_id and not journal.can_refresh(first.round_id)
+    with pytest.raises(ValueError, match="requires_terminal_scope"):
+        journal.finish_refresh(first.round_id)
+    assert all(result.result.business_complete for result in again.families if result.family != announcement.plan.family)
+    restarted, producers, budget, new_requests, calls, transport = _resources(tmp_path)
+    with transport:
+        recovered = RunCompanySyncRound(restarted, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: False)
+    assert recovered.round_id == first.round_id and recovered.business_complete and restarted.can_refresh(first.round_id)
+    assert calls == ["announcements"] and new_requests == [] and len(physical) == 2
+    with SqliteSession(restarted.path) as conn:
+        steps = conn.run("SELECT gaps FROM company_sync_step WHERE round_id=? AND family='announcements' ORDER BY step", (first.round_id,))
+        assert [row[0] for row in steps] == ['["company_raw_capacity_unavailable"]'] * 2 + ["[]"]
+
+
 def test_new_local_rules_and_input_watermark_reopen_only_fields_and_clear_resolved_gap(tmp_path):
     journal, producers, budget, physical, calls, transport = _resources(tmp_path)
     fields = producers[-1]

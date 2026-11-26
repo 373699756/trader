@@ -97,6 +97,20 @@ class CompanyDownloadOperation:
 
 
 @dataclass(frozen=True, slots=True)
+class CompanyRawCapacitySnapshot:
+    used_bytes: int
+    held_bytes: int
+    analysis_held_bytes: int
+    requested_bytes: int
+    capacity_bytes: int
+    analysis_reserve_bytes: int
+    free_bytes: int
+    free_reserve_bytes: int
+    analysis: bool
+    limit: Literal["total_capacity", "download_headroom", "physical_space"]
+
+
+@dataclass(frozen=True, slots=True)
 class CompanyDownloadIssue:
     """A reported source task that requires a new route, deferral or stopping its family."""
 
@@ -105,6 +119,7 @@ class CompanyDownloadIssue:
     material_accepted: bool
     action: Literal["split", "retry", "defer", "stop"]
     retry_at: datetime | None = None
+    capacity: CompanyRawCapacitySnapshot | None = None
 
 
 CompanySourceDownloadProgress = (

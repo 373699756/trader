@@ -227,6 +227,10 @@ def RunCompanySyncRound(
                     item.retry_at = monotonic() + result.retry_after_seconds
                 else:
                     item.deferred=True
+            elif not result.can_continue and "company_raw_capacity_unavailable" in result.gaps:
+                # Retry admission on the next invocation. Other families can
+                # finish their local work without looping on the same disk.
+                item.deferred = True
             if cancel_requested():
                 stopped=True
                 break

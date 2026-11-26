@@ -367,11 +367,22 @@ class CompanyRoundProgress:
         explanation = ExplainCompanyRoundReason(issue.code)
         outcome = "来源材料已接纳" if issue.material_accepted else "本次材料未接纳"
         retry_at = (ProgressField(f"可重试时间 {issue.retry_at.isoformat(timespec='seconds')}"),) if issue.retry_at else ()
+        capacity = issue.capacity
+        capacity_fields: tuple[ProgressField, ...] = ()
+        if capacity is not None:
+            limit = {"total_capacity": "原件总容量", "download_headroom": "下载预留", "physical_space": "磁盘余量"}[capacity.limit]
+            capacity_fields = (ProgressField(
+                f"{'分析' if capacity.analysis else '下载'}预约受限 [{capacity.limit}] {limit}，单位为字节 | "
+                f"本次申请 {capacity.requested_bytes}，原件占用 {capacity.used_bytes}/{capacity.capacity_bytes}，"
+                f"已预约 {capacity.held_bytes}（含分析 {capacity.analysis_held_bytes}），分析预留 {capacity.analysis_reserve_bytes}，"
+                f"磁盘可用 {capacity.free_bytes}，最低保留 {capacity.free_reserve_bytes}"
+            ),)
         self._report(ProgressMessage(
             (
                 *_step_fields(step),
                 ProgressField(_operation_text(issue.operation)),
                 ProgressField(f"{explanation or '来源作业异常'} [{issue.code}]", ProgressLevel.WARNING),
+                *capacity_fields,
                 ProgressField(outcome),
                 ProgressField(next_step),
                 *retry_at,

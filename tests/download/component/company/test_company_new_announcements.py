@@ -16,15 +16,19 @@ from trader.download.application.company_sync import ResumeCompanySyncPendingSte
 from trader.download.domain.company_evidence import BuildCompanyDocumentPolicies, CompanyDocumentExtraction, CompanyDocumentFailure, CompanyRatio, Disclosure, DisclosurePage, StructuredCompanyPage, StructuredCompanyQuery
 from trader.download.domain.company_events import CompanyDataState, CompanyEventStatus, CompanyRiskType
 from trader.download.domain.company_sync import CompanySyncBudget, CompanySyncFamily, CompanySyncStepResult
+from trader.download.entrypoints.company_evidence_progress import CompanyRoundProgress
+from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_announcement_preparation import ReadCompanyAnnouncementCoverage
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
 from trader.download.infra.company_facts_index import CompanyInputReceipt
 from trader.download.infra.company_normalized_index import ReadCompanyNormalizationBaseline
+from trader.download.infra.company_raw_files import CompanyRawFiles
 from trader.download.infra.company_risk_adoption import ReadCompanyRiskAdoptionWitnesses
 from trader.download.infra.company_facts_protocol import RequireCompanyTime
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
 from trader.download.infra.company_sync_producers import CompanyAnnouncementProducer
+from trader.download.infra.terminal_progress import RenderProgress
 from trader.infra.http_contracts import HttpResponse
 from trader.infra.http_transport import RequestsHttpTransport
 from trader.infra.serialization.canonical_codec import CanonicalDigest
@@ -506,6 +510,41 @@ def test_new_original_dispatch_uses_one_attempt_and_continues_after_parser_failu
     with SqliteSession(runtime.material.path) as connection:
         row = connection.run("SELECT body_checked,body_retained FROM disclosures WHERE source_key='new'").require_one()
         assert tuple(row) == ((0, 0) if failure else (1, 1))
+
+
+def test_raw_quota_rejection_reports_the_reservation_before_network_dispatch(tmp_path):
+    runtime, _, _, _ = _runtime(tmp_path)
+    runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
+    item = Disclosure("cninfo", "quota", _SCOPE.codes, "关于收到立案告知书的公告", _SCOPE.cutoff,
+        "https://example.test/quota.PDF", "a" * 64)
+    runtime.material.register_disclosures((item,))
+    raw = CompanyRawFiles(tmp_path / "raw", capacity=1000, analysis_reserve=200, free_reserve=10,
+        maximum_document_bytes=1000)
+    messages = []
+    progress = CompanyRoundProgress(SyncProgress(messages.append, lambda: 0.0), lambda: 0.0)
+
+    class Source:
+        def document_ready(self, disclosure):
+            return False
+
+        def download_document(self, disclosure, *, attempt_limit):
+            with raw.reserve(raw.directory(disclosure), 801):
+                pytest.fail("request must not be dispatched")
+
+    config = CompanySyncConfigurationFixture()
+    producer = CompanyAnnouncementProducer(runtime.inputs, runtime.material, Source(), _SCOPE,
+        sqlite_policy=SqlitePolicyFixture(), extraction_hash=runtime.facts.extraction_hash, configuration=config,
+        policies=BuildCompanyDocumentPolicies(config, "ocr-test", text_identity="text-test"),
+        wall_clock=lambda: _SCOPE.cutoff, observe_download=lambda event: progress.download(event, None))
+    producer.advance(_SCOPE, cancel_requested=lambda: False, deadline=100)
+    result = producer.advance(_SCOPE, cancel_requested=lambda: False, deadline=100)
+    assert not result.can_continue and result.source_calls == 0
+    assert result.gaps == ("company_raw_capacity_unavailable",)
+    line = RenderProgress(messages[-1])
+    for detail in ("[download_headroom]", "本次申请 801", "原件占用 0/1000", "已预约 0（含分析 0）",
+                   "分析预留 200", "磁盘可用", "最低保留 10", "本次材料未接纳"):
+        assert detail in line
+    assert str(tmp_path) not in line
 
 
 @pytest.mark.parametrize("failure", ("temporary", "repeated", "unavailable", "directory_timeout"))
