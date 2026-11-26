@@ -4,6 +4,8 @@
 
 本篇只管训练输入、样本、资源和模型工件。收益研究放c第15章，下载和数据库源字段放d；训练独立运行，不下载缺失资料。
 
+八头交接、V5质量和整作业恢复的待验项见[施工进度](g_施工进度.md#44-任务c输入正常训练及工件交接344347)。
+
 ## 1. 输入固定，双头独立
 
 正常 `train` 固定一个已发布历史，分别训练所选档位和策略，在 `data/train/<档位>/<策略>/` 写入 `model.json` 与 `metadata.json`。Tomorrow 使用下一交易日收盘涨幅达到本档阈值的二元标签。V1 用全市场按日分组 LambdaRank，V2 用浅层 LightGBM 二分类，V3 用 L2 Logistic，V5 用信号日量价及过去 60 步量价序列训练 10 轮 TCN 二分类。工件核对档位、阈值、历史、有效训练设置和实现摘要。D25 对每档的同一信号日比较 D+2 至 D+5 四期累计涨跌幅均值与本档阈值。D25 继续使用全市场 LambdaRank、行业 LightGBM 二分类、行业 L2 Logistic、行业 TCN 二分类，独立收益预测继续供成本准入。
@@ -696,9 +698,7 @@ V1/V2诊断数值指纹对已存LightGBM文本用SDK导出全部树的完整JSON
 4. 同输入、覆盖、参数、质量、输出语义做同介质交替或夹测对照；HDD与SSD分别测，不能只改配置名。
 5. 达标后原子切换实现和全部消费者，再做必要回归和总耗时复测。验证取消、资源归还、失败保留、部分工件、重启复用。
 
-历史记录：阶段289有V1读取回退5.97%，Parquet没有接生产；阶段297仅部分V5质量组完成，不能签完整质量门。旧台账另记四档一次完整真实作业5822.446秒、7249083行一次扫描；这是一次运行事实，不是同输入串并行性能对照，也不说明90分钟目标或SSD已通过。
-
-窗口、线程或调度候选须经同输入实测后再决定；本篇的字段和计量不表示已取得真实全量性能结果。全部计划和证据状态只记g的P49–P60。
+原V1读取回退、Parquet候选及V5质量失败依各自输入保留。当前状态和不同负载的真实结果见[g第4.4节](g_施工进度.md#44-任务c输入正常训练及工件交接344347)及[g第4.5节](g_施工进度.md#45-codexc后台承接原d全部性能实测)。
 
 长任务进度还要面向日常操作：当前阶段、真实行/日期/行业/头的单位、已完成工作、预约等待和心跳。未知总量不显示假百分比；软件资源目标和实际宿主硬限制分别报告。
 
@@ -734,37 +734,11 @@ CPU/内存预约、队列与源批读已有第6.4节计量，但真实全量分�
 
 ### 9.2 P61训练检测清单与A交接
 
-下表保留训练工具的用途和消费者清点；当前路径与公共命令以scripts/README及b第9章为准。公共入口、报告白名单、Makefile与README由A拥有；训练参数、校验、不可变TrainingOptions和命令构造由scripts/training持有，core不再保存全业务DiagnosticOptions。公开选择统一为tools.py的business/module/action，训练内部worker仍由同一入口限定调用；迁移不改变训练输出schema或性能验收结论。
+公开命令与现行参数见[工具说明](../scripts/README.md)。A归口公共入口、执行和报告，C维护 `scripts/training` 的不可变参数、校验、命令构造及训练worker。旧路径与逐调用者清点见 `git show 32ba049e:docs/e_训练设计.md` 第9.2节。
 
-| 当前路径，均在scripts下 | 功能/输入输出与副作用 | 消费者及去留建议 |
-| --- | --- | --- |
-| `training/jobs/training_alignment.py` | 隔离历史全训练/复用/工件加载；也含只读V1 model-inputs；训练模式写外部模型/样本 | `tools.py`、`jobs/training_performance.py`及对应测试；保留功能，按输入与整作业检查分组，不能误删model-inputs |
-| `training/jobs/training_performance.py` | 生成串并行/隔离checkout子进程命令，比较总耗时、身份、复用；无网络，子进程写隔离输出 | 公共入口及alignment的复用检查、`test_training_performance.py`；保留编排与唯一比较实现，不能删除仍被alignment调用的函数 |
-| `training/jobs/benchmark_process.py` | 监督单负载的期限/输出/剩余空间，按出生身份取消受管进程树；日志只新建，停止范围不含其它作业 | performance后台与`test_training_benchmark_process.py`；内部复用，无第二公开入口，运行保护不签性能通过 |
-| `training/samples/training_coverage.py` | 当前具名列样本统计、标签覆盖，只读；不重训 | 公共入口、`test_training_coverage.py`；保留，不将T+1观察投影当完整D25结果 |
-| `training/resources/training_resources.py` | 合成64×64矩阵，CPU预约/原生限制/取消归还；不读历史、不训练 | 公共入口、`test_training_resources.py`；保留资源冒烟，不作为真实四档并行基线 |
-| `training/resources/training_process_measurement.py`、`training/jobs/training_source_guard.py`（325新增/扩展） | 内部资源采样及已发布历史只读守卫；无独立入口，源SQLite只读、提醒不持久化，退出恢复函数/采样线程 | training_alignment及其定向测试；沿338的当前scripts/training目录交付，保留显式模式、空间口径和守卫标记 |
-| `training/samples/training_samples.py` | 五轮样本布局/SQLite–Parquet读取对照，外部checkout及新目录；生成合成库/报告 | 公共入口、`test_training_samples.py`；保留显式实验，不接生产Parquet |
-| `training/samples/sample_comparison_worker.py` | 指定checkout的样本构建/读取工作进程；写外部夹具 | training_samples子进程；保留为内部worker，随模块路径一起切换 |
-| `training/samples/training_read_comparison.py` | 已发布历史夹具及SQLite/Parquet准备、对齐、哈希和读测；写外部夹具 | training_samples导入/子进程；保留内部能力，避免与history布局检查重复建夹具 |
-| `training/samples/v5_samples.py` | 合成或显式只读源子集，宽表/重叠块等价及耗时；写外部样本 | 公共入口、`test_v5_samples.py`；保留序列存储专项，不能当整行业双头训练 |
-| `training/models/v5_training.py` | 最多40股隔离导出及有界行业拟合/加载；写外部历史和模型 | 公共入口、`test_v5_diagnostic.py`；保留有界验证，不能关闭最大行业验收 |
-| `training/models/v5_kernels.py` | V5数值核对/计时，不读活动历史或生产工件 | v5_training的显式kernel模式、`test_v5_diagnostic.py`；保留内部纯计算检查 |
-| `training/models/v5_lite.py` | 配置候选计算及指定样本行业双头质量对照，写外部副本/报告 | 公共入口、`test_v5_lite.py`；保留既有质量门，不把缺少样本的计算结果写质量通过 |
-| `training/resources/memory.py` | 受限V3隔离重排训练、重复一致性、RSS及报告，显式history/train/sample/output路径；只在执行后设置资源环境，导入无资源设置副作用 | 统一`training/resources/memory`动作及`test_check_tomorrow_training_memory.py`；无独立脚本入口，保留原重排证据schema及隔离围栏 |
+隔离比较显式绑定历史／配置／样本根、档位、基线检出和独立输出，保留期限、取消及失败／不适用状态。区分纯检查、合成写入、真实隔离拟合。内存检查输出 `tomorrow_training_memory_gate` 供 `ReadTomorrowTrainingMemoryEvidence` 核对重排证据，字段、摘要及身份要求继续适用。
 
-还要与A共同核对`infra/database/database_layout_comparison.py`的训练样本/窄扫描负载、`download/history/history_sqlite_performance.py`的training_projection，以及`download/history/history_parquet.py`的共享投影，owner不能仅凭文件名判定。前两者是跨业务检查，不由C擅自搬走；Parquet仅供现有诊断比较，不能因生产未采用就删除有效研究能力。
-
-内存检查由`core/catalog.py`的memory动作注册，对应回归位于`tests/training/unit/scripts/test_check_tomorrow_training_memory.py`，`tests/conftest.py`按`tests/training/`目录推导`train`标记；`scripts/engineering/quality/debt.py::TOP_LEVEL_SCRIPT_MANIFEST`只核对tools.py公开根入口，不维护另一份内存入口名单。其输出schema `tomorrow_training_memory_gate`被产品`src/trader/training/infra/history/repack_training_evidence.py::ReadTomorrowTrainingMemoryEvidence`用于重排证据核验；该证据消费者必须同步保留字段、摘要和身份要求，不能只更新入口命令就删旧报告合同。
-
-以下交接记录保留原接口需求及核销位置；321/338/345已交付部分不重复派发，真实采用和性能仍按g取证：
-
-1. 独立train继续使用 `ExecuteSelectedTraining(runtime, scoring_profiles, *, history_root=None, training_root=None)`；它返回聚合退出码，所选档位和资源由唯一组合根组装。切换CLI时保留主线程取消及原有档位选择，不添加自动下载fallback。
-2. 基线 `e69d3e02`的 `ExecuteDownloadTrain`旧消费者包括 `entrypoints/cli.py::_run_history_download`及两项期待“先下载”的训练测试；321已切换独立训练入口并删除旧组合函数和相应断言。它们只作历史定位，不能再按旧路径新增兼容层或作为当前验收用例。
-3. 作业级不可变资源类型及第6.2节参数已经345接通，C获授权完成该批公共解析、bootstrap注入和全部训练消费者；后续公共边界仍由A维护。`features.json`由A定义，C维护第3.5节列序、单位和缺失需求，不改变公式owner。
-4. 统一检测需要保留原history/config/样本根、所选profile、隔离输出目录、baseline checkout、候选配置、超时与取消语义；显式标记纯检查、合成写入和真实隔离拟合。当前每项报告的失败/取消/超时/不适用不能压成一个空结果；最终参数与白名单由A统一裁决。
-
-独立train验收至少包含：供应商调用为0、下载断点不变、资料缺失明确失败、所选档位及八头工件按合同、取消退出与资源归还、单头/校准/部分落盘失败保留旧模型。各切片已有功能及真实训练证据见g原325/333/334/337/343–347；本节不新增或补签证据，当前身份的整体验收和服务采用仍分列。
+正常入口由唯一组合根调用训练用例。独立验收覆盖零供应商请求、下载断点保全、缺资料明确失败、八头工件、取消归还资源，以及单头／校准／部分落盘失败保留旧模型。各切片实际回执见g原325／333／334／337／343–347。
 
 ### 9.3 V1/V5专项数值与相对质量验收
 
