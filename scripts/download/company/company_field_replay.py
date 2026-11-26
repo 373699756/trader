@@ -29,7 +29,8 @@ from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_evidence_sql import COMPANY_MATERIAL_STATEMENTS
 from trader.download.infra.company_source_schema import COMPANY_SOURCE_SCHEMA
 from trader.download.infra.company_facts_index import CompanyPublicationIdentity, ReadCompanyPublicationIdentity, SQLiteCompanyFactsIndex, CompanyInputReceipt
-from trader.download.infra.company_normalized_index import SQLiteCompanyNormalizedIndex, ReadCompanyNormalizationBaseline
+from trader.download.infra.company_normalized_index import SQLiteCompanyNormalizedIndex, ReadCompanyNormalizationBaseline, ReadCompanyNormalizationReceipts
+from trader.download.infra.company_risk_adoption import ProjectCompanyRiskAdoptions
 from trader.download.infra.company_material_index import SQLiteCompanyMaterialIndex
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash, PrepareCompanyFieldResults
 from trader.download.infra.company_field_recovery import RegisterCompanyMaterialDependencies
@@ -41,7 +42,6 @@ from trader.infra.sqlite_connection import EnsureSqliteSchema, SqliteConnectionO
 from trader.infra.sqlite_policy import SqliteIoPolicy
 from trader.infra.settings.data_paths import DataPaths
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
-from trader.download.infra.company_facts_protocol import RequireCompanyTime
 from trader.infra.sqlite_publication import PublishSqliteFile, VerifySqliteFile
 
 
@@ -539,10 +539,10 @@ def PrepareCompanyNormalNamespace(
         # financial research cohort remains outside normal formal adoption.
         facts = tuple(replace(current, financial=previous.financial, latest_financial=previous.latest_financial,
             financial_state=previous.financial_state) for current, previous in zip(prepared.facts, old, strict=True))
-        original_receipts = tuple(CompanyInputReceipt(row[0], row[1], row[2], row[3], row[4], row[5], RequireCompanyTime(row[6]), row[7], row[8])
-            for row in original.run("SELECT * FROM company_input_receipt ORDER BY source,source_key,code,record_hash,extraction_hash"))
+        original_receipts = ReadCompanyNormalizationReceipts(original)
         receipts = tuple(item for item in prepared.receipts if item.source != "eastmoney_financial" or item in original_receipts)
         baseline = replace(prepared, facts=facts, receipts=receipts, identity=source_identity, financial_observations=())
+        expected_reader_facts = ProjectCompanyRiskAdoptions(proven, facts, prepared.identity.extraction_hash)
     paths = DataPaths(directory)
     stable = BackupCompanyCollection(collection_path, paths.company_sources, sqlite_policy, deadline, material_only=True)
     target_documents = CompanyDocumentFiles(paths.company_documents, max_text_characters=2_000_000,
@@ -581,7 +581,7 @@ def PrepareCompanyNormalNamespace(
         "source_data_writes": 0, "network_requests": 0, "source_backup_stable": stable,
         "original_source_hash": source_identity.content_hash.hex(), "proven_source_hash": prepared.identity.content_hash.hex(),
         "publication_hash": reader.publication_identity(), "source_rule_hash": prepared.field_rules_hash.hex(),
-        "stocks": len(codes), "fields": len(fields.results), "reader_equal": reader.read(codes) == facts,
+        "stocks": len(codes), "fields": len(fields.results), "reader_equal": reader.read(codes) == expected_reader_facts,
         "original_financials_preserved": all((left.financial, left.latest_financial, left.financial_state) ==
             (right.financial, right.latest_financial, right.financial_state) for left, right in zip(facts, old, strict=True)),
         "original_risks_preserved": all(left.risk_events == right.risk_events for left, right in zip(facts, old, strict=True)),

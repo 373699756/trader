@@ -13,6 +13,8 @@ from trader.download.domain.company_event_extraction import CompanyDocumentNeeds
 from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy, CompanyEvidenceLink, CompanyReviewReason
 from trader.download.domain.company_evidence import CompanyDocument, CompanyRatio, EvidenceMarket
 from trader.download.domain.company_facts import CompanyFacts
+from trader.download.domain.company_reduction_scope import IsCompanyJudicialReductionNotice
+from trader.download.domain.company_regulatory_warning import IsCompanyRegulatorWarningNotice
 from trader.download.domain.company_unlock_notice import ConfirmCompanyUnlockListing, IsCompanyUnlockListingNotice, IsCompanyUnlockListingRevision
 from trader.download.infra.company_announcement_links import LinkCompanyAnnouncementNumbers
 from trader.download.infra.company_fact_inputs import CompanyCoverageComplete, DecodeCompanyDisclosure
@@ -93,6 +95,7 @@ def PrepareCompanyAnnouncements(
     unlock_documents: list[CompanyDocument] = []
     reviews: list[CompanyReviewReason] = []
     identities: list[tuple[str, str, str, bytes, str]] = []
+    reproofs: list[CompanyInputReceipt] = []
     pending_retained = 0
     unlock_pending = 0
     rule_id = rule_identity.hex()
@@ -128,10 +131,23 @@ def PrepareCompanyAnnouncements(
         receipt = formal.run("""SELECT outcome,body_hash,policy_id FROM company_input_receipt
             WHERE code=? AND source=? AND source_key=? AND record_hash=? AND extraction_hash=?
             AND published_at<=?""", (previous.code, item.source, item.identity, item.digest, extraction_hash, EncodeCompanyTime(cutoff))).fetchone()
-        if receipt is not None and receipt[1] == body_hash and (
-            receipt[0] == "valid" or receipt[0] == "directory_observed" and receipt[2] == proof_policy
-        ):
-            continue
+        reproof = None
+        if receipt is not None and receipt[1] == body_hash:
+            if receipt[0] == "valid":
+                if receipt[2] == proof_policy or not (IsCompanyJudicialReductionNotice(title) or IsCompanyRegulatorWarningNotice(title)):
+                    continue
+                # Preserve the original valid receipt and its time. Re-evaluate this exact retained
+                # input once under the current local rules and commit the attempt with its outcome.
+                policy = "announcement_risk:" + rule_id
+                rule_hash = hashlib.sha256(policy.encode()).digest()
+                if formal.run("""SELECT 1 FROM company_input_receipt WHERE source=? AND source_key=? AND code=?
+                    AND record_hash=? AND extraction_hash=? AND body_hash=? AND policy_id=? AND outcome='field_attempted'""",
+                    (item.source, item.identity, previous.code, item.digest, rule_hash, body_hash, policy)).fetchone() is not None:
+                    continue
+                reproof = CompanyInputReceipt(item.source, item.identity, previous.code, item.digest, rule_hash,
+                    body_hash, cutoff, "field_attempted", policy)
+            elif receipt[0] == "directory_observed" and receipt[2] == proof_policy:
+                continue
         if formal.run("""SELECT 1 FROM company_input_receipt WHERE code=? AND source=? AND source_key=?
             AND outcome='valid' AND (record_hash<>? OR body_hash<>?) LIMIT 1""",
             (previous.code, item.source, item.identity, item.digest, body_hash)).fetchone() is not None:
@@ -155,6 +171,8 @@ def PrepareCompanyAnnouncements(
             raise ValueError("company_announcement_body_hash_mismatch")
         selected.append(CompanyDocument(item, text, True))
         identities.append((item.source, item.identity, item.digest, body_hash, proof_policy))
+        if reproof is not None:
+            reproofs.append(reproof)
     candidates = []
     verified_candidate_ids = []
     for row in collected.run("""SELECT link.payload,d.source,d.source_key,d.record_hash,d.body_hash,d.published_at FROM document_link_candidates link
@@ -178,9 +196,11 @@ def PrepareCompanyAnnouncements(
         revision_reviews=tuple(reviews), verified_candidate_ids=tuple(verified_candidate_ids))
     facts, unlock_ids = _prepare_unlock_events(normalized.facts, unlock_documents, unlock_observations, cutoff)
     verified_ids = frozenset((*normalized.verified_evidence_ids, *unlock_ids))
+    rechecked_ids = {receipt.source_key for receipt in reproofs}
     receipts = tuple(CompanyInputReceipt(source, key, previous.code, record, extraction_hash, body, cutoff,
         "valid" if key in verified_ids else "directory_observed", policy)
-        for source, key, record, body, policy in identities)
+        for source, key, record, body, policy in identities
+        if key not in rechecked_ids) + tuple(reproofs)
     referenced = {key for event in facts.risk_events + facts.positive_events for key in event.evidence_ids}
     referenced.update(review.evidence_id for review in facts.review_reasons if review.evidence_id is not None)
     links = tuple(CompanyPublishedEvidenceLink(previous.code, document.disclosure.source, document.disclosure.digest,

@@ -6,6 +6,7 @@ import hashlib
 import re
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 
 from trader.download.domain.company_announcement_numbers import ExtractCompanyAnnouncementNumbers
 from trader.download.domain.company_events import CompanySubject, ReductionPlan
@@ -70,6 +71,17 @@ _GROUP_PERIOD = (
     r"([\u4e00-\u9fffA-Za-z]{2,30})、([\u4e00-\u9fffA-Za-z]{2,30})将于本减持计划公告之日起"
     r"[一二三四五六七八九十0-9]{1,4}个交易日之后[（(]即" + _INTERVAL + r"[）)]的三个月内进行"
 )
+_JUDICIAL_TITLE = r"(?:[\u4e00-\u9fffA-Za-z]{2,60}股份有限公司)?(?:关于)?控股股东被动减持股份的提示性公告"
+_JUDICIAL_QUANTITY = r"(?:[0-9]{1,15}|[0-9]{1,3}(?:[,，][0-9]{3}){1,4})(?:\.[0-9]{1,4})?"
+_JUDICIAL_CASE = r"[（(]20[0-9]{2}[）)][\u4e00-\u9fff][0-9]{1,4}执[0-9]{1,8}号(?:之[一二三四五六七八九十0-9]+)?"
+_JUDICIAL_ORDER = (
+    r"裁定被执行人(?P<holder>[\u4e00-\u9fffA-Za-z]{2,30})所在的证券公司营业部"
+    r"在收到《执行裁定书》之日起[1-9][0-9]{0,2}个交易日内"
+    r"(?:[（(]具体由证券公司营业部在相关股份可售状态变更完成之日起[1-9][0-9]{0,2}个交易日内[）)])?"
+    r"[，,]通过证券交易所集中竞价交易方式[，,](?P<sale>将被执行人(?P=holder)名下持有的"
+    r"(?P<issuer>[\u4e00-\u9fffA-Za-z]{2,24})(?P<quantity>" + _JUDICIAL_QUANTITY + r")(?P<unit>万?)股股票"
+    r"[（(]占公司总股本的(?P<ratio>[0-9]+(?:\.[0-9]+)?)[%％][）)]予以卖出)"
+)
 COMPANY_QUALIFIED_REDUCTION_DIGEST = hashlib.sha256(
     "\0".join((_SUMMARY, _NUMBER, _DECLARATION, _HOLDER, _HOLDER_CONTEXT, _HOLDING, _PLAN,
                _OTHER_ACTOR, _OTHER_QUALIFICATION, _OUTSIDE_ACTOR, _SINGLE_SUMMARY, _SINGLE_ISSUER, _SINGLE_HOLDING,
@@ -80,10 +92,11 @@ COMPANY_QUALIFIED_REDUCTION_DIGEST = hashlib.sha256(
 
 @dataclass(frozen=True, slots=True)
 class CompanyQualifiedReduction:
-    start_date: date
-    end_date: date
+    start_date: date | None
+    end_date: date | None
     planned_ratio_pct: float | None
     statement: str
+    case_id: str | None = None
 
     @property
     def plan(self) -> ReductionPlan:
@@ -92,6 +105,8 @@ class CompanyQualifiedReduction:
 
 def ExtractCompanyQualifiedReduction(document: CompanyDocument, subject: CompanySubject) -> CompanyQualifiedReduction | None:
     title = "".join(document.disclosure.title.split())
+    if IsCompanyJudicialReductionNotice(title):
+        return _judicial_plan(document) if subject is CompanySubject.CONTROLLING_SHAREHOLDER else None
     if (subject not in {CompanySubject.MAJOR_SHAREHOLDER, CompanySubject.CONTROLLING_SHAREHOLDER} or len(document.disclosure.codes) != 1
         or "预披露" not in title or "减持" not in title
         or any(word in title for word in ("更正", "修订", "变更", "补充"))
@@ -165,6 +180,46 @@ def ExtractCompanyQualifiedReduction(document: CompanyDocument, subject: Company
     if start > end or not 0 <= ratio <= 100 or quantity <= 0:
         return None
     return CompanyQualifiedReduction(start, end, ratio, plan[0])
+
+
+def IsCompanyJudicialReductionNotice(title: str) -> bool:
+    return re.fullmatch(_JUDICIAL_TITLE, "".join(title.split())) is not None
+
+
+def _judicial_plan(document: CompanyDocument) -> CompanyQualifiedReduction | None:
+    # The court order and the issuer's single-holder plan table must independently agree.
+    if len(document.disclosure.codes) != 1 or ExtractCompanyAnnouncementNumbers(document.text).issuer_codes != document.disclosure.codes:
+        return None
+    body = "".join(document.text.split())
+    summary, separator, plan = body.partition("二、减持计划的主要内容")
+    if (not separator or body.count(separator) != 1 or "上述减持主体无一致行动人" not in summary
+        or "截至本公告披露日，上述股票尚未被处置" not in body
+        or any(marker in body for marker in ("撤回", "撤销", "中止执行", "终结执行", "暂缓执行", "取消执行", "已被处置", "处置完毕",
+                                              "未收到", "若收到", "如收到", "拟申请执行", "不予执行",
+                                              "分别", "各自", "共同减持", "其他股东", "另有股东", "其他被执行人"))):
+        return None
+    issuers = re.findall(r"(?:证券|股票)简称[：:]([^\s：:，,]{2,24})", document.text)
+    declarations = re.findall(r"公司控股股东([\u4e00-\u9fffA-Za-z]{2,80}有限公司)[（(]以下简称[“\"]([\u4e00-\u9fffA-Za-z]{2,30})[”\"]", summary)
+    cases = re.findall(r"收到[^。；;]{2,80}人民法院[^。；;]{0,80}发出的《执行裁定书》[〔【](%s)[〕】]" % _JUDICIAL_CASE, summary)
+    orders = tuple(re.finditer(r"[，,]" + _JUDICIAL_ORDER, summary))
+    if len(issuers) != 1 or len(declarations) != 1 or len(cases) != 1 or len(orders) != 1 or re.findall(_JUDICIAL_CASE, body) != cases:
+        return None
+    holder, alias = declarations[0]
+    order = orders[0]
+    if (re.search(r"[及与和]", holder) or order["holder"] != alias or order["issuer"] != issuers[0]
+        or summary.count("裁定被执行人") != 1 or body.count("予以卖出") != 1):
+        return None
+    table = plan.partition("减持方式及对应减持数量")[0]
+    match = re.fullmatch(r"股东名称" + re.escape(holder) + r"计划减持数量(" + _JUDICIAL_QUANTITY
+                         + r")股计划减持比例([0-9]+(?:\.[0-9]+)?)[%％]", table)
+    if match is None or plan.count("股东名称") != 1 or plan.count("计划减持比例") != 1:
+        return None
+    quantity = Decimal(re.sub("[,，]", "", order["quantity"])) * (10000 if order["unit"] == "万" else 1)
+    ratio = Decimal(order["ratio"])
+    if (quantity <= 0 or quantity != quantity.to_integral_value() or quantity != Decimal(re.sub("[,，]", "", match[1]))
+        or not 0 < ratio <= 100 or ratio != Decimal(match[2])):
+        return None
+    return CompanyQualifiedReduction(None, None, float(ratio), order["sale"], cases[0])
 
 
 def _single_holder(document: CompanyDocument, body: str, subject: CompanySubject) -> CompanyQualifiedReduction | None:
@@ -300,4 +355,5 @@ __all__ = [
     "COMPANY_REDUCTION_NONPARTICIPANT_DECLARATION",
     "CompanyQualifiedReduction",
     "ExtractCompanyQualifiedReduction",
+    "IsCompanyJudicialReductionNotice",
 ]

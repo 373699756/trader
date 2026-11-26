@@ -1356,7 +1356,7 @@ def ExecuteCompanySync(
         resources.enter_context(ProcessLock(paths.company_raw / "evidence.lock", label="sync company"))
         formal_path = paths.company
         facts = SQLiteCompanyFactsIndex(formal_path, event_policy=event_policy, sqlite_policy=sqlite_policy,
-                                       cancel_requested=stopped, io_budget=io_budget)
+                                       cancel_requested=stopped, io_budget=io_budget, adoption_clock=ShanghaiClock(_utc_now).now)
         reader = company_facts_reader.SQLiteCompanyEvidenceReader(formal_path, event_policy=event_policy,
             sqlite_policy=sqlite_policy, io_budget=io_budget)
         journal = SQLiteCompanySyncRoundJournal(paths.company_sync, sqlite_policy=sqlite_policy,

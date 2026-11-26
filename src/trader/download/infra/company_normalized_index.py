@@ -24,6 +24,10 @@ from trader.download.domain.company_source_records import (
     CompanyFinancialBatchCoverage, CompanyFinancialSourceObservation, CompanyFinancialSourcePage,
 )
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
+from trader.download.infra.company_risk_adoption import (
+    COMPANY_RISK_ADOPTION, CompanyRiskAdoptionWitness, CompanyRiskAdoptionWitnessDigest,
+    ProjectCompanyRiskAdoptions, ReadCompanyRiskAdoptionWitnesses,
+)
 from trader.download.infra.company_field_result_rows import ReadCompanyFactsWithFieldResults, ReadCompanyFieldResults
 from trader.download.infra.company_facts_index import (
     CompanyInputReceipt, CompanyPublicationIdentity, ReadCompanyPublicationIdentity, SQLiteCompanyFactsIndex,
@@ -59,6 +63,7 @@ class CompanyNormalizationBaseline:
     field_rules_hash: bytes
     document_links: tuple[CompanyPublishedEvidenceLink, ...] = ()
     financial_observations: tuple[CompanyFinancialSourceObservation, ...] = ()
+    risk_adoptions: tuple[CompanyRiskAdoptionWitness, ...] = ()
 
 
 class SQLiteCompanyNormalizedIndex:
@@ -144,9 +149,10 @@ class SQLiteCompanyNormalizedIndex:
                 if parent is not None and (
                     ReadCompanyFactRows(connection, codes) != baseline.facts
                     or ReadCompanyFieldResults(connection, codes) != tuple(sorted(baseline.fields, key=lambda item: (item.code, item.event_id, item.field)))
-                    or _receipts(connection) != tuple(sorted(baseline.receipts, key=lambda item: (
+                    or ReadCompanyNormalizationReceipts(connection) != tuple(sorted(baseline.receipts, key=lambda item: (
                         item.source, item.source_key, item.code, item.record_hash, item.extraction_hash,
                     )))
+                    or ReadCompanyRiskAdoptionWitnesses(connection) != (baseline.risk_adoptions if writer is self._facts else ())
                     or ReadCompanyDocumentLinks(connection, codes) != tuple(sorted(baseline.document_links, key=lambda item: (item.code, item.source, item.link.evidence_id)))
                     or ReadCompanyFinancialObservations(connection, codes) != tuple(sorted(
                         baseline.financial_observations, key=lambda item: (*item.business_key, item.record_hash),
@@ -156,7 +162,8 @@ class SQLiteCompanyNormalizedIndex:
             if parent is None:
                 writer.publish(baseline.facts, dict(baseline.sources), None, max(baseline.identity.published_at, *(fact.published_at for fact in baseline.facts)),
                                receipts=baseline.receipts, field_results=baseline.fields, field_rules_hash=baseline.field_rules_hash,
-                               document_links=baseline.document_links, financial_observations=baseline.financial_observations)
+                               document_links=baseline.document_links, financial_observations=baseline.financial_observations,
+                               seed_witnesses=baseline.risk_adoptions if writer is self._facts else ())
             else:
                 writer.publish_file()
         with self._session(self.path, sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection, immediate=True):
@@ -416,13 +423,15 @@ class SQLiteCompanyNormalizedIndex:
                     changed = tuple(item for item in facts if item != previous.get(item.code))
                     observations = ReadRoundCompanyFinancialObservations(source, scope)
                     financial_keys = {(item.financial.code, item.source_key, item.record_hash) for item in observations}
-                    receipts = tuple(item for item in _receipts(source, include_financial_scoring=False) if item.source != "eastmoney_financial"
+                    receipts = tuple(item for item in ReadCompanyNormalizationReceipts(source, include_financial_scoring=False) if item.source != "eastmoney_financial"
                                      or (item.code, item.source_key, item.record_hash) in financial_keys)
                     sources = _sources(source)
                     links = ReadCompanyDocumentLinks(source, codes)
                 recovery_matches = False
                 if marker is not None:
                     try:
+                        if not scoring:
+                            ProjectCompanyRiskAdoptions(formal, facts, self._facts.extraction_hash)
                         recovery_matches = (
                             not changed and (bool(scoring) or fields == ReadCompanyFieldResults(formal, codes))
                             and (_same_field_rules(source, formal) if restore_only or scoring else _has_current_field_rules(formal))
@@ -430,7 +439,7 @@ class SQLiteCompanyNormalizedIndex:
                             and (observations == ReadCompanyFinancialScoringScopeObservations(formal, scope, parent.extraction_hash)
                                  if scoring and parent is not None else set(observations).issubset(ReadCompanyFinancialObservations(formal, codes)))
                             and (receipts == _financial_scoring_receipts(formal, scope)
-                                 if scoring else set(receipts).issubset(_receipts(formal, include_financial_scoring=False)))
+                                 if scoring else set(receipts).issubset(ReadCompanyNormalizationReceipts(formal, include_financial_scoring=False)))
                         )
                     except ValueError as exc:
                         raise ValueError("company_normalization_confirmation_changed") from exc
@@ -509,12 +518,12 @@ class SQLiteCompanyNormalizedIndex:
             parent, sources = ReadCompanyPublicationIdentity(connection), _sources(connection)
             if parent is None:
                 raise ValueError("company_normalization_identity_missing")
-            matches = previous == ordered and set(receipts).issubset(_receipts(connection))
+            matches = previous == ordered and set(receipts).issubset(ReadCompanyNormalizationReceipts(connection))
             scope = CanonicalDigest(("field_proof", codes, cutoff, field_rules_hash.hex(), _prepared_digest(ordered, receipts)))
             generation_row = connection.run("SELECT generation FROM company_round_generation WHERE scope=?", (scope,)).fetchone()
             if matches and generation_row is None:
                 with self._session(self._facts.path, sqlite_policy=self._sqlite_policy) as formal, SqliteTransaction(formal):
-                    if _has_current_field_rules(formal) and ordered == ReadCompanyFieldResults(formal, codes) and set(receipts).issubset(_receipts(formal)):
+                    if _has_current_field_rules(formal) and ordered == ReadCompanyFieldResults(formal, codes) and set(receipts).issubset(ReadCompanyNormalizationReceipts(formal)):
                         return ()
         if generation_row is not None:
             return self._publish_scope(scope, codes, cutoff)
@@ -643,10 +652,12 @@ def _decode_receipt(row: Row) -> CompanyInputReceipt:
     return CompanyInputReceipt(row[0], row[1], row[2], row[3], row[4], row[5], RequireCompanyTime(row[6]), row[7], row[8])
 
 
-def _receipts(connection: SqliteConnection, *, include_financial_scoring: bool = True) -> tuple[CompanyInputReceipt, ...]:
-    predicate = "" if include_financial_scoring else "WHERE source<>'eastmoney_financial' OR source_key NOT GLOB 'scoring:*' "
+def ReadCompanyNormalizationReceipts(connection: SqliteConnection, *, include_financial_scoring: bool = True) -> tuple[CompanyInputReceipt, ...]:
+    # Formal visibility witnesses belong to the committed destination, never to the staged inputs.
+    predicate = "" if include_financial_scoring else "AND (source<>'eastmoney_financial' OR source_key NOT GLOB 'scoring:*') "
     return tuple(_decode_receipt(row) for row in connection.run(
-        "SELECT * FROM company_input_receipt " + predicate + "ORDER BY source,source_key,code,record_hash,extraction_hash",
+        "SELECT * FROM company_input_receipt WHERE policy_id NOT GLOB ? " + predicate +
+        "ORDER BY source,source_key,code,record_hash,extraction_hash", (COMPANY_RISK_ADOPTION + "*",),
     ))
 
 
@@ -676,8 +687,11 @@ def _prepared_digest(
 
 
 def CompanyNormalizationBaselineDigest(baseline: CompanyNormalizationBaseline) -> str:
-    return CanonicalDigest((baseline.facts, _prepared_digest(baseline.fields, baseline.receipts), baseline.sources,
-                            _identity_values(baseline.identity), baseline.field_rules_hash.hex(), baseline.document_links, baseline.financial_observations))
+    content: tuple[object, ...] = (baseline.facts, _prepared_digest(baseline.fields, baseline.receipts), baseline.sources,
+                            _identity_values(baseline.identity), baseline.field_rules_hash.hex(), baseline.document_links, baseline.financial_observations)
+    if baseline.risk_adoptions:
+        content = (*content, CompanyRiskAdoptionWitnessDigest(baseline.risk_adoptions))
+    return CanonicalDigest(content)
 
 
 def ReadCompanyNormalizationBaseline(connection: SqliteConnection) -> CompanyNormalizationBaseline:
@@ -688,9 +702,12 @@ def ReadCompanyNormalizationBaseline(connection: SqliteConnection) -> CompanyNor
     codes = tuple(row[0] for row in connection.run("SELECT code FROM company_facts ORDER BY code"))
     if not 1 <= len(codes) <= 12000:
         raise ValueError("company_normalization_baseline_population_invalid")
-    return CompanyNormalizationBaseline(ReadCompanyFactRows(connection, codes), ReadCompanyFieldResults(connection, codes),
-        _receipts(connection), _sources(connection), identity, CompanyFieldProofRulesHash(),
-        ReadCompanyDocumentLinks(connection, codes), ReadCompanyFinancialObservations(connection, codes))
+    facts = ReadCompanyFactRows(connection, codes)
+    ProjectCompanyRiskAdoptions(connection, facts, identity.extraction_hash)
+    return CompanyNormalizationBaseline(facts, ReadCompanyFieldResults(connection, codes),
+        ReadCompanyNormalizationReceipts(connection), _sources(connection), identity, CompanyFieldProofRulesHash(),
+        ReadCompanyDocumentLinks(connection, codes), ReadCompanyFinancialObservations(connection, codes),
+        ReadCompanyRiskAdoptionWitnesses(connection))
 
 
-__all__ = ["CompanyNormalizationBaseline", "CompanyNormalizationBaselineDigest", "ReadCompanyNormalizationBaseline", "SQLiteCompanyNormalizedIndex"]
+__all__ = ["CompanyNormalizationBaseline", "CompanyNormalizationBaselineDigest", "ReadCompanyNormalizationBaseline", "ReadCompanyNormalizationReceipts", "SQLiteCompanyNormalizedIndex"]

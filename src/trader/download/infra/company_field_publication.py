@@ -44,7 +44,7 @@ def CompanyFieldProofRulesHash() -> bytes:
         "domain/company_announcement_normalization.py", "domain/company_announcement_numbers.py", "infra/company_announcement_preparation.py",
         "domain/company_unlock_notice.py",
         "domain/company_event_extraction.py", "domain/company_repurchase_fields.py", "domain/company_contract_fields.py", "domain/company_annual_report.py",
-        "domain/company_reduction_scope.py", "domain/company_field_source.py", "domain/company_field_plan.py",
+        "domain/company_reduction_scope.py", "domain/company_regulatory_warning.py", "domain/company_field_source.py", "domain/company_field_plan.py",
         "domain/company_field_results.py", "infra/company_field_publication.py", "infra/company_annual_field_publication.py", "infra/company_field_recovery.py",
     ):
         digest.update(relative.encode())

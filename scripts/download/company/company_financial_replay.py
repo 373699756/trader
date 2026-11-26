@@ -39,7 +39,9 @@ from trader.download.domain.company_source_records import CompanyFinancialSource
 from trader.download.infra.company_facts_index import CompanyInputReceipt, SQLiteCompanyFactsIndex
 from trader.download.infra.company_facts_protocol import RequireCompanyTime, DecodeCompanyLabel, EVIDENCE_SOURCES
 from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
-from trader.download.infra.company_normalized_index import CompanyNormalizationBaseline, CompanyNormalizationBaselineDigest, SQLiteCompanyNormalizedIndex
+from trader.download.infra.company_normalized_index import CompanyNormalizationBaseline, CompanyNormalizationBaselineDigest, SQLiteCompanyNormalizedIndex, ReadCompanyNormalizationReceipts
+from trader.download.infra.company_risk_adoption import ProjectCompanyRiskAdoptions, ReadCompanyRiskAdoptionWitnesses
+from trader.download.infra.company_document_link_rows import ReadCompanyDocumentLinks
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
 from trader.download.infra.company_financial_observations import ReadCommittedCompanyFinancialReports, ReadCompanyFinancialObservations
 from trader.download.infra.company_structured_source import DecodeCompanyFinancialSourcePage
@@ -308,7 +310,7 @@ def AuditCompanyNormalizedRound(
     reader = SQLiteCompanyEvidenceReader(formal_writer.path, event_policy=event_policy, sqlite_policy=sqlite_policy)
     seeded_facts: list[CompanyFacts] = []
     reader.visit(codes, seeded_facts.append)
-    seed_consumer_equal = tuple(seeded_facts) == original_facts
+    seed_consumer_equal = tuple(seeded_facts) == research.consumer_facts
     failed: str | None = None
     result = None
     try:
@@ -325,6 +327,7 @@ def AuditCompanyNormalizedRound(
         failed = str(exc)
     with SqliteSession(formal_writer.path, options, sqlite_policy=sqlite_policy) as formal:
         current_facts = ReadCompanyFactRows(formal, codes)
+        expected_consumer_facts = ProjectCompanyRiskAdoptions(formal, current_facts, baseline.identity.extraction_hash)
         current_fields = ReadCompanyFieldResults(formal, codes)
         identity = ReadCompanyPublicationIdentity(formal)
         current_receipts = tuple(CompanyInputReceipt(row[0], row[1], row[2], row[3], row[4], row[5], RequireCompanyTime(row[6]), row[7], row[8])
@@ -347,7 +350,7 @@ def AuditCompanyNormalizedRound(
         "stocks": len(codes), "fields": len(original_fields), "old_verified": len(old_verified),
         "current_rule_reproved": reproved, "current_rule_unreproved": len(old_verified) - reproved,
         "material_reads": material_reads, "seed_consumer_equal": seed_consumer_equal,
-        "consumer_equal": tuple(final_facts) == current_facts,
+        "consumer_equal": tuple(final_facts) == expected_consumer_facts,
         "publication_hash": identity.content_hash.hex() if identity else None,
         "original_risks_preserved": risk_preserved, "original_receipts_preserved": receipt_preserved,
         "original_fields_preserved": original_fields_preserved,
@@ -464,11 +467,11 @@ def AuditCompanyNormalizedSourceStability(
             source_facts = ReadCompanyFactRows(formal,codes)
             source_fields = ReadCompanyFieldResults(formal,codes)
             normalized_fields = ReadCompanyFieldResults(normalized,codes)
-            receipts = tuple(CompanyInputReceipt(row[0],row[1],row[2],row[3],row[4],row[5],RequireCompanyTime(row[6]),row[7],row[8])
-                for row in formal.run("SELECT * FROM company_input_receipt ORDER BY source,source_key,code,record_hash,extraction_hash"))
+            receipts = ReadCompanyNormalizationReceipts(formal)
             sources = tuple((row[0],DecodeCompanyLabel(EVIDENCE_SOURCES,row[1])) for row in formal.run("SELECT source_key,source FROM company_evidence_ref ORDER BY source_key"))
             seed = normalized.run("SELECT baseline_digest,source_content_hash,field_rules_hash,complete FROM company_normalization_seed WHERE singleton=1").require_one()
-            baseline = CompanyNormalizationBaseline(source_facts,normalized_fields,receipts,sources,source_identity,CompanyFieldProofRulesHash())
+            baseline = CompanyNormalizationBaseline(source_facts,normalized_fields,receipts,sources,source_identity,CompanyFieldProofRulesHash(),
+                ReadCompanyDocumentLinks(normalized, codes), risk_adoptions=ReadCompanyRiskAdoptionWitnesses(formal))
             bound = seed[0] == CompanyNormalizationBaselineDigest(baseline) and seed[1] == source_identity.content_hash and seed[2] == baseline.field_rules_hash and seed[3] == 1
             values_equal = tuple((item.code,item.event_id,item.field,item.value) for item in source_fields) == tuple((item.code,item.event_id,item.field,item.value) for item in normalized_fields)
         stable_view = versions == tuple(connection.run("PRAGMA data_version").require_one()[0] for connection in (raw,formal,normalized))

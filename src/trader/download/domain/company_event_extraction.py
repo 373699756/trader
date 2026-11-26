@@ -30,9 +30,10 @@ from trader.download.domain.company_events import (
     RepurchasePurpose,
 )
 from trader.download.domain.company_evidence import CompanyDocument
+from trader.download.domain.company_regulatory_warning import IsCompanyRegulatorWarningNotice, ReadCompanyRegulatorWarningDecision
 from trader.download.domain.company_field_results import CompanyFieldConclusion, CompanyFieldName, CompanyFieldUnit
 from trader.download.domain.company_field_source import BuildCompanyFieldEvidence
-from trader.download.domain.company_reduction_scope import CompanyQualifiedReduction, ExtractCompanyQualifiedReduction, COMPANY_REDUCTION_NONPARTICIPANT_DECLARATION
+from trader.download.domain.company_reduction_scope import CompanyQualifiedReduction, ExtractCompanyQualifiedReduction, IsCompanyJudicialReductionNotice, COMPANY_REDUCTION_NONPARTICIPANT_DECLARATION
 from trader.download.domain.company_repurchase_fields import (
     COMPANY_REPURCHASE_FIELDS_DIGEST, CompanyRepurchaseActionPrefix, CompanyRepurchasePurposeStatement,
     CompanyRepurchaseTableConflict, ExtractCompanyRepurchaseTable,
@@ -198,7 +199,7 @@ def ExtractCompanyFieldEvidence(
     verified, _ = _verify_document(document, observed_at)
     if verified is None or any(marker in verified.title for marker in ("终止", "撤销", "取消")):
         return ()
-    if (CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION in _risk_categories(verified.title)
+    if (verified.qualified_reduction is not None or CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION in _risk_categories(verified.title)
         or CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION in _risk_closure(verified.title)):
         return _reduction_field_evidence(verified)
     kind = _positive_type(verified.title)
@@ -283,10 +284,11 @@ def _reduction_field_evidence(verified: _VerifiedDocument) -> tuple[CompanyField
     plan = _reduction_plan(body) if qualified is None else None
     fields: list[tuple[CompanyFieldName, date | datetime | float, str, str, CompanyFieldUnit]] = []
     if qualified is not None:
-        fields.extend((
-            ("start_date", qualified.start_date, qualified.statement, "explicit_reduction_start_date", "date"),
-            ("end_date", qualified.end_date, qualified.statement, "explicit_reduction_end_date", "date"),
-        ))
+        if qualified.start_date is not None and qualified.end_date is not None:
+            fields.extend((
+                ("start_date", qualified.start_date, qualified.statement, "explicit_reduction_start_date", "date"),
+                ("end_date", qualified.end_date, qualified.statement, "explicit_reduction_end_date", "date"),
+            ))
         if qualified.planned_ratio_pct is not None:
             fields.append(("planned_pct", qualified.planned_ratio_pct, qualified.statement, "reduction_total_capital_ratio", "percent"))
     if plan is not None:
@@ -561,7 +563,18 @@ def _confirm_risks(
     risks: list[CompanyRiskEvent], verified: _VerifiedDocument, observed_at: datetime, policy: CompanyEventPolicy
 ) -> list[CompanyReviewReason]:
     document = verified.document
+    if IsCompanyJudicialReductionNotice(verified.title):
+        if verified.qualified_reduction is None:
+            return [_review(document, observed_at, "risk", "conclusion_unverified", "法院卖出裁定与唯一控股股东减持计划尚未核实")]
+        _append_risk(risks, verified, CompanyRiskType.MAJOR_SHAREHOLDER_REDUCTION, policy)
+        return []
     categories = _risk_categories(verified.title)
+    if IsCompanyRegulatorWarningNotice(verified.title):
+        case_id = ReadCompanyRegulatorWarningDecision(document)
+        if case_id is None or verified.subject is not CompanySubject.ISSUER:
+            return [_review(document, observed_at, "risk", "conclusion_unverified", "警示函决定书尚未与发行人及当前公告唯一绑定")]
+        _append_risk(risks, verified, CompanyRiskType.REGULATORY_WARNING, policy, verified_case_id=case_id)
+        return []
     body = _subject_body(verified)
     reviews: list[CompanyReviewReason] = []
     for category in categories:
@@ -645,11 +658,14 @@ def _append_risk(
     policy: CompanyEventPolicy,
     *,
     reduction_measurements_ambiguous: bool = False,
+    verified_case_id: str | None = None,
 ) -> None:
     item = verified.document.disclosure
     body = verified.body
     case_ids = _CASE.findall(body)
-    case_id = case_ids[0] if len(set(case_ids)) == 1 else None
+    case_id = verified_case_id or (case_ids[0] if len(set(case_ids)) == 1 else None)
+    if verified.qualified_reduction is not None and verified.qualified_reduction.case_id is not None:
+        case_id = verified.qualified_reduction.case_id
     previous = next(
         (
             x

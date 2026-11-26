@@ -2,7 +2,7 @@
 
 import hashlib
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -12,6 +12,54 @@ from trader.download.domain.company_event_extraction import ExtractCompanyEvents
 from trader.download.domain.company_evidence import CompanyDocument
 from trader.download.domain.company_events import CompanyEventStatus, CompanySubject, ReductionPlan
 from trader.download.domain.company_reduction_scope import ExtractCompanyQualifiedReduction
+
+
+_JUDICIAL_TITLE = "关于控股股东被动减持股份的提示性公告"
+_JUDICIAL = (
+    "证券代码：600001\n证券简称：示例科技\n公告编号：2026-018\n" + _JUDICIAL_TITLE + "\n"
+    "公司控股股东甲实业股份有限公司（以下简称“甲实业”，持股比例45.03%）收到某市中级人民法院发出的"
+    "《执行裁定书》〔(2026)沪01执123号之一〕，裁定被执行人甲实业所在的证券公司营业部"
+    "在收到《执行裁定书》之日起30个交易日内（具体由证券公司营业部在相关股份可售状态变更完成之日起30个交易日内），"
+    "通过证券交易所集中竞价交易方式，将被执行人甲实业名下持有的示例科技1,780万股股票（占公司总股本的0.9956%）予以卖出。\n"
+    "截至本公告披露日，上述股票尚未被处置。上述减持主体无一致行动人。\n"
+    "二、减持计划的主要内容\n股东名称\n甲实业股份有限公司\n计划减持数量\n17,800,000股\n"
+    "计划减持比例\n0.9956%\n减持方式及对应减持数量\n集中竞价。"
+)
+
+
+def test_court_order_for_one_controller_publishes_ongoing_plan_with_only_matching_ratio():
+    item = replace(fixtures._disclosure("court-plan"), title=_JUDICIAL_TITLE)
+    document = CompanyDocument(item, _JUDICIAL, True)
+    policy = fixtures.CompanyEventPolicy()
+    assert not ExtractCompanyEvents((document,), item.published_at - timedelta(microseconds=1), policy).risks
+    event, = ExtractCompanyEvents((document,), item.published_at, policy).risks
+    assert event.risk_level == 4 and event.subject_type is CompanySubject.CONTROLLING_SHAREHOLDER
+    assert event.case_id == "(2026)沪01执123号之一" and event.first_disclosed_at == event.effective_at == item.published_at
+    assert event.status is CompanyEventStatus.ONGOING and event.resolved_at is event.expires_at is None
+    assert event.reduction_plan == ReductionPlan(planned_ratio_pct=0.9956)
+    field, = ExtractCompanyFieldEvidence(document, item.published_at, policy)
+    assert (field.field, field.value, field.state, field.evidence[0].start_line) == ("planned_pct", 0.9956, "verified", 5)
+    assert "占公司总股本的0.9956%" in field.evidence[0].quote and "45.03%" not in field.evidence[0].quote
+
+
+@pytest.mark.parametrize("old,new", (
+    ("证券代码：600001", "证券代码：600002"), ("证券简称：示例科技", "证券简称：另一公司"),
+    ("〔(2026)沪01执123号之一〕", ""), ("〔(2026)沪01执123号之一〕", "〔(2026)沪01执123号之一〕及(2026)沪01执124号"),
+    ("，裁定被执行人", "，如裁定被执行人"), ("，裁定被执行人", "，未裁定被执行人"),
+    ("收到某市中级人民法院", "尚未收到某市中级人民法院"), ("收到某市中级人民法院", "若收到某市中级人民法院"),
+    ("予以卖出", "予以冻结"), ("予以卖出", "为其他债务质押"), ("予以卖出", "予以卖出，后已中止执行"),
+    ("将被执行人甲实业名下", "将被执行人乙实业名下"), ("上述减持主体无一致行动人", "与乙实业共同执行计划"),
+    ("股东名称\n甲实业股份有限公司", "股东名称\n甲实业股份有限公司、乙实业有限公司"),
+    ("占公司总股本的0.9956%", "占其所持股份的0.9956%"), ("17,800,000股", "17,800,000元"),
+    ("17,800,000股", "17,800股"), ("计划减持比例\n0.9956%", "计划减持比例\n45.03%"),
+    ("尚未被处置", "已被处置"), ("0.9956%", "0%"),
+))
+def test_ambiguous_or_unconfirmed_court_order_preserves_review_without_hard_risk(old, new):
+    item = replace(fixtures._disclosure("court-plan"), title=_JUDICIAL_TITLE)
+    document = CompanyDocument(item, _JUDICIAL.replace(old, new), True)
+    events = ExtractCompanyEvents((document,), item.published_at, fixtures.CompanyEventPolicy())
+    assert not events.risks and any(review.scope == "risk" for review in events.reviews)
+    assert not ExtractCompanyFieldEvidence(document, item.published_at, fixtures.CompanyEventPolicy())
 
 
 def test_numbered_qualified_plan_proves_its_own_dates_and_total_capital_ratio():

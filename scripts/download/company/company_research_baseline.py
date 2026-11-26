@@ -8,13 +8,16 @@ from trader.download.domain.company_document_links import CompanyPublishedEviden
 
 from trader.download.domain.company_events import CompanyEventPolicy
 from trader.download.domain.company_field_results import CompanyFieldConclusion
+from trader.download.domain.company_facts import CompanyFacts
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
 from trader.download.infra.company_field_result_rows import ReadCompanyFieldResults
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
 from trader.download.infra.company_facts_index import CompanyInputReceipt, CompanyPublicationIdentity
 from trader.download.infra.company_facts_protocol import DecodeCompanyLabel, EVIDENCE_SOURCES, RequireCompanyTime
-from trader.download.infra.company_normalized_index import CompanyNormalizationBaseline
+from trader.download.infra.company_normalized_index import CompanyNormalizationBaseline, ReadCompanyNormalizationReceipts
+from trader.download.infra.company_risk_adoption import ProjectCompanyRiskAdoptions, ReadCompanyRiskAdoptionWitnesses
+from trader.download.infra.company_document_link_rows import ReadCompanyDocumentLinks
 from trader.download.infra.company_sync_preparation import PrepareCompanyIssuerInputs
 from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from trader.infra.sqlite_policy import SqliteIoPolicy
@@ -33,6 +36,7 @@ class CompanyResearchBaseline:
     baseline: CompanyNormalizationBaseline
     original_fields: tuple[CompanyFieldConclusion, ...]
     material_reads: int
+    consumer_facts: tuple[CompanyFacts, ...]
 
 
 def ReadCompanyResearchBaseline(
@@ -72,6 +76,9 @@ def ReadCompanyResearchBaseline(
             raise ValueError("company_normalized_replay_population_invalid")
         original_facts = ReadCompanyFactRows(formal, codes)
         original_fields = ReadCompanyFieldResults(formal, codes)
+        original_links: dict[str, list[CompanyPublishedEvidenceLink]] = {}
+        for link in ReadCompanyDocumentLinks(formal, codes):
+            original_links.setdefault(link.code, []).append(link)
         revalidated: list[CompanyFieldConclusion] = []
         prepared_facts = []
         prepared_receipts: list[CompanyInputReceipt] = []
@@ -80,14 +87,23 @@ def ReadCompanyResearchBaseline(
             check()
             prepared = PrepareCompanyIssuerInputs(raw, formal, fact, cutoff=cutoff or original_identity.published_at,
                 extraction_hash=original_identity.extraction_hash, event_policy=event_policy,
-                read_document=read_document, check=check, revalidate=True, include_new_announcements=False)
+                read_document=read_document, check=check, revalidate=True, include_new_announcements=False,
+                published_links=tuple(original_links.get(fact.code, ())))
             prepared_facts.append(prepared.facts)
             revalidated.extend(prepared.fields)
             prepared_receipts.extend(prepared.receipts)
-            prepared_links.extend(prepared.links)
+            links = {(link.source, link.link.evidence_id): link for link in original_links.get(fact.code, ())}
+            links.update(((link.source, link.link.evidence_id), link) for link in prepared.links)
+            relevant = {key for event in prepared.facts.risk_events for key in event.evidence_ids}
+            relevant.update(key for event in prepared.facts.positive_events for key in event.evidence_ids)
+            relevant.update(milestone.evidence_id for event in prepared.facts.positive_events for milestone in event.level_milestones)
+            relevant.update(proof.source_key for field in prepared.fields for proof in field.evidence)
+            relevant.update(reason.evidence_id for reason in prepared.facts.review_reasons if reason.evidence_id is not None)
+            prepared_links.extend(link for (_, key), link in links.items() if key in relevant)
         fields = tuple(sorted(revalidated, key=lambda item: (item.code, item.event_id, item.field)))
-        receipts = tuple(CompanyInputReceipt(row[0], row[1], row[2], row[3], row[4], row[5], RequireCompanyTime(row[6]), row[7], row[8])
-                         for row in formal.run("SELECT * FROM company_input_receipt ORDER BY source,source_key,code,record_hash,extraction_hash"))
+        receipts = ReadCompanyNormalizationReceipts(formal)
+        risk_adoptions = ReadCompanyRiskAdoptionWitnesses(formal)
+        consumer_facts = ProjectCompanyRiskAdoptions(formal, prepared_facts, original_identity.extraction_hash)
         sources = tuple((row[0], DecodeCompanyLabel(EVIDENCE_SOURCES, row[1])) for row in formal.run("SELECT source_key,source FROM company_evidence_ref ORDER BY source_key"))
         if ReadCompanyResearchIdentity(formal) != original_identity:
             raise ValueError("company_normalized_replay_source_changed")
@@ -99,8 +115,9 @@ def ReadCompanyResearchBaseline(
             seen.add(key)
             new_receipts.append(item)
     baseline = CompanyNormalizationBaseline(tuple(prepared_facts), fields, (*receipts, *new_receipts), sources,
-        original_identity, CompanyFieldProofRulesHash(), tuple(sorted(prepared_links, key=lambda item: (item.code, item.source, item.link.evidence_id))))
-    return CompanyResearchBaseline(baseline, original_fields, material_reads)
+        original_identity, CompanyFieldProofRulesHash(), tuple(sorted(prepared_links, key=lambda item: (item.code, item.source, item.link.evidence_id))),
+        risk_adoptions=risk_adoptions)
+    return CompanyResearchBaseline(baseline, original_fields, material_reads, consumer_facts)
 
 
 

@@ -19,6 +19,10 @@ from trader.download.domain.company_sync import CompanySyncBudget, CompanySyncFa
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_announcement_preparation import ReadCompanyAnnouncementCoverage
 from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash
+from trader.download.infra.company_facts_index import CompanyInputReceipt
+from trader.download.infra.company_normalized_index import ReadCompanyNormalizationBaseline
+from trader.download.infra.company_risk_adoption import ReadCompanyRiskAdoptionWitnesses
+from trader.download.infra.company_facts_protocol import RequireCompanyTime
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
 from trader.download.infra.company_sync_producers import CompanyAnnouncementProducer
 from trader.infra.http_contracts import HttpResponse
@@ -200,6 +204,143 @@ def test_retained_new_original_reaches_normal_formal_reader_without_a_source_bud
     with SqliteSession(runtime.facts.path) as connection:
         assert connection.run("SELECT outcome FROM company_input_receipt WHERE source_key=? AND extraction_hash=?",
             (item.identity, runtime.facts.extraction_hash)).require_one()[0] == "valid"
+
+
+def test_changed_risk_rules_recheck_selected_old_valid_body_once_even_when_still_ambiguous(tmp_path):
+    runtime, reader, _, physical = _runtime(tmp_path)
+    cutoff = _SCOPE.cutoff
+    runtime.initialize(_SCOPE.codes, cutoff)
+    held = "证券代码：600001\n关于控股股东被动减持股份的提示性公告\n公司控股股东所持股份被司法冻结，尚未收到法院的卖出裁定。" + _DETAIL
+    notice = _material(runtime, held, key="judicial", title="关于控股股东被动减持股份的提示性公告")
+    other = _material(runtime, _INVESTIGATION)
+    old = tuple(CompanyInputReceipt(item.source, item.identity, item.codes[0], item.digest, runtime.facts.extraction_hash,
+        hashlib.sha256(body.encode()).digest(), cutoff - timedelta(hours=1), "valid", "earlier-rules")
+        for item, body in ((notice, held), (other, _INVESTIGATION)))
+    runtime.normalized.publish_prepared(_SCOPE.codes, reader.read(_SCOPE.codes), (), old, (), cutoff,
+        field_rules_hash=CompanyFieldProofRulesHash(), sources=tuple((item.source_key, item.source) for item in old))
+    reads = []
+    read_document = runtime._read_document
+    def read(digest):
+        reads.append(digest)
+        return read_document(digest)
+    runtime._read_document = read
+    def prepare():
+        runtime.prepare_local(_SCOPE, check=lambda: None, cancel_requested=lambda: False, eligible_codes=_SCOPE.codes,
+            financial_query=BuildCompanyFinancialRoundQuery(cutoff))
+    prepare()
+    fact, = reader.read(_SCOPE.codes)
+    assert not fact.risk_events and any(review.evidence_id == "judicial" and review.reason_code == "conclusion_unverified"
+        for review in fact.review_reasons)
+    assert reads == [old[0].body_hash]
+    with SqliteSession(runtime.facts.path) as formal:
+        assert formal.run("SELECT COUNT(*) FROM company_input_receipt WHERE policy_id='earlier-rules' AND outcome='valid'").require_one()[0] == 2
+        attempt = formal.run("SELECT source_key,body_hash,outcome,policy_id FROM company_input_receipt WHERE policy_id LIKE 'announcement_risk:%'").require_one()
+        assert attempt[:] == ("judicial", old[0].body_hash, "field_attempted", "announcement_risk:" + CompanyFieldProofRulesHash().hex())
+    assert not physical
+    head = reader.publication_identity()
+    reads.clear()
+    prepare()
+    assert not reads and not physical and reader.publication_identity() == head
+
+
+@pytest.mark.parametrize("old_valid", [False, True])
+def test_issuer_risk_adoption_separates_local_time_from_fixed_cutoff_and_recovers_exact_receipt(tmp_path, tmp_path_factory, monkeypatch, old_valid):
+    runtime, reader, _, physical = _runtime(tmp_path)
+    cutoff = _SCOPE.cutoff
+    adopted = cutoff + timedelta(hours=1)
+    runtime.facts._adoption_clock = lambda: adopted
+    runtime.initialize(_SCOPE.codes, cutoff)
+    title = "关于收到北京证监局警示函的公告"
+    body = ("证券代码：600001\n证券简称：示例科技\n公告编号：2026-088\n" + title + "。本公司保证信息披露准确。"
+        "北京示例科技股份有限公司于近日收到中国证券监督管理委员会北京监管局下发的《关于对北京示例科技股份有限公司、甲某"
+        "采取出具警示函措施的决定》（［2026］244号）。根据有关规定，我局决定对你们采取出具警示函的行政监管措施。"
+        "特此公告。北京示例科技股份有限公司董事会2026年11月16日")
+    notice = _material(runtime, body, key="adoption", title=title)
+    if old_valid:
+        original = CompanyInputReceipt(notice.source, notice.identity, notice.codes[0], notice.digest, runtime.facts.extraction_hash,
+            hashlib.sha256(body.encode()).digest(), cutoff - timedelta(hours=1), "valid", "earlier-rules")
+        runtime.normalized.publish_prepared(_SCOPE.codes, reader.read(_SCOPE.codes), (), (original,), (), cutoff,
+            field_rules_hash=CompanyFieldProofRulesHash(), sources=((original.source_key, original.source),))
+    def prepare():
+        return runtime.prepare_local(_SCOPE, check=lambda: None, cancel_requested=lambda: False,
+            eligible_codes=_SCOPE.codes, financial_query=BuildCompanyFinancialRoundQuery(cutoff))
+    def fail_after_staging(*args, **kwargs):
+        raise InterruptedError("staging_committed")
+    with monkeypatch.context() as patch:
+        patch.setattr(runtime.facts, "publish", fail_after_staging)
+        with pytest.raises(InterruptedError, match="staging_committed"):
+            prepare()
+    assert not reader.read(_SCOPE.codes)[0].risk_events
+    formal_at = adopted + timedelta(days=1)
+    runtime.facts._adoption_clock = lambda: formal_at
+    prepare()
+    fact, = reader.read(_SCOPE.codes)
+    risk, = fact.risk_events
+    assert risk.risk_level == 1 and risk.effective_at == notice.published_at
+    assert fact.checked_at == cutoff and fact.published_at == formal_at
+    with SqliteSession(runtime.facts.path) as conn:
+        adoption, = conn.run("SELECT published_at FROM company_input_receipt WHERE policy_id GLOB 'formal_risk_adoption:*'").fetchall()
+        assert RequireCompanyTime(adoption[0]) == formal_at
+        receipt_times = {row[0]: RequireCompanyTime(row[1]) for row in conn.run(
+            "SELECT outcome,published_at FROM company_input_receipt WHERE source_key='adoption' AND policy_id NOT GLOB 'formal_risk_adoption:*'")}
+    assert receipt_times == ({"valid": cutoff - timedelta(hours=1), "field_attempted": cutoff} if old_valid else {"valid": cutoff})
+    with SqliteSession(runtime.material.path) as conn:
+        assert conn.run("SELECT count(*) FROM company_input_receipt WHERE policy_id GLOB 'formal_risk_adoption:*'").require_one()[0] == 0
+    head = reader.publication_identity()
+    assert not prepare().changed_codes and head == reader.publication_identity() and not physical
+    with SqliteSession(runtime.facts.path) as conn:
+        scope = conn.run("SELECT substr(policy_id,length('formal_risk_adoption:')+1) FROM company_input_receipt WHERE policy_id GLOB 'formal_risk_adoption:*'").require_one()[0]
+    with SqliteSession(runtime.material.path) as conn:
+        conn.run("UPDATE company_round_intent SET confirmed_content_hash=NULL WHERE scope=?", (scope,))
+    assert runtime.normalized.recover_publication_seal() and reader.read(_SCOPE.codes)[0] == fact
+    _assert_seeded_risk_keeps_original_visibility(runtime, fact, tmp_path_factory.mktemp("seeded-risk"))
+    with SqliteSession(runtime.facts.path) as conn:
+        conn.run("DELETE FROM company_input_receipt WHERE policy_id GLOB 'formal_risk_adoption:*'")
+    runtime.facts.publish_file()
+    with pytest.raises(ValueError, match="company_risk_adoption_confirmation_missing"):
+        reader.read(_SCOPE.codes)
+    with SqliteSession(runtime.material.path) as conn:
+        conn.run("UPDATE company_round_intent SET confirmed_content_hash=NULL WHERE scope=?", (scope,))
+    with pytest.raises(ValueError, match="company_normalization_confirmation_changed"):
+        runtime.normalized.recover_publication_seal()
+
+
+def _assert_seeded_risk_keeps_original_visibility(runtime, fact, directory):
+    from scripts.download.company.company_field_replay import PrepareCompanyNormalNamespace
+    from scripts.download.company.company_research_baseline import ReadCompanyResearchBaseline
+    from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
+    from trader.infra.settings.data_paths import DataPaths
+
+    policy = SqlitePolicyFixture()
+    with SqliteSession(runtime.facts.path, sqlite_policy=policy) as formal:
+        captured = ReadCompanyNormalizationBaseline(formal)
+    witness, = captured.risk_adoptions
+    assert witness.published_at == fact.published_at
+    research = ReadCompanyResearchBaseline(runtime.material.path, runtime.facts.path, runtime.material._documents,
+        event_policy=runtime._event_policy, sqlite_policy=policy, check=lambda: None, cancel_requested=lambda: False)
+    assert research.consumer_facts == (fact,) and research.baseline.risk_adoptions == (witness,)
+    for name, baseline in (("research", research.baseline), ("snapshot", captured)):
+        copy, reader, _, _ = _runtime(directory / name)
+        copy.normalized.initialize()
+        copy.normalized.seed(baseline)
+        head = reader.publication_identity()
+        assert reader.read(_SCOPE.codes) == (fact,)
+        copy.normalized.seed(baseline)
+        assert reader.publication_identity() == head
+        for path, expected in ((copy.facts.path, (witness,)), (copy.material.path, ())):
+            with SqliteSession(path, sqlite_policy=policy) as conn:
+                assert ReadCompanyRiskAdoptionWitnesses(conn) == expected
+        with SqliteSession(copy.material.path, sqlite_policy=policy) as conn:
+            conn.run("UPDATE company_normalization_seed SET complete=0 WHERE singleton=1")
+        copy.normalized.seed(baseline)
+        assert reader.publication_identity() == head and reader.read(_SCOPE.codes) == (fact,)
+    target = directory / "namespace"
+    report = PrepareCompanyNormalNamespace(original_facts_path=runtime.facts.path, proven_facts_path=runtime.facts.path,
+        collection_path=runtime.material.path, documents=(runtime.material._documents,), directory=target,
+        event_policy=runtime._event_policy, sqlite_policy=policy, budget_seconds=30)
+    assert report["reader_equal"] and report["original_risks_preserved"] and report["network_requests"] == 0
+    reader = SQLiteCompanyEvidenceReader(DataPaths(target).company, event_policy=runtime._event_policy, sqlite_policy=policy)
+    assert reader.read(_SCOPE.codes) == (fact,)
 
 
 def test_employee_option_reaches_formal_fields_without_awards_or_repeat_reads(tmp_path):

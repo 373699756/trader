@@ -24,6 +24,7 @@ from trader.download.infra.company_financial_observations import (
     ReadCompanyFinancialScoringObservations,
 )
 from trader.download.infra.company_fact_rows import ReadCompanyFactRows
+from trader.download.infra.company_risk_adoption import ProjectCompanyRiskAdoptions
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
 from trader.download.infra.company_facts_protocol import (
     DATA_STATES, REPURCHASE_PURPOSES, CompanyExtractionHash, CompanyInteger, EncodeCompanyDate, EncodeCompanyTime,
@@ -422,7 +423,7 @@ class SQLiteCompanyEvidenceReader:
                     for offset in range(0, len(codes), 512):
                         check_cancelled()
                         batch = tuple(codes[offset : offset + 512])
-                        captured.extend(ReadCompanyFactRows(connection, batch))
+                        captured.extend(ProjectCompanyRiskAdoptions(connection, ReadCompanyFactRows(connection, batch), self._extraction_hash))
                     check_cancelled()
         except sqlite3.Error as exc:
             if cancel_requested is not None and cancel_requested():

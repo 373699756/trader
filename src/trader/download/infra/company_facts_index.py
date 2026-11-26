@@ -34,6 +34,10 @@ from trader.download.infra.company_facts_protocol import (
     RequireCompanyTime,
 )
 from trader.download.infra.company_facts_schema import COMPANY_FACTS_SCHEMA
+from trader.download.infra.company_risk_adoption import (
+    COMPANY_RISK_ADOPTION, CompanyRiskAdoptionInputs, CompanyRiskAdoptionWitness, CompanyRiskAdoptionWitnessDigest,
+    ProjectCompanyRiskAdoptions, ReadCompanyRiskAdoptionTime, RestoreCompanyRiskAdoptionWitnesses,
+)
 from trader.infra.sqlite_connection import (
     EnsureSqliteSchema,
     HasSqliteSchema,
@@ -110,7 +114,7 @@ class SQLiteCompanyFactsIndex:
         event_policy: CompanyEventPolicy,
         cancel_requested: Callable[[], bool] | None = None,
         io_budget: CompanySyncIoBudget | None = None, sqlite_policy: SqliteIoPolicy,
-        seal_file: bool = True,
+        seal_file: bool = True, adoption_clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._sqlite_policy = sqlite_policy
         self.path = path
@@ -119,6 +123,7 @@ class SQLiteCompanyFactsIndex:
         self._file_verification: VerifiedSqlitePublication | None = None
         self._io_budget = io_budget
         self._seal_file = seal_file
+        self._adoption_clock = adoption_clock
 
     @contextmanager
     def _session(self, path: Path, options: SqliteConnectionOptions | None = None, *,
@@ -179,7 +184,11 @@ class SQLiteCompanyFactsIndex:
         normalization: CompanyNormalizationCommit | None = None,
         field_rules_hash: bytes | None = None,
         document_links: Sequence[CompanyPublishedEvidenceLink] = (),
+        seed_witnesses: Sequence[CompanyRiskAdoptionWitness] = (),
     ) -> CompanyFactsPublication:
+        if (any(item.policy_id.startswith(COMPANY_RISK_ADOPTION) for item in receipts)
+            or seed_witnesses and (not self._seal_file or parent is not None or normalization is not None)):
+            raise ValueError("company_risk_adoption_seed_scope_invalid")
         if field_rules_hash is not None and (not isinstance(field_rules_hash, bytes) or len(field_rules_hash) != 32):
             raise ValueError("company_field_rules_identity_invalid")
         prepared_fields = tuple(field_results) if field_results is not None else tuple(
@@ -240,6 +249,30 @@ class SQLiteCompanyFactsIndex:
             )
             published_links = _publish_document_links(connection, previous_links, document_links,
                                                        link_codes, self.extraction_hash, at)
+            if parent is not None:
+                at = max(at, parent.published_at)
+            if seed_witnesses:
+                RestoreCompanyRiskAdoptionWitnesses(connection, seed_witnesses)
+                at = max(at, *(witness.published_at for witness in seed_witnesses))
+            if self._seal_file and parent is None and normalization is None:
+                ProjectCompanyRiskAdoptions(connection, facts, self.extraction_hash)
+            if normalization is not None:
+                pending = tuple(item for fact in facts for item in CompanyRiskAdoptionInputs(connection, fact, self.extraction_hash)
+                                if ReadCompanyRiskAdoptionTime(connection, item) is None)
+                if pending:
+                    if self._adoption_clock is None:
+                        raise ValueError("company_risk_adoption_clock_required")
+                    stamp = self._adoption_clock()
+                    if stamp.utcoffset() is None or stamp < at:
+                        raise ValueError("company_risk_adoption_time_invalid")
+                    at = stamp
+                    policy = COMPANY_RISK_ADOPTION + normalization.scope
+                    adopted = tuple(CompanyInputReceipt("cninfo", item.source_key, item.code, item.record, item.signature,
+                        item.body, stamp, "field_attempted", policy) for item in pending)
+                    connection.run_many("INSERT INTO company_input_receipt VALUES(?,?,?,?,?,?,?,?,?)",
+                        ((item.source, item.source_key, item.code, item.record_hash, item.extraction_hash, item.body_hash,
+                          EncodeCompanyTime(stamp), item.outcome, policy) for item in adopted))
+                    receipts = (*receipts, *adopted)
             connection.run(
                 "DELETE FROM company_evidence_ref WHERE id NOT IN (SELECT evidence_id FROM company_risk_evidence "
                 "UNION SELECT evidence_id FROM company_positive_evidence UNION SELECT evidence_id FROM company_positive_milestone "
@@ -266,12 +299,15 @@ class SQLiteCompanyFactsIndex:
                          for proof in result.evidence
                      )) for result in sorted(prepared_fields, key=lambda result: (result.code, result.event_id, result.field))
                 )
-                identity = bytes.fromhex(CanonicalDigest((
+                identity_inputs: tuple[object, ...] = (
                     "company-publication-generation", _parent_identity(parent), self.extraction_hash.hex(),
                     tuple(sorted(facts, key=lambda fact: fact.code)), tuple(sorted(sources.items())),
                     receipt_identities, field_identities, published_links, field_rules_hash.hex() if field_rules_hash else None,
                     tuple(sorted(financial_observations, key=lambda item: (*item.business_key, item.record_hash))), at,
-                )))
+                )
+                if seed_witnesses:
+                    identity_inputs = (*identity_inputs, CompanyRiskAdoptionWitnessDigest(seed_witnesses))
+                identity = bytes.fromhex(CanonicalDigest(identity_inputs))
                 _write_identity(connection, self.extraction_hash, at, identity)
             committed_identity = ReadCompanyPublicationIdentity(connection)
             if committed_identity is None:
