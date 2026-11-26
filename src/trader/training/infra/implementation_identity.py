@@ -10,7 +10,8 @@ from trader.recommendation.domain.scoring.profile_identity import ScoringProfile
 
 _SHARED_INPUT = (
     "download/domain/history_control.py", "download/domain/history_revision.py",
-    "download/infra/history_control_index.py", "download/infra/history_prices.py", "download/infra/history_snapshot_reader.py",
+    "download/infra/history_control_index.py", "download/infra/history_prices.py", "download/infra/history_reference_index.py",
+    "download/infra/history_snapshot_reader.py",
     "recommendation/domain/market/models.py", "recommendation/domain/outcomes/prediction_target.py",
     "recommendation/domain/outcomes/tomorrow_target.py", "training/infra/logistic_fitting.py",
 )
@@ -83,6 +84,8 @@ def LaneTrainingImplementationIdentity(strategy: Strategy, profile: ScoringProfi
         dependencies.append("training/infra/d25/tree.py")
     if profile == "v5":
         dependencies.extend(_TCN)
+        if strategy is Strategy.D25:
+            dependencies.append("training/domain/v5/early_stopping.py")
     lane = root / "training/infra" / strategy.value / profile
     return _digest(root, [*(root / name for name in dependencies), *lane.glob("*.py")])
 
@@ -95,7 +98,7 @@ def TrainingImplementationIdentity() -> str:
         path for directory in ("training", "download/domain", "recommendation/domain")
         for path in (root / directory).rglob("*.py")
     ]
-    return _digest(root, (*files, root / "download/infra/history_prices.py"))
+    return _digest(root, (*files, *(root / name for name in _SHARED_INPUT)))
 
 
 __all__ = ["LaneTrainingImplementationIdentity", "TrainingImplementationIdentity"]
