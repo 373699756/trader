@@ -34,6 +34,7 @@ from trader.download.infra.progress_projection import ProgressNumber
 from trader.download.entrypoints.sync_progress import SyncProgress
 from trader.download.infra.terminal_progress import TerminalDownloadProgress
 from trader.download.domain.company_evidence import (
+    COMPANY_DOCUMENT_OCR_REQUIRED,
     CompanyInputValidationFailure, CompanyLatestFinancialQuery, CompanyOperationKind, CompanyOperationProgress, CompanyPublicationProgress,
     CompanySourceFailure, CompanyStockProgress, DisclosurePartition, EvidenceSyncProgress, StructuredCompanyQuery,
 )
@@ -358,6 +359,13 @@ class CompanyRoundProgress:
             if self._finished or self._last_issue == (issue, step):
                 return
             self._last_issue = (issue, step)
+        if issue.code == COMPANY_DOCUMENT_OCR_REQUIRED and issue.action == "retry":
+            self._report(ProgressMessage(
+                (*_step_fields(step), ProgressField(_operation_text(issue.operation)),
+                 ProgressField(f"原件需要文字识别，转入 OCR [{issue.code}]")),
+                task=_COMPANY_SOURCE_TASK, immediate=True, heartbeat=False, compact=True,
+            ))
+            return
         next_step = {
             "split": "已拆分范围，后续按新范围继续",
             "retry": "保留回执，按原重试条件核对",

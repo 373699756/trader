@@ -14,6 +14,7 @@ from trader.download.application.company_source_ports import (
 )
 from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview, CompanyDocumentRiskRelevant
 from trader.download.domain.company_evidence import (
+    COMPANY_DOCUMENT_OCR_REQUIRED, CompanyDocumentExtraction, DocumentRoute,
     CompanyInputValidationFailure, CompanyDocumentFailure, CompanyDocumentPolicies, CompanySourceFailure, IsTransientCompanyDocumentFailure,
     CompanySyncConfiguration, CompanyDocumentRouteForFailure, Disclosure, DisclosurePartition, EvidenceMarket, StructuredCompanyQuery,
 )
@@ -269,7 +270,7 @@ class CompanyAnnouncementProducer:
                 valid = frozenset((item.code, item.source, item.evidence_id, item.record_hash, item.body_hash) for item in dependencies
                     if formal.run("SELECT 1 FROM company_input_receipt WHERE code=? AND source=? AND source_key=? AND record_hash=? AND body_hash=? AND extraction_hash=? AND outcome='valid'",
                     (item.code, item.source, item.evidence_id, item.record_hash, item.body_hash, self._extraction_hash)).fetchone() is not None)
-            permitted = frozenset((item.gap.code, item.gap.evidence_id) for item in recoveries if item.action in {"download", "extract"})
+            permitted = frozenset((item.gap.code, item.gap.evidence_id) for item in recoveries if item.action in {"download", "extract", "ocr"})
             for dependency in dependencies:
                 if ((dependency.code, dependency.evidence_id) not in permitted
                     or (dependency.code, dependency.source, dependency.evidence_id, dependency.record_hash, dependency.body_hash) not in valid
@@ -291,7 +292,7 @@ class CompanyAnnouncementProducer:
                                              if w.market == EvidenceMarket(dependency.code)) and self._source.document_payload_hash(item) is None:
                     continue
                 retry = self._material.document_retry(item, self._policies.standard)
-                if retry is not None and self._cooling(retry.failure, retry.retry_after):
+                if retry is not None and retry.failure != COMPANY_DOCUMENT_OCR_REQUIRED and self._cooling(retry.failure, retry.retry_after):
                     self._unread_latest_document = True
                     continue
                 required = _RequiredDocument(
@@ -387,7 +388,7 @@ class CompanyAnnouncementProducer:
             return CompanySyncStepResult(False, True)
         work = self._work(scope)
         if isinstance(work, _NewDocument):
-            result = self._accept_new_document(scope, work.disclosure)
+            result = self._accept_document(scope, work)
             if work.before_partition is not None:
                 self._inputs.complete_announcement_turn(scope.identity, CanonicalDigest(work.before_partition),
                     chose_unlock=_supplemental_unlock(work.disclosure.title))
@@ -468,51 +469,22 @@ class CompanyAnnouncementProducer:
         if document.disclosure.codes[0] not in self._current_codes:
             self._inputs.complete_task(scope.identity, "announcements", "ineligible_document:" + _required_identity(document), 0, _required_identity(document))
             return CompanySyncStepResult(False, True, gaps=("population_members_became_ineligible",))
+        return self._accept_document(scope, document)
+
+    def _recover_document(
+        self, scope: CompanySyncRoundScope, document: _RequiredDocument, extraction: CompanyDocumentExtraction,
+    ) -> str | None:
         item = document.disclosure
-        target = CompanyDocumentDownloadTarget(item.codes[0], item.source, item.identity)
-        called = not self._source.document_ready(item)
-        operation = CompanyDownloadOperation(self._plan.family, "document_extract", target, route="standard")
-        try:
-            if called:
-                operation = replace(operation, kind="document_download", route=None)
-                self._emit_download(operation)
-                self._download_document(item, target, recovered=True)
-                operation = replace(operation, kind="document_extract", route="standard")
-            self._emit_download(operation)
-            extraction = self._source.extract_document(item)
-        except (CompanyDocumentFailure, CompanySourceFailure) as exc:
-            return self._document_failure(item, operation, exc, called, "required_original_recovery_failed")
-        except CompanyRawCapacityError as exc:
-            self._emit_download(CompanyDownloadIssue(
-                operation, "company_raw_capacity_unavailable", material_accepted=False, action="stop", capacity=exc.snapshot,
-            ))
-            return CompanySyncStepResult(False, False, gaps=("company_raw_capacity_unavailable",), pending_count=None)
         if extraction.payload_hash != document.payload_hash or hashlib.sha256(extraction.text.encode()).digest() != document.body_hash:
             self._inputs.complete_task(scope.identity, "announcements", "document:" + _required_identity(document), 0, CanonicalDigest(extraction.payload_hash.hex()))
-            self._emit_download(CompanyDownloadIssue(
-                operation, "required_original_hash_mismatch", material_accepted=False, action="stop",
-            ))
-            return CompanySyncStepResult(False, False, gaps=("required_original_hash_mismatch",), failure="required_original_hash_mismatch")
-        try:
-            accepted = self._material.recover_required_text(item.identity, extraction.text, scope.cutoff)
-        except CompanyRawCapacityError as exc:
-            self._emit_download(CompanyDownloadIssue(
-                operation, "company_raw_capacity_unavailable", material_accepted=False, action="stop", capacity=exc.snapshot,
-            ))
-            return CompanySyncStepResult(False, False, gaps=("company_raw_capacity_unavailable",), pending_count=None)
-        if not accepted:
-            self._emit_download(CompanyDownloadIssue(
-                operation, "required_original_not_accepted", material_accepted=False, action="stop",
-            ))
-            return CompanySyncStepResult(False, False, gaps=("required_original_not_accepted",), failure="required_original_not_accepted")
-        self._inputs.record_recovered(scope.identity, CompanyRecoveredInput(target.code, target.source,
-            target.official_id, item.digest, document.body_hash))
+            return "required_original_hash_mismatch"
+        if not self._material.recover_required_text(item.identity, extraction.text, scope.cutoff):
+            return "required_original_not_accepted"
+        self._inputs.record_recovered(scope.identity, CompanyRecoveredInput(item.codes[0], item.source,
+            item.identity, item.digest, document.body_hash))
         self._inputs.complete_task(scope.identity, "announcements", "document:" + _required_identity(document), 1,
             CanonicalDigest((_required_identity(document), extraction.payload_hash.hex())))
-        self._emit_download(CompanyDocumentDownloadProgress(
-            code=target.code, source=target.source, reused=not called, recovered=True, official_id=target.official_id,
-        ))
-        return CompanySyncStepResult(False, True, 1, int(called))
+        return None
 
     def _new_document(self, scope: CompanySyncRoundScope, *, priority_only: bool, prefer_unlock: bool) -> Disclosure | None:
         if self._configuration is None or self._policies is None or self._wall_clock is None:
@@ -564,13 +536,13 @@ class CompanyAnnouncementProducer:
                     continue
                 item = DecodeCompanyDisclosure(row)
                 failure = row["retry_failure"]
-                if failure and self._cooling(failure, datetime.fromisoformat(row["retry_at"])):
-                    self._unread_latest_document = True
-                    continue
-                if (failure and (failure == "access_denied" or not IsTransientCompanyDocumentFailure(failure))
-                    and self._inputs.task_done(scope.identity, "new_announcement_document", CanonicalDigest((item, self._policies)))):
-                    self._unread_latest_document = True
-                    continue
+                if failure and failure != COMPANY_DOCUMENT_OCR_REQUIRED:
+                    if self._cooling(failure, datetime.fromisoformat(row["retry_at"])) or (
+                        (failure == "access_denied" or not IsTransientCompanyDocumentFailure(failure))
+                        and self._inputs.task_done(scope.identity, "new_announcement_document", CanonicalDigest((item, self._policies)))
+                    ):
+                        self._unread_latest_document = True
+                        continue
                 if is_unlock or is_risk:
                     if is_unlock == prefer_unlock:
                         return item
@@ -580,34 +552,46 @@ class CompanyAnnouncementProducer:
                     other = item
         return alternate or other
 
-    def _accept_new_document(self, scope: CompanySyncRoundScope, item: Disclosure) -> CompanySyncStepResult:
+    def _accept_document(
+        self, scope: CompanySyncRoundScope, work: _NewDocument | _RequiredDocument,
+    ) -> CompanySyncStepResult:
         assert self._configuration is not None and self._policies is not None and self._wall_clock is not None
+        item = work.disclosure
         called = not self._source.document_ready(item)
-        key = CanonicalDigest((item, self._policies))
         target = CompanyDocumentDownloadTarget(item.codes[0], item.source, item.identity)
         operation = CompanyDownloadOperation(self._plan.family, "document_extract", target, route="standard")
         try:
             if called:
                 operation = replace(operation, kind="document_download", route=None)
                 self._emit_download(operation)
-                self._download_document(item, target, recovered=False)
+                self._download_document(item, target, recovered=isinstance(work, _RequiredDocument))
                 operation = replace(operation, kind="document_extract", route="standard")
-            self._emit_download(operation)
-            try:
-                extraction = self._source.extract_document(item)
-            except CompanyDocumentFailure as failure:
-                route = CompanyDocumentRouteForFailure(failure.reason)
-                if route == "standard":
-                    raise
-                self._emit_download(CompanyDownloadIssue(operation, failure.reason, material_accepted=False, action="retry"))
-                operation = replace(operation, route=route)
+            route: DocumentRoute = "standard"
+            while True:
                 self._emit_download(operation)
-                extraction = self._source.extract_document(item, route=route)
-            if not self._material.commit_document(item, extraction, scope.cutoff):
+                try:
+                    extraction = self._source.extract_document(item, route=route)
+                    break
+                except CompanyDocumentFailure as failure:
+                    next_route = CompanyDocumentRouteForFailure(failure.reason)
+                    if next_route == "standard" or next_route == route or route == "ocr":
+                        raise
+                    self._emit_download(CompanyDownloadIssue(operation, failure.reason, material_accepted=False, action="retry"))
+                    route = next_route
+                    operation = replace(operation, route=route)
+            if isinstance(work, _RequiredDocument):
+                rejection = self._recover_document(scope, work, extraction)
+                if rejection is not None:
+                    self._emit_download(CompanyDownloadIssue(operation, rejection, material_accepted=False, action="stop"))
+                    return CompanySyncStepResult(False, False, gaps=(rejection,), failure=rejection)
+            elif not self._material.commit_document(item, extraction, scope.cutoff):
                 raise ValueError("company_announcement_material_changed")
         except (CompanyDocumentFailure, CompanySourceFailure) as failure:
+            if isinstance(work, _RequiredDocument):
+                return self._document_failure(item, operation, failure, called, "required_original_recovery_failed")
             code = CompanyFailureCode(failure)
             if code == "access_denied" or not IsTransientCompanyDocumentFailure(code):
+                key = CanonicalDigest((item, self._policies))
                 if not self._inputs.task_done(scope.identity, "new_announcement_document", key):
                     self._inputs.complete_task(scope.identity, "new_announcement_document", key, 0, CanonicalDigest(code))
             return self._document_failure(item, operation, failure, called, "announcement_document_failed")
@@ -617,7 +601,7 @@ class CompanyAnnouncementProducer:
             ))
             return CompanySyncStepResult(False, False, gaps=("company_raw_capacity_unavailable",), pending_count=None)
         self._emit_download(CompanyDocumentDownloadProgress(
-            code=target.code, source=target.source, reused=not called, recovered=False, official_id=target.official_id,
+            code=target.code, source=target.source, reused=not called, recovered=isinstance(work, _RequiredDocument), official_id=target.official_id,
         ))
         return CompanySyncStepResult(False, True, accepted_inputs=1, source_calls=int(called))
 

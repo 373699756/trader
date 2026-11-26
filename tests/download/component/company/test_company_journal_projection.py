@@ -126,6 +126,13 @@ def test_cached_writer_and_independent_reader_follow_recovery_external_update_an
             external.run("UPDATE company_sync_request SET observed=0,status=NULL WHERE attempt=1")
             external.run("UPDATE company_sync_step SET changed_codes='[\"600003\"]' WHERE step=2")
         check(1, 1, None, (), None, ("600002", "600003"))
+        with SqliteTransaction(owner):
+            step(owner, 6, "scan", '["announcement_document_failed"]', "disclosure_document_ocr_required", 0)
+            step(owner, 7, "other scan", "[]", None, 1)
+        check(1, 1, "disclosure_document_ocr_required", ("announcement_document_failed",), None, ("600002", "600003"))
+        with SqliteTransaction(owner):
+            step(owner, 8, "scan", '["announcement_document_failed"]', "disclosure_document_ocr_low_quality", 0)
+        check(1, 1, "disclosure_document_ocr_low_quality", ("announcement_document_failed",), None, ("600002", "600003"))
 
 
 def test_writer_rolls_back_failed_reservation_and_observes_external_changes_across_threads(tmp_path, monkeypatch):

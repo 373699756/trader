@@ -20,6 +20,7 @@ Market = Literal["sse", "szse", "bse"]
 EvidenceProgressState = Literal["running", "complete", "reused", "deferred"]
 DocumentRepairMode = Literal["ocr", "limits"]
 DocumentRoute = Literal["standard", "ocr", "limits"]
+COMPANY_DOCUMENT_OCR_REQUIRED = "disclosure_document_ocr_required"
 
 
 class CompanyDownloadStore(str, Enum):
@@ -787,6 +788,7 @@ class EvidenceSyncProgress:
 
 _OCR_FAILURES = frozenset(
     {
+        COMPANY_DOCUMENT_OCR_REQUIRED,
         "disclosure_document_no_text",
         "disclosure_document_short_text",
         "disclosure_document_unreadable",
@@ -915,6 +917,7 @@ __all__ = [
     "CompanyDocumentFailureRules",
     "CompanyDocumentPolicies",
     "CompanyDocumentRouteForFailure",
+    "COMPANY_DOCUMENT_OCR_REQUIRED",
     "CompanyDocumentTask",
     "DisclosureCoverageMismatch",
     "DisclosureSecurity",

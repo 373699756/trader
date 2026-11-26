@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 
 from trader.download.domain.company_financial_report import CompanyFinancialReportRequest, IsCompanyFinancialReportTitle
 from trader.download.domain.company_evidence import (
+    COMPANY_DOCUMENT_OCR_REQUIRED,
     CompanyDocumentExtraction,
     CompanyInputValidationFailure,
     CompanyDocumentFailure,
@@ -466,7 +467,7 @@ class CninfoMarketDisclosureSource:
                 "disclosure_document_parse_timeout",
                 "disclosure_document_text_unavailable",
             }:
-                raise CompanyDocumentFailure("disclosure_document_ocr_required", payload_hash=payload_hash) from exc
+                raise CompanyDocumentFailure(COMPANY_DOCUMENT_OCR_REQUIRED, payload_hash=payload_hash) from exc
             if route == "standard" and exc.reason in {
                 "disclosure_document_page_limit",
                 "disclosure_document_text_limit",
@@ -481,7 +482,7 @@ class CninfoMarketDisclosureSource:
                         "disclosure_document_parse_timeout",
                         "disclosure_document_text_unavailable",
                     }:
-                        raise CompanyDocumentFailure("disclosure_document_ocr_required", payload_hash=payload_hash) from expanded
+                        raise CompanyDocumentFailure(COMPANY_DOCUMENT_OCR_REQUIRED, payload_hash=payload_hash) from expanded
                     raise
                 route = "limits"
             else:

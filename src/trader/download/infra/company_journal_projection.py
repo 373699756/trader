@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from trader.download.application.company_failures import IsRetryableCompanySourceFailure
-from trader.download.domain.company_evidence import IsTransientCompanyDocumentFailure
+from trader.download.domain.company_evidence import COMPANY_DOCUMENT_OCR_REQUIRED, IsTransientCompanyDocumentFailure
 from trader.download.domain.company_sync import CompanySyncFamily, CompanySyncFamilyResult, CompanySyncStepResult
 from trader.infra.sqlite_connection import SqliteConnection
 
@@ -102,7 +102,11 @@ class _FamilySteps:
             recoverable = ("announcement_document_failed" in gaps or "required_original_recovery_failed" in gaps
                 or failure is not None and IsTransientCompanyDocumentFailure(failure))
             if recoverable:
-                self.retry_by_state.setdefault(state_hash, []).append(step)
+                previous = self.retry_by_state.setdefault(state_hash, [])
+                if failure is not None and previous and self.errors.get(previous[-1]) == COMPANY_DOCUMENT_OCR_REQUIRED:
+                    # Report the real outcome for the same original after its OCR handoff resumes.
+                    self.errors.pop(previous[-1])
+                previous.append(step)
             if recoverable or failure == "source_attempt_unconfirmed":
                 self.removable[step] = gaps
             if failure is not None:

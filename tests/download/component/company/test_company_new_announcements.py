@@ -474,42 +474,61 @@ def test_more_than_one_local_batch_converges_without_skipping_retained_documents
     assert reader.read(_SCOPE.codes)[0].pending_document_count == 0
 
 
-@pytest.mark.parametrize("failure", (False, True))
-def test_new_original_dispatch_uses_one_attempt_and_continues_after_parser_failure(tmp_path, failure):
+@pytest.mark.parametrize("scenario", ("text", "parse_failure", "ocr", "resume_ocr", "ocr_low_quality"))
+def test_new_original_dispatch_uses_one_attempt_and_continues_after_parser_failure(tmp_path, scenario):
     runtime, _, _, _ = _runtime(tmp_path)
     runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
     item = Disclosure("cninfo", "new", _SCOPE.codes, "关于收到立案告知书的公告", _SCOPE.cutoff - timedelta(days=1), "https://example.test/new.PDF", "a" * 64)
     runtime.material.register_disclosures((item,))
     calls = []
+    routes = []
+    cached = scenario in {"resume_ocr", "ocr_low_quality"}
 
     class Source:
         def document_ready(self, disclosure):
-            return False
+            return cached
 
         def document_payload_hash(self, disclosure):
-            return None
+            return b"p" * 32 if cached else None
 
         def download_document(self, disclosure, *, attempt_limit):
             calls.append((disclosure.identity, attempt_limit))
 
-        def extract_document(self, disclosure, **kwargs):
-            if failure:
+        def extract_document(self, disclosure, *, route):
+            routes.append(route)
+            if scenario == "parse_failure":
                 raise CompanyDocumentFailure("disclosure_document_text_empty")
+            if scenario in {"ocr", "resume_ocr", "ocr_low_quality"}:
+                if route == "standard":
+                    raise CompanyDocumentFailure("disclosure_document_ocr_required")
+                assert route == "ocr"
+                if scenario == "ocr_low_quality":
+                    raise CompanyDocumentFailure("disclosure_document_ocr_low_quality")
+                return CompanyDocumentExtraction(_INVESTIGATION, "ocr", b"p" * 32, "test_ocr", 95)
             return CompanyDocumentExtraction(_INVESTIGATION, "text", b"p" * 32, "test_text")
 
     config = CompanySyncConfigurationFixture()
+    policies = BuildCompanyDocumentPolicies(config, "ocr-test", text_identity="text-test")
+    if cached:
+        prior = "disclosure_document_ocr_required"
+        runtime.material.document_failure(item, policies.standard, prior, _SCOPE.cutoff, _SCOPE.cutoff + timedelta(days=1))
+        runtime.inputs.complete_task(_SCOPE.identity, "new_announcement_document", CanonicalDigest((item, policies)), 0, CanonicalDigest(prior))
     producer = CompanyAnnouncementProducer(runtime.inputs, runtime.material, Source(), _SCOPE,
         sqlite_policy=SqlitePolicyFixture(), extraction_hash=runtime.facts.extraction_hash, configuration=config,
-        policies=BuildCompanyDocumentPolicies(config, "ocr-test", text_identity="text-test"), wall_clock=lambda: _SCOPE.cutoff)
+        policies=policies, wall_clock=lambda: _SCOPE.cutoff)
     producer.advance(_SCOPE, cancel_requested=lambda: False, deadline=100)
     state = producer.state(_SCOPE)
-    assert state.source_required
+    assert state.source_required is (not cached)
     result = producer.advance(_SCOPE, cancel_requested=lambda: False, deadline=100)
-    assert calls == [("new", 1)] and result.can_continue and result.source_calls == 1
-    assert ("announcement_document_failed" in result.gaps) == failure
+    assert calls == ([] if cached else [("new", 1)]) and result.can_continue and result.source_calls == int(not cached)
+    assert routes == (["standard"] if scenario in {"text", "parse_failure"} else ["standard", "ocr"])
+    error = {"parse_failure": "disclosure_document_text_empty", "ocr_low_quality": "disclosure_document_ocr_low_quality"}.get(scenario)
+    assert result.failure == error
+    assert ("announcement_document_failed" in result.gaps) == (error is not None)
     with SqliteSession(runtime.material.path) as connection:
         row = connection.run("SELECT body_checked,body_retained FROM disclosures WHERE source_key='new'").require_one()
-        assert tuple(row) == ((0, 0) if failure else (1, 1))
+        assert tuple(row) == ((0, 0) if error else (1, 1))
+        assert [row[0] for row in connection.run("SELECT failure FROM document_retries")] == ([error] if error else [])
 
 
 @pytest.mark.parametrize(("prior_check", "denied"), [(False, False), (True, False), (False, True)])
