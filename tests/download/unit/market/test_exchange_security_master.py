@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from unittest.mock import Mock
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -28,6 +29,33 @@ def _listing(code: str, board: str, exchange: str) -> ExchangeSecurityMasterList
         board=board,
         exchange=exchange,
     )
+
+
+@pytest.mark.parametrize("rows,total,pages,valid", ((0, 0, 1, False), (1, 2, 1, False), (1, 2, 2, False), (1, 1, 1, True)))
+def test_sse_requires_complete_response_per_board(rows, total, pages, valid):
+    def get(_url, *, params, **_kwargs):
+        star = params["STOCK_TYPE"] == "8"
+        row = {"A_STOCK_CODE": "688001" if star else "600001", "SEC_NAME_CN": "fixture", "LIST_DATE": "2020-01-02"}
+        response = Mock()
+        response.json.return_value = {
+            "result": [row] * (rows if star else 1),
+            "pageHelp": {"total": total if star else 1, "pageNo": 1, "pageCount": pages if star else 1},
+        }
+        return response
+
+    if valid:
+        assert tuple(row.board for row in exchange_module.FetchSseListings(1, get=get)) == ("main", "star")
+    else:
+        with pytest.raises(ValueError, match="SSE star"):
+            exchange_module.FetchSseListings(1, get=get)
+
+
+def test_invalid_szse_workbook_preserves_parser_cause_as_source_failure():
+    from zipfile import BadZipFile
+
+    with pytest.raises(ValueError, match="SZSE") as caught:
+        exchange_module.FetchSzseListings(1, get=lambda *_args, **_kwargs: Mock(content=b"<html>unavailable</html>"))
+    assert isinstance(caught.value.__cause__, BadZipFile)
 
 
 def test_exchange_security_master_builds_one_complete_atomic_snapshot() -> None:

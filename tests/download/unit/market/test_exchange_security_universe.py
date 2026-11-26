@@ -15,8 +15,10 @@ from trader.infra.market_data.observations import ExchangeSecurityMasterListing
 
 def _listings(exchange: str) -> tuple[ExchangeSecurityMasterListing, ...]:
     prefix = 600000 if exchange == "SSE" else 1
+    growth_board = "star" if exchange == "SSE" else "chinext"
     return tuple(
-        ExchangeSecurityMasterListing(f"{prefix + index:06d}", "fixture", date(2000, 1, 1), "main", exchange)
+        ExchangeSecurityMasterListing(f"{prefix + index:06d}", "fixture", date(2000, 1, 1),
+                                     growth_board if index == 0 else "main", exchange)
         for index in range(2000)
     )
 
@@ -48,6 +50,7 @@ def test_current_universe_preserves_listing_identity_and_bounds_requests() -> No
     ("duplicate", "reference_universe_duplicate"),
     ("missing_exchange", "reference_universe_exchanges_invalid"),
     ("unsupported_board", "reference_universe_board_invalid"),
+    ("missing_board", "reference_universe_board_coverage_invalid"),
 ))
 def test_incomplete_official_universe_is_rejected(invalid: str, reason: str) -> None:
     sse, szse = _listings("SSE"), _listings("SZSE")
@@ -57,6 +60,8 @@ def test_incomplete_official_universe_is_rejected(invalid: str, reason: str) -> 
         szse = (replace(szse[0], code=sse[0].code), *szse[1:])
     elif invalid == "missing_exchange":
         szse = tuple(replace(item, exchange="SSE") for item in szse)
+    elif invalid == "missing_board":
+        sse = tuple(replace(item, board="main") for item in sse)
     else:
         szse = (replace(szse[0], board="unsupported"), *szse[1:])
 

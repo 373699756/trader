@@ -48,6 +48,12 @@ def LoadCurrentAShareUniverse(
             raise DownloadValidationFailure("reference_universe_exchanges_invalid", "exchanges", "SSE,SZSE", "unexpected_set")
         if any(item.board not in ("main", "chinext", "star") for item in listings):
             raise DownloadValidationFailure("reference_universe_board_invalid", "board", "main,chinext,star", "unsupported")
+        boards = {(item.exchange, item.board) for item in listings}
+        if boards != {("SSE", "main"), ("SSE", "star"), ("SZSE", "main"), ("SZSE", "chinext")}:
+            raise DownloadValidationFailure(
+                "reference_universe_board_coverage_invalid", "exchange_boards", "SSE:main,star SZSE:main,chinext",
+                " ".join(f"{exchange}:{board}" for exchange, board in sorted(boards)),
+            )
         universe = tuple(
             BaoStockSecurity(
                 item.code, item.name, cast(BaoStockBoard, item.board), item.listing_date, None, "exchange_security_master"

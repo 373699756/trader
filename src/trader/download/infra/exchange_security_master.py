@@ -10,6 +10,7 @@ from datetime import date, datetime
 from datetime import time as datetime_time
 from io import BytesIO
 from typing import Protocol, TypedDict, cast
+from zipfile import BadZipFile
 from zoneinfo import ZoneInfo
 
 from typing_extensions import Unpack
@@ -264,6 +265,14 @@ def FetchSseListings(
         payload = response.json()
         if not isinstance(payload, Mapping) or not isinstance(payload.get("result"), list):
             raise ValueError("SSE security master response shape is invalid")
+        page = payload.get("pageHelp")
+        if (
+            not isinstance(page, Mapping)
+            or any(type(page.get(field)) is not int for field in ("total", "pageNo", "pageCount"))
+            or page["pageNo"] != 1 or page["pageCount"] != 1
+            or not payload["result"] or page["total"] != len(payload["result"])
+        ):
+            raise ValueError(f"SSE {board} security master response is incomplete")
         for raw in cast(list[object], payload["result"]):
             if not isinstance(raw, Mapping):
                 raise ValueError("SSE security master row shape is invalid")
@@ -302,12 +311,20 @@ def FetchSzseListings(
     )
     content = response.content
     from openpyxl import load_workbook
+    from openpyxl.utils.exceptions import InvalidFileException
+    from openpyxl.worksheet.worksheet import Worksheet
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
-        workbook = load_workbook(BytesIO(content), read_only=False, data_only=True)
+        try:
+            workbook = load_workbook(BytesIO(content), read_only=False, data_only=True)
+        except (BadZipFile, InvalidFileException, KeyError, OSError, SyntaxError) as exc:
+            raise ValueError("SZSE security master workbook is invalid") from exc
     try:
-        rows = workbook.active.iter_rows(values_only=True)
+        sheet = workbook.active
+        if not isinstance(sheet, Worksheet):
+            raise ValueError("SZSE security master worksheet is missing")
+        rows = sheet.iter_rows(values_only=True)
         try:
             headers = tuple(str(value).strip() if value is not None else "" for value in next(rows))
         except StopIteration as exc:
