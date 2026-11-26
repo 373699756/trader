@@ -2,6 +2,21 @@
 
 本文记录问题、反例和待确认事项，沿用原问题编号。修复安排、状态与回执统一见[施工进度](g_施工进度.md)。评分、运行、供数与工件的合同分别见 c、b、d、e。
 
+## 19. 荐股模型、公司资料与看板链路复核（2026-11-26）
+
+11月26日15:12只读核对本机正式公司库。4,401股有供应商财务观测，4,401条正式公司记录中，完整财务、质押、解禁窗口、公告覆盖四项各为0股。东财观测可按采用时点和字段条件进入D25价值、成长、质量子分；最新亏损和公司风险资格另看正式事实。该时点七组模型目录同时有模型和元数据，缺V1 D25。文件计数无法确认运行进程采用或本轮训练终态。服务按启动时的工件评分，后续发布由观察器提示重启。[财务采用](../src/trader/recommendation/domain/market/research.py#L350) [启动加载](../src/trader/bootstrap.py#L605) [发布观察](../src/trader/training/infra/history/history_training_due.py#L626)
+
+| 优先级与问题 | 证据与待验收项 |
+| --- | --- |
+| P1 · D25盘后补冻可采用15:00后才可用的财务子分 | 固定15:00收盘报价、15:00:05评估及同一供应商报告，仅把进入缓存的时间从14:59:59移到15:00:03。两个夹具都采用质量分10，也都取得正式收盘输入凭据。补冻按请求时刻重读候选，评分按特征时刻选财务，收盘门核验正式公司事实和公告，漏查独立财务观测的可用时刻。应按15:00重选非行情输入，保留迟到的合法收盘报价；回归覆盖晚封签、晚采用和恰在边界三种情况。[候选重读](../src/trader/recommendation/application/pipeline/data_source/source_router.py#L892) [财务取值](../src/trader/recommendation/domain/scoring/scoring.py#L466) [收盘校验](../src/trader/recommendation/application/pipeline/final_selection/freeze_projection.py#L933) |
+| P1 · Web重连可错过正式冻结 | 第17章已有草稿5与正式6的反例。当前HTTP请求期间任一档位的缓存引用变化，仍会丢弃整批HTTP响应。应逐头判断日期、正式状态和发布序号，再一次提交整批，并保留同序号的降级原因。[整批合并](../src/trader/web/static/dashboard.js#L683) |
+| P2 · Tomorrow盘中概率缺少同时点校准依据 | 四档训练的当日价格和量来自完整日线，盘中推断使用截至当时的高低价、最新价和累计量。页面两种场景都显示“达标概率”。应区分盘中预估与收盘输出；若要解释盘中绝对概率，需用相同时点的历史输入分时段评价校准误差及同时段基线。[训练向量](../src/trader/training/infra/tomorrow/training.py#L460) [线上向量](../src/trader/recommendation/application/pipeline/local_score/tomorrow_probability.py#L145) [页面](../src/trader/web/static/render.js#L293) |
+| P2 · 公司风险特征和展示有两处口径错位 | 常驻资料中的事件到期后，夹具按决策时点判断已失效，负面公告因子仍为3，因为它按启动加载时点求有效性。另一个夹具中质押35%、解禁10%均得到风险等级3，覆盖投影却同时为 `known_clear`，详情将其译为“已核：未见风险”。应给事件因子传入本轮决策时刻，并将资料覆盖和风险等级分别投影。复核默认硬门及详情的阈值内、边界、未知三类输入。[事件时钟](../src/trader/recommendation/domain/market/research.py#L576) [覆盖投影](../src/trader/recommendation/domain/market/research.py#L305) [展示文案](../src/trader/web/static/render.js#L755) |
+| P2 · 模型加载与预测有可定位的重复工作 | 四档启动各登记一次模型维护，四个观察器都完整检查V2、V3的D25工件。V1 D25在生产预测中还运行旧收益排序树，事件头随后覆盖其排序值。优先复用同一发布代的验读结果，对照已有仅计算净效用与事件排序的回放实现，核候选概率、净效用、排名和席位一致，再计启动I/O与盘中预测耗时。[维护枚举](../src/trader/training/infra/history/history_training_due.py#L499) [档位范围](../src/trader/training/infra/history/history_training_due.py#L609) [V1预测](../src/trader/training/infra/d25/artifact.py#L121) |
+| P2 · 看板状态请求重复遍历全体公司 | 正常四档轮次共用原始市场报价。看板另每15秒请求状态，每次在请求线程重新核全体公司覆盖、解禁及财务时效，再多次汇总。应按资料身份和下个失效时点在轮外更新摘要，验证跨日、多标签页及正常评分并发时的状态一致性、接口延迟和整轮耗时。[共享采集](../src/trader/recommendation/infra/market_data/market_feature_service.py#L259) [页面轮询](../src/trader/web/static/dashboard.js#L222) [状态计算](../src/trader/recommendation/infra/market_data/published_company_research.py#L478) |
+
+以上反例验证到各自的评分、凭据或投影边界。真实六席、成熟收益和整轮性能仍按原安排分别验证。D25磁盘目标观察与实际加载的差异沿第17章跟踪。
+
 ## 17. 11月25日代码与问题闭合复核
 
 11月26日核对688613的44条发行人目录项，关联公告标识均为空。编号1225435937的更正公告第1页明确指向4月29日披露的2025年报，列出受影响的毛利率披露。第4页说明其余内容保持。目录可定位说明及更正后年报，单份文件可证明该次更正的范围，截至目标日的完整版本链仍需核验。供应商的最新报告和空值按实际收到的版本记录。[更正公告](https://static.cninfo.com.cn/finalpage/2026-07-22/1225435937.PDF)
