@@ -555,11 +555,12 @@ class SQLiteCompanyNormalizedIndex:
         Parsing, source qualification and proof preparation finish before this
         call. No document recovery, network or maintenance belongs to commit.
         """
-        if (not codes or codes != tuple(sorted(set(codes))) or cutoff.utcoffset() is None
-            or any(item.code not in codes for item in facts)
-            or any(item.code not in codes for item in fields)
-            or any(item.code not in codes for item in receipts)
-            or any(item.code not in codes for item in links)
+        members = frozenset(codes)
+        if (not codes or codes != tuple(sorted(members)) or cutoff.utcoffset() is None
+            or any(item.code not in members for item in facts)
+            or any(item.code not in members for item in fields)
+            or any(item.code not in members for item in receipts)
+            or any(item.code not in members for item in links)
             or field_rules_hash != CompanyFieldProofRulesHash()):
             raise ValueError("company_normalization_prepared_invalid")
         ordered = tuple(sorted(fields, key=lambda item: (item.code, item.event_id, item.field)))
