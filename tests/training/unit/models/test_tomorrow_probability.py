@@ -91,11 +91,16 @@ def test_four_independent_algorithms_fit_and_reload_with_only_two_reads(tmp_path
             day_index = (day - first).days
             for index, code in enumerate(codes):
                 current = close(day_index, index)
-                yield _row(
+                row = _row(
                     day, code, current,
                     opening=current * (0.94 if close(day_index + 1, index) == 106 else 1.02),
                     preclose=close(day_index - 1, index),
                 )
+                if index == 0 and day_index == 25:
+                    row = replace(row, point=None, cell_status="unknown_missing")
+                if index == 0 and day_index == 30:
+                    row = replace(row, point=replace(row.point, raw_open=None))
+                yield row
 
     history = SimpleNamespace(
         open_dates=dates, universe_count=len(codes), snapshot_hash="a" * 64, iter_training_rows=rows, listing_intervals=(),
@@ -118,6 +123,7 @@ def test_four_independent_algorithms_fit_and_reload_with_only_two_reads(tmp_path
     assert tuple(head.result.algorithm for head in fitted) == ("lambdarank", "lightgbm_binary", "l2_logistic", "tcn_bce"), fitted
     assert len({head.result.model_identity for head in fitted}) == 4
     for head in fitted:
+        assert head.result.pending_labels == head.result.missing_features == int(head.profile == "v2")
         head_root = tmp_path / head.profile / "tomorrow"
         assert {path.name for path in head_root.iterdir()} == {"model.json", "metadata.json"}
         metadata = json.loads((head_root / "metadata.json").read_text(encoding="utf-8"))
@@ -280,3 +286,30 @@ def test_v5_gap_features_match_serving_without_changing_raw_target(missing):
         assert samples.labels[0] == 0
     else:
         assert math.isnan(samples.labels[0])
+
+
+def test_short_input_blocks_before_scanning_and_hard_capacity_isolated(tmp_path):
+    dates = tuple(date(2023, 1, 1) + timedelta(days=n) for n in range(1051))
+    scans = []
+
+    def rows(selected):
+        scans.append(selected)
+        yield from ()
+
+    history = SimpleNamespace(open_dates=dates, universe_count=2, snapshot_hash="a" * 64, iter_training_rows=rows)
+    resources = dict(
+        prediction_targets=LoadPredictionTargets(_ROOT / "config/strategy.json"), project_root=_ROOT,
+        cancelled=lambda: False, cpu_budget=TrainingCpuBudget(2, TrainingResourceSettingsFixture().cpu),
+        memory=TrainingMemoryBudget(2 * 825 * 360),
+    )
+    heads = TrainTomorrowProbability(history, tmp_path, profiles=("v1", "v2", "v3"), **resources)
+    assert [head.result.failure for head in heads] == [
+        "tomorrow_insufficient_training_dates", "tomorrow_probability_memory_budget_insufficient", "tomorrow_insufficient_training_dates",
+    ]
+    assert scans == [dates[-826:]]
+    history.open_dates = dates[-800:]
+    scans.clear()
+    head, = TrainTomorrowProbability(history, tmp_path, profiles=("v3",), **resources)
+    assert head.result.failure == "tomorrow_insufficient_training_dates" and not scans
+    assert (head.result.window_shortfall.required_days, head.result.window_shortfall.available_days) == (801, 800)
+    assert not (tmp_path / "v3" / "tomorrow" / "model.json").exists()

@@ -218,6 +218,8 @@ def test_first_valid_child_seals_identity_and_returns_only_named_evidence(tmp_pa
     workloads = _mapping(details["workloads"])
     assert set(workloads) == {"initial", "repeat", "sample_reuse"}
     assert _mapping(workloads["initial"])["seconds"] == 80.0
+    assert _mapping(workloads["initial"])["history_scan_passes"] == 3
+    assert _mapping(workloads["initial"])["history_scan_scope"] == "tomorrow_and_d25"
     assert _mapping(workloads["repeat"])["history_scan_passes"] == 0
     assert _mapping(workloads["sample_reuse"])["history_rows_read"] == 0
     assert {(row["profile"], row["strategy"]) for row in identity["inputs"]} == {
@@ -389,7 +391,9 @@ def test_later_identity_drift_is_rejected_without_overwriting_the_first_child(tm
     if mutation == "configuration":
         summary["training_configuration_sha256"] = "f" * 64
     elif mutation == "source":
-        _mapping(_mapping(summary["initial"])["execution"])["history_rows_read"] = 401
+        execution = _mapping(_mapping(summary["initial"])["execution"])
+        execution["history_rows_read"] = 401
+        _mapping(_mapping(execution["history_reads_by_strategy"])["tomorrow"])["rows"] = 201
     else:
         for name in ("initial", "repeat"):
             run = _mapping(summary[name])

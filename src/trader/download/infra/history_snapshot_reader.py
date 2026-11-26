@@ -491,7 +491,7 @@ class HistorySnapshotReader:
         progress: Callable[[int], None] | None = None,
         *,
         industry_snapshot: CurrentIndustrySnapshot | None,
-    ) -> Iterator[HistoryTrainingRow]:
+    ) -> Generator[HistoryTrainingRow, None, None]:
         """Trust the published snapshot and stream its narrow training projection."""
 
         dates = tuple(calendar_dates)

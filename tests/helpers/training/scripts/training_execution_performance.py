@@ -78,6 +78,7 @@ def _install_tomorrow_history(monkeypatch: MonkeyPatch, dates: tuple[date, ...],
     """Supply the event classes required by a benchmark fixture focused on D25 input and cache handling."""
     from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingRow
     from trader.training.infra import selected_training
+    from trader.training.infra.tomorrow.training import TomorrowHistoryReads
 
     codes = tuple(f"600{index:03d}" for index in range(1, 9))
     first = dates[0]
@@ -85,21 +86,27 @@ def _install_tomorrow_history(monkeypatch: MonkeyPatch, dates: tuple[date, ...],
     def close(index: int, stock: int) -> float:
         return 106.0 if index % 4 == (1 if stock % 2 == 0 else 3) else 100.0
 
-    def rows(selected: tuple[date, ...]) -> Generator[HistoryTrainingRow, None, None]:
+    def rows(selected: tuple[date, ...], reads: TomorrowHistoryReads) -> Generator[HistoryTrainingRow, None, None]:
+        reads.scans += 1
         for day in selected:
             index = (day - first).days
             for stock, code in enumerate(codes):
                 current = close(index, stock)
                 opening = current * (0.94 if close(index + 1, stock) == 106 else 1.02)
                 high, low = max(current, opening) + 1, min(current, opening) - 1
+                reads.rows += 1
                 yield HistoryTrainingRow(code, day, "main", None, HistoryTrainingPoint(
                     day, current, 20_000_000, opening, high, low, 10_000,
                     raw_open=opening, raw_high=high, raw_low=low, raw_close_price=current,
                     raw_preclose=close(index - 1, stock),
                 ), "complete")
 
-    history = SimpleNamespace(open_dates=dates, universe_count=len(codes), snapshot_hash=snapshot_hash, iter_training_rows=rows)
-    monkeypatch.setattr(selected_training, "OpenTomorrowHistoryInput", lambda *_args, **_kwargs: history)
+    def open_history(*_args: object, **_options: object) -> SimpleNamespace:
+        reads = TomorrowHistoryReads()
+        return SimpleNamespace(open_dates=dates, universe_count=len(codes), snapshot_hash=snapshot_hash, reads=reads,
+                               iter_training_rows=lambda selected: rows(selected, reads))
+
+    monkeypatch.setattr(selected_training, "OpenTomorrowHistoryInput", open_history)
 
 
 def _digest(value: str) -> str:
@@ -208,8 +215,12 @@ def _run(
                 for profile in profiles
             ],
             "not_started": [],
-            "history_scan_passes": 0 if reused or d25_only else 1,
+            "history_scan_passes": 0 if reused or d25_only else 3,
             "history_rows_read": 0 if reused or d25_only else 400,
+            "history_reads_by_strategy": {
+                **({} if d25_only else {"tomorrow": {"scans": 0 if reused else 2, "rows": 0 if reused else 200}}),
+                "d25": {"scans": 0 if reused or d25_only else 1, "rows": 0 if reused or d25_only else 200},
+            },
             **_terminal_shutdown(profiles),
             **({"tomorrow_probability": tomorrow} if not d25_only else {}),
         },

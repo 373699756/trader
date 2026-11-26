@@ -61,6 +61,8 @@ class SelectedTrainingRun(Generic[ResultT]):
     outcomes: tuple[SelectedTrainingOutcome[ResultT], ...]
     history_scan_passes: int
     history_rows_read: int
+    tomorrow_scan_passes: int = field(default=0, kw_only=True)
+    tomorrow_rows_read: int = field(default=0, kw_only=True)
     timing: TrainingExecutionTiming | None = field(default=None, kw_only=True)
     industry_snapshot: CurrentIndustrySnapshot | None = field(default=None, kw_only=True)
     tomorrow_probability: tuple[TomorrowProbabilityProfileResult, ...] = field(default=(), kw_only=True)
@@ -74,9 +76,14 @@ class SelectedTrainingPreparationError(RuntimeError):
 class SelectedD25IndustryUnavailable(RuntimeError):
     """D25 could not start after the independent Tomorrow operation returned."""
 
-    def __init__(self, tomorrow_probability: tuple[TomorrowProbabilityProfileResult, ...]) -> None:
+    def __init__(
+        self, tomorrow_probability: tuple[TomorrowProbabilityProfileResult, ...],
+        history_scan_passes: int, history_rows_read: int,
+    ) -> None:
         super().__init__("d25_industry_input_unavailable")
         self.tomorrow_probability = tomorrow_probability
+        self.history_scan_passes = history_scan_passes
+        self.history_rows_read = history_rows_read
 
 
 class SelectedTrainingDrainError(RuntimeError):

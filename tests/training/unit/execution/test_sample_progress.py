@@ -146,7 +146,7 @@ def test_shared_scan_reports_preceding_days_to_every_profile_and_does_not_fake_e
     days = tuple(date(2026, 1, 1) + timedelta(days=i) for i in range(3))
     captures = (_Capture(), _Capture())
     request = Mock(progresses=captures)
-    session = _SelectedTrainingSession(request, Mock(), Mock(), Mock())
+    session = _SelectedTrainingSession(request, Mock(), Mock(), Mock(), Mock(), (), Mock())
 
     def interrupted():
         for day in days[:2]:

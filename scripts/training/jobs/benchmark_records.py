@@ -170,9 +170,11 @@ def _review_child(payload: dict[str, object]) -> _ChildReview:
     heads = _head_values(initial, _PROFILES, reused=False)
     _head_values(repeat, _PROFILES, reused=True)
     _head_values(sample, _PROFILES[1:], reused=False, d25_only=True)
-    rows = _scan(initial, _PROFILES, first=True)
-    _scan(repeat, _PROFILES, first=False)
-    _scan(sample, _PROFILES[1:], first=False)
+    history_reads = {
+        "initial": _scan(initial, _PROFILES, first=True),
+        "repeat": _scan(repeat, _PROFILES, first=False),
+        "sample_reuse": _scan(sample, _PROFILES[1:], first=False),
+    }
     reuse_failures = TrainingReuseFailures(initial, repeat, _PROFILES)
     sample_failures = TrainingSampleReuseFailures(initial, scenario, _PROFILES)
     if "repeat_reuse_failures" in summary and _failure_codes(summary["repeat_reuse_failures"]) != reuse_failures:
@@ -217,13 +219,14 @@ def _review_child(payload: dict[str, object]) -> _ChildReview:
         raise ValueError("training_benchmark_baseline_has_candidate")
     workloads: dict[str, object] = {}
     for name, run in (("initial", initial), ("repeat", repeat), ("sample_reuse", sample)):
+        scans, rows = history_reads[name]
         workloads[name] = {
             "seconds": _seconds(run.get("seconds")),
             "resources": _resources(run.get("resources")),
             "strategies": ["d25"] if name == "sample_reuse" else list(_STRATEGIES),
-            "history_scan_scope": "d25_fanout",
-            "history_scan_passes": 1 if name == "initial" else 0,
-            "history_rows_read": rows if name == "initial" else 0,
+            "history_scan_scope": "d25_fanout" if name == "sample_reuse" else "tomorrow_and_d25",
+            "history_scan_passes": scans,
+            "history_rows_read": rows,
         }
     preparation = _mapping(scenario.get("preparation"), "training_benchmark_sample_preparation_missing")
     preparation_details = {
@@ -243,7 +246,7 @@ def _review_child(payload: dict[str, object]) -> _ChildReview:
         "training_configuration_sha256": configuration,
         "inputs": inputs,
         "numeric_fingerprints": fingerprints,
-        "initial_history_rows_read": rows,
+        "initial_history_rows_read": history_reads["initial"][1],
     }
     numeric_failure = (
         "training_benchmark_repeat_numeric_values_changed" if repeat_numeric else
@@ -290,14 +293,28 @@ def _head_values(
     return evidence
 
 
-def _scan(run: dict[str, object], expected: tuple[str, ...], *, first: bool) -> int:
+def _scan(run: dict[str, object], expected: tuple[str, ...], *, first: bool) -> tuple[int, int]:
     execution = _mapping(run.get("execution"), "training_benchmark_execution_missing")
     if execution.get("status") != "completed" or execution.get("profiles") != list(expected):
         raise ValueError("training_benchmark_execution_invalid")
     scans, rows = execution.get("history_scan_passes"), execution.get("history_rows_read")
-    if type(scans) is not int or scans != int(first) or type(rows) is not int or (rows <= 0 if first else rows != 0):
+    scope = ("d25",) if execution.get("strategy") == "d25" else ("tomorrow", "d25")
+    by_strategy = execution.get("history_reads_by_strategy")
+    if type(scans) is not int or type(rows) is not int or not isinstance(by_strategy, dict) or set(by_strategy) != set(scope):
         raise ValueError("training_benchmark_history_scan_invalid")
-    return rows
+    measured_scans = measured_rows = 0
+    for strategy in scope:
+        counter = _mapping(by_strategy[strategy], "training_benchmark_history_scan_invalid")
+        count, size = counter.get("scans"), counter.get("rows")
+        if type(count) is not int or type(size) is not int or (
+            (size < count or count < 1 or (strategy == "d25" and count != 1)) if first else (size != 0 or count != 0)
+        ):
+            raise ValueError("training_benchmark_history_scan_invalid")
+        measured_scans += count
+        measured_rows += size
+    if (scans, rows) != (measured_scans, measured_rows):
+        raise ValueError("training_benchmark_history_scan_invalid")
+    return scans, rows
 
 
 def _fingerprints(

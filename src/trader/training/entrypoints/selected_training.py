@@ -293,6 +293,12 @@ def _run_selected_training(
             "peak_reserved_cpu_threads": cpu_budget.peak_reserved_threads,
             "history_scan_passes": run.history_scan_passes,
             "history_rows_read": run.history_rows_read,
+            "history_reads_by_strategy": {
+                **({"tomorrow": {"scans": run.tomorrow_scan_passes, "rows": run.tomorrow_rows_read}}
+                   if strategy is not Strategy.D25 else {}),
+                **({"d25": {"scans": run.history_scan_passes - run.tomorrow_scan_passes,
+                            "rows": run.history_rows_read - run.tomorrow_rows_read}} if strategy is not Strategy.TOMORROW else {}),
+            },
             "timing": ProjectTrainingExecutionTiming(run.timing) if run.timing is not None else None,
             "results": [
                 {
@@ -331,6 +337,12 @@ def _run_selected_training(
         }
         if isinstance(exc, SelectedD25IndustryUnavailable):
             summary["tomorrow_probability"] = [_project_tomorrow(head) for head in exc.tomorrow_probability]
+            summary["history_scan_passes"] = exc.history_scan_passes
+            summary["history_rows_read"] = exc.history_rows_read
+            summary["history_reads_by_strategy"] = {
+                "tomorrow": {"scans": exc.history_scan_passes, "rows": exc.history_rows_read},
+                "d25": {"scans": 0, "rows": 0},
+            }
             summary["not_started"] = profiles
     finally:
         deadline = cancelled.shutdown_deadline()

@@ -288,6 +288,7 @@ def test_tomorrow_can_read_the_published_prices_before_d25_checks_industry(tmp_p
         pytest.fail("D25 may not open without its current industry input")
     assert stages == ["tomorrow", "industry"]
     assert tuple(head.profile for head in blocked.value.tomorrow_probability) == ("v1", "v3")
+    assert (blocked.value.history_scan_passes, blocked.value.history_rows_read) == (1, 1)
     assert all(head.result.ready for head in blocked.value.tomorrow_probability)
     assert progresses[0].events == [started, completed]
     assert progresses[1].events == [
@@ -304,6 +305,7 @@ def test_selected_strategy_reads_only_its_own_inputs(tmp_path, strategy):
     def fit_tomorrow(history, _root, *, profiles, prediction_targets, progress, **_resources):
         assert strategy is Strategy.TOMORROW
         opened.append("tomorrow")
+        assert len(tuple(history.iter_training_rows(history.open_dates[-1:]))) == 1
         progress("v1", TomorrowTrainingProgress("model_fit", "running", 0, 1, strategy=Strategy.TOMORROW))
         return tuple(TomorrowProbabilityProfileResult(
             prediction_targets.for_profile(profile, Strategy.TOMORROW), profile,
@@ -325,6 +327,7 @@ def test_selected_strategy_reads_only_its_own_inputs(tmp_path, strategy):
     assert opened == (["tomorrow"] if strategy is Strategy.TOMORROW else ["industry"])
     if strategy is Strategy.TOMORROW:
         assert tuple(head.profile for head in run.tomorrow_probability) == request.profiles
+        assert (run.history_scan_passes, run.history_rows_read) == (1, 1)
         assert not run.outcomes and not run.d25_targets and run.industry_snapshot is None
         assert [(event.stage, event.state, event.strategy) for event in progress_output.events] == [
             ("input_read", "started", Strategy.TOMORROW),

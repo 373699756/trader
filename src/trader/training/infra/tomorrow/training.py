@@ -6,7 +6,7 @@ import math
 from collections import deque
 from collections.abc import Callable, Generator, Iterable
 from contextlib import closing
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal
 from functools import partial
@@ -55,6 +55,7 @@ from trader.training.domain.v1.learned_rank import V1TrainingSettings
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.history.aligned_training_rows import AlignTrainingFacts, AlignmentReadDates
 from trader.training.infra.logistic_fitting import FitBinaryLogistic
+from trader.training.infra.memory_admission import TrainingMemoryRequestExceedsBudget
 from trader.training.infra.fitting_settings import LightGBMFittingParameters, RidgeFittingParameters
 from trader.training.infra.ranking import DailyBinaryRankRows
 from trader.training.infra.tcn.settings import TcnFittingParameters
@@ -114,8 +115,8 @@ class _Samples:
     codes: _IntArray
     boards: _IntArray
     offsets: tuple[int, ...]
-    pending: int
-    missing_features: int
+    pending_offsets: tuple[int, ...]
+    missing_offsets: tuple[int, ...]
 
     def rows(self, start_day: int, end_day: int) -> slice:
         return slice(self.offsets[start_day], self.offsets[end_day])
@@ -132,12 +133,19 @@ class _PendingFit:
         return self.settings.profile
 
 
+@dataclass(slots=True)
+class TomorrowHistoryReads:
+    scans: int = 0
+    rows: int = 0
+
+
 @dataclass(frozen=True, slots=True)
 class TomorrowHistoryInput:
     """A price-only input pinned by the selected training operation's history lock."""
 
     state: HistoryPublishedControlState
     reader: HistorySnapshotReader
+    reads: TomorrowHistoryReads = field(default_factory=TomorrowHistoryReads)
 
     @property
     def snapshot_hash(self) -> str:
@@ -156,10 +164,14 @@ class TomorrowHistoryInput:
         return tuple((security.code, security.listed_on, security.delisted_on) for security in self.state.universe.securities)
 
     def iter_training_rows(self, dates: tuple[date, ...]) -> Generator[HistoryTrainingRow, None, None]:
-        yield from self.reader.iter_training_rows(
+        self.reads.scans += 1
+        with closing(self.reader.iter_training_rows(
             self.state.snapshot, dates, tuple(item.code for item in self.state.universe.securities),
             industry_snapshot=None,
-        )
+        )) as rows:
+            for row in rows:
+                self.reads.rows += 1
+                yield row
 
 
 def OpenTomorrowHistoryInput(root: Path, *, sqlite_policy: SqliteIoPolicy) -> TomorrowHistoryInput:
@@ -260,6 +272,13 @@ def TrainTomorrowProbability(
     return tuple(results[profile] for profile in profiles)
 
 
+def _sample_bytes(cap: int, warmup: int, universe_count: int) -> int:
+    if warmup:
+        width = len(TomorrowFeatureNames("v5"))
+        return 2 * cap * (4 * width + 32) + warmup * universe_count * 160 + 64 * 1024**2
+    return max(1, cap * (5 * len(TOMORROW_FEATURE_NAMES) + 15) * 8)
+
+
 def _train_sample_group(
     history: TomorrowHistoryInput, model_root: Path, requests: tuple[_PendingFit, ...],
     cpu_budget: TrainingCpuBudget, memory: TrainingMemoryAdmission, check: Callable[[], None],
@@ -275,13 +294,7 @@ def _train_sample_group(
     limit = max(item.dates.fitting + item.dates.reserve for item in requests)
     calendar = history.open_dates[-(limit + warmup + 1):]
     cap = max(0, len(calendar) - warmup - 1) * history.universe_count
-    if sequence:
-        width = len(TomorrowFeatureNames("v5"))
-        # Float32 matrix plus one filtered fitting copy and a bounded universe history buffer.
-        required_bytes = 2 * cap * (4 * width + 32) + warmup * history.universe_count * 160 + 64 * 1024**2
-    else:
-        # Packed samples, normalized design, IRLS scratch and the native tree dataset.
-        required_bytes = max(1, cap * (5 * len(TOMORROW_FEATURE_NAMES) + 15) * 8)
+    required_bytes = _sample_bytes(cap, warmup, history.universe_count)
     try:
         check()
         if not cap:
@@ -304,6 +317,22 @@ def _train_sample_group(
                 item, samples, calendar[warmup:-1], history.snapshot_hash, model_root, check,
                 cpu_budget.native_threads, reporter,
             ) for item, reporter in zip(requests, reporters, strict=True))
+    except TrainingMemoryRequestExceedsBudget as exc:
+        smaller = []
+        blocked = []
+        for item, reporter in zip(requests, reporters, strict=True):
+            cap = (item.dates.fitting + item.dates.reserve) * history.universe_count
+            if _sample_bytes(cap, warmup, history.universe_count) <= exc.capacity_bytes:
+                smaller.append((item, reporter))
+            else:
+                blocked.append(TomorrowProbabilityProfileResult(item.target, item.profile, _training_failure(history.snapshot_hash, exc)))
+                reporter.fail()
+        if smaller:
+            blocked.extend(_train_sample_group(
+                history, model_root, tuple(item for item, _ in smaller), cpu_budget, memory, check,
+                tuple(reporter for _, reporter in smaller),
+            ))
+        return tuple(blocked)
     except (OSError, ValueError, HistorySnapshotReadError, lgb.basic.LightGBMError, np.linalg.LinAlgError) as exc:
         result = _training_failure(history.snapshot_hash, exc)
         for reporter in reporters:
@@ -411,6 +440,8 @@ def _collect_samples(
     previous_aligned: tuple[HistoryTrainingRow, ...] = ()
     rolling: dict[str, deque[PriceVolumePoint]] = {}
     offsets = [0]
+    pending_offsets = [0]
+    missing_offsets = [0]
     for day_index, day in enumerate(calendar):
         check()
         current: dict[str, HistoryTrainingRow] = {}
@@ -452,6 +483,8 @@ def _collect_samples(
                 boards[written] = _BOARDS.index(row.board)
                 written += 1
             offsets.append(written)
+            pending_offsets.append(pending)
+            missing_offsets.append(missing_features)
         if warmup:
             AppendTomorrowSequencePoints(rolling, previous_aligned, warmup)
             previous_aligned = aligned_rows
@@ -466,7 +499,8 @@ def _collect_samples(
         raise ValueError("tomorrow_history_stream_out_of_range")
     report("completed", "warmup" if warmup and len(calendar) <= warmup + 1 else "generation")
     return _Samples(
-        features[:written], labels[:written], codes[:written], boards[:written], tuple(offsets), pending, missing_features,
+        features[:written], labels[:written], codes[:written], boards[:written], tuple(offsets),
+        tuple(pending_offsets), tuple(missing_offsets),
     )
 
 
@@ -572,6 +606,11 @@ def _fit_pending(
     except (ImportError, OSError, ValueError, RuntimeError, lgb.basic.LightGBMError, np.linalg.LinAlgError) as exc:
         result = _training_failure(snapshot_hash, exc)
         progress.fail()
+    begin = len(signal_dates) - request.dates.fitting - request.dates.reserve
+    result = replace(
+        result, pending_labels=samples.pending_offsets[-1] - samples.pending_offsets[begin],
+        missing_features=samples.missing_offsets[-1] - samples.missing_offsets[begin],
+    )
     return TomorrowProbabilityProfileResult(request.target, request.profile, result)
 
 
@@ -678,11 +717,10 @@ def _train(
     progress.stage("artifact_publish", "completed")
     return TomorrowProbabilityTrainingResult(
         snapshot_hash, identity, artifact.algorithm,
-        pending_labels=samples.pending, missing_features=samples.missing_features,
         diagnostic=diagnostic, fitting_dates=fitted_dates, calibration_dates=calibrated_dates, early_stopping_dates=early_dates,
     )
 
 
 __all__ = [
-    "OpenTomorrowHistoryInput", "TomorrowTrainer", "TomorrowHistoryInput", "TrainTomorrowProbability",
+    "OpenTomorrowHistoryInput", "TomorrowTrainer", "TomorrowHistoryInput", "TomorrowHistoryReads", "TrainTomorrowProbability",
 ]

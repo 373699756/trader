@@ -56,7 +56,7 @@ from trader.training.infra.training_settings import LoadD25TrainingSettings, Loa
 from trader.training.infra.cpu_admission import TrainingCpuBudget
 from trader.training.infra.execution_options import TrainingExecutionOptions
 from trader.training.infra.sample_progress import TrainingSampleProgressTracker
-from trader.training.infra.tomorrow.training import OpenTomorrowHistoryInput, TomorrowTrainer
+from trader.training.infra.tomorrow.training import OpenTomorrowHistoryInput, TomorrowHistoryReads, TomorrowTrainer
 
 
 def ResolveTrainingLocations(
@@ -170,9 +170,9 @@ class SelectedTrainingAdapter:
 
     def _fit_tomorrow(
         self, request: SelectedTrainingRequest,
-    ) -> tuple[TomorrowProbabilityProfileResult, ...]:
+    ) -> tuple[tuple[TomorrowProbabilityProfileResult, ...], TomorrowHistoryReads]:
         if request.strategy is Strategy.D25 or isinstance(self.prediction_targets, CloseReturnResearchMode):
-            return ()
+            return (), TomorrowHistoryReads()
         train = self.train_tomorrow
         assert train is not None
         progresses = {
@@ -190,17 +190,21 @@ class SelectedTrainingAdapter:
         opened = TomorrowTrainingProgress("input_read", "completed", 1, 1, strategy=Strategy.TOMORROW)
         for progress in progresses.values():
             progress.publish(opened)
-        return train(
+        result = train(
             history, request.paths.models, profiles=request.profiles, prediction_targets=self.prediction_targets,
             project_root=request.runtime.project_root, cancelled=request.cancelled,
             cpu_budget=request.cpu_budget, memory=request.memory_admission, progress=report,
         )
+        return result, history.reads
 
     def run_tomorrow_only(self) -> SelectedTrainingRun[SelectedProfileResult]:
         with ExitStack() as scope:
             self._hold_inputs(scope)
-            tomorrow = self._fit_tomorrow(self.request)
-        return SelectedTrainingRun((), 0, 0, timing=self._measurements.snapshot(), tomorrow_probability=tomorrow)
+            tomorrow, reads = self._fit_tomorrow(self.request)
+        return SelectedTrainingRun(
+            (), reads.scans, reads.rows, tomorrow_scan_passes=reads.scans, tomorrow_rows_read=reads.rows,
+            timing=self._measurements.snapshot(), tomorrow_probability=tomorrow,
+        )
 
     @contextmanager
     def open(self) -> Iterator[SelectedTrainingSessionPort[SelectedProfileResult]]:
@@ -214,14 +218,14 @@ class SelectedTrainingAdapter:
         scope = ExitStack()
         try:
             self._hold_inputs(scope)
-            tomorrow = self._fit_tomorrow(request)
+            tomorrow, reads = self._fit_tomorrow(request)
             try:
                 industry = self.load_industry_snapshot(self.clock())
             except InterruptedError:
                 raise
             except (OSError, ValueError, RuntimeError) as exc:
                 if tomorrow:
-                    raise SelectedD25IndustryUnavailable(tomorrow) from exc
+                    raise SelectedD25IndustryUnavailable(tomorrow, reads.scans, reads.rows) from exc
                 raise
             history = SQLiteHistoryTrainingInputSnapshot.open(
                 paths.history, industry_snapshot=industry, sqlite_policy=self.sqlite_policy,
@@ -230,7 +234,7 @@ class SelectedTrainingAdapter:
                 request, history, scope, self._measurements, sqlite_policy=self.sqlite_policy,
                 prediction_targets=self.prediction_targets,
             )
-            yield _SelectedTrainingSession(request, history, factory, self._measurements, stopped, tomorrow)
+            yield _SelectedTrainingSession(request, history, factory, self._measurements, stopped, tomorrow, reads)
         except SelectedTrainingDrainError as exc:
             cleanup = CloseAfterFutures(scope.pop_all().close, exc.pending)
             exc.pending = (cleanup,)
@@ -247,6 +251,7 @@ class _SelectedTrainingSession:
     measurements: TrainingExecutionMeasurements
     stopped: Event
     tomorrow: tuple[TomorrowProbabilityProfileResult, ...]
+    tomorrow_reads: TomorrowHistoryReads
     physical_rows: int = 0
 
     def abort(self) -> ShutdownDeadline:
@@ -317,7 +322,9 @@ class _SelectedTrainingSession:
         self, run: SelectedTrainingRun[SelectedProfileResult],
     ) -> SelectedTrainingRun[SelectedProfileResult]:
         return replace(
-            run, history_rows_read=self.physical_rows, timing=self.measurements.snapshot(),
+            run, history_rows_read=self.physical_rows + self.tomorrow_reads.rows,
+            history_scan_passes=run.history_scan_passes + self.tomorrow_reads.scans, timing=self.measurements.snapshot(),
+            tomorrow_scan_passes=self.tomorrow_reads.scans, tomorrow_rows_read=self.tomorrow_reads.rows,
             industry_snapshot=self.history.snapshot.industry_snapshot,
             tomorrow_probability=self.tomorrow,
             d25_targets=tuple(

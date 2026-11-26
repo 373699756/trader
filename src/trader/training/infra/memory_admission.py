@@ -10,6 +10,12 @@ from trader.training.application.resources import TrainingMemorySettings
 from trader.training.infra.cgroup import ReadTrainingCgroupScopes
 
 
+class TrainingMemoryRequestExceedsBudget(ValueError):
+    def __init__(self, required_bytes: int, capacity_bytes: int) -> None:
+        super().__init__(f"training_memory_request_exceeds_budget:{required_bytes}:{capacity_bytes}")
+        self.capacity_bytes = capacity_bytes
+
+
 class TrainingMemoryBudget:
     def __init__(self, capacity_bytes: int) -> None:
         if type(capacity_bytes) is not int or capacity_bytes <= 0:
@@ -21,7 +27,7 @@ class TrainingMemoryBudget:
     @contextmanager
     def reserve(self, required_bytes: int, heartbeat: Callable[[], None]) -> Iterator[None]:
         if type(required_bytes) is not int or not 0 < required_bytes <= self.capacity_bytes:
-            raise ValueError(f"training_memory_request_exceeds_budget:{required_bytes}:{self.capacity_bytes}")
+            raise TrainingMemoryRequestExceedsBudget(required_bytes, self.capacity_bytes)
         with self._condition:
             while self._available < required_bytes:
                 heartbeat()
