@@ -22,6 +22,8 @@
 
 同入口`field_audit.financial_sources`分别核对保留与最新报告八项、报告期及精确披露时点。`source_null`表示当前采集依据为空，`publication_missing`表示依据有值而正式值丢失，`source_revision_changed`另列未确认；不将来源空值认证为发行人未披露。汇总覆盖全部正式行，逐股缺项列表最多50条、每条最多8项；旧完整报告不能遮蔽最新报告缺项。`--company-field-replay-keys`也可选择减持依据，在隔离副本中核验正式字段证据及第二轮复用；来源并发变化、缺原文或仍有重复正文读取时保持degraded，不借用局部出证数签全库或性能通过。
 
+在 `--company-source-qualification-audit` 后加 `--company-stock-fields /tmp/company-stock-fields.json`，可输出固定总体的全量逐股 JSON，另用 `--report` 指定汇总路径。明细列出各股供应商最近报告、披露日、八项值及缺项、正式发布和 D25 可读的财务评分观测，并逐项列出正式质押、解禁、公告风险和事件证据。当前轮截止与实际读回时点分别报告。目标文件使用新路径，审计只读，下载中的三库读取须通过稳定性检查。
+
 `download/company/coverage --company-source-qualification-audit`只读取配置内的固定公司轮次、规范财务、比例观察、原公告目录和正式发布。该模式检查来源计划摘要、分页与总体身份，输出财务样本和最新缺项的逐股原报告候选、修订与留存正文检查，以及质押／解禁分母和范围覆盖缺口。它不联网或发布，分页核对与正式可用覆盖各自报告。有未合并WAL或读窗内库变化时拒绝签稳定结果。
 
 同一`--company-database-audit`入口按实际配置的事件规则调用生产`SQLiteCompanyEvidenceReader`，将全部正式股票事实、事件字段结论／证据、正式公告链接和发布身份与固定SQL快照逐值比较，输出`publication.consumer_read`；`document_links/document_links_equal`分别记录实际链接数量和逐值一致性。未读完、规则不匹配、链接或发布身份不一致及预算到期不能计为一致。`http_checked=false`明确表示该审计未验HTTP接口；并发变更、未完成库存及来源质量继续独立报告。

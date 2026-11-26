@@ -121,6 +121,7 @@ def Main() -> int:
     audit.add_argument("--consumer-only", action="store_true")
     parser.add_argument("--consumer-http", action="store_true")
     audit.add_argument("--source-qualification-only", action="store_true")
+    parser.add_argument("--stock-fields", type=Path)
     audit.add_argument("--field-proof-only", action="store_true")
     audit.add_argument("--field-proof-recovery-only", action="store_true")
     parser.add_argument("--field-proof-recovery-manifest", type=Path)
@@ -154,6 +155,8 @@ def Main() -> int:
         parser.error("--consumer-http requires --consumer-only")
     if args.source_qualification_only and args.directory is not None:
         parser.error("--source-qualification-only does not accept --directory")
+    if args.stock_fields is not None and not args.source_qualification_only:
+        parser.error("--stock-fields requires --source-qualification-only")
     if args.field_proof_only and (args.facts_database is None or args.directory is not None):
         parser.error("--field-proof-only requires --facts-database and does not accept --directory")
     if args.field_proof_recovery_only and (
@@ -207,7 +210,8 @@ def Main() -> int:
     if args.replay_observed_at is not None and args.field_replay_keys is None:
         parser.error("--replay-observed-at requires --field-replay-keys")
     if args.source_qualification_only:
-        from scripts.download.company.company_source_qualification import AuditCompanySourceQualification
+        from scripts.download.company.company_source_qualification import AuditCompanySourceQualification, COMPANY_SOURCE_AUDIT_RETRY_REASONS
+        from scripts.download.company.company_stock_fields import StockFieldReport
         from trader.download.infra.company_document_files import CompanyDocumentFiles
         from trader.download.infra.download_settings import LoadCompanySyncConfiguration
 
@@ -218,20 +222,28 @@ def Main() -> int:
             parser.error("--source-qualification-only requires company paths from the configured runtime")
         configuration = LoadCompanySyncConfiguration(runtime.project_root)
         strategy = LoadStrategySettings(runtime.strategy_config_path)
-        report = AuditCompanySourceQualification(
-            paths,
-            documents=CompanyDocumentFiles(
-                paths.company_documents,
-                max_text_characters=configuration.extended_document_limits.max_text_characters,
-                max_bytes=configuration.temporary_text_capacity_bytes,
-                reserve_bytes=configuration.temporary_disk_reserve_bytes,
-            ),
-            sqlite_policy=sqlite_policy,
-            policy=strategy.long_research,
-            unlock_days=strategy.company_scoring.events.unlock_days,
-            deadline=time.monotonic() + args.budget_seconds,
-            monotonic=time.monotonic,
-        )
+        details = None
+        if args.stock_fields is not None:
+            RequireIsolatedReplay(args.stock_fields, (TOOL_ROOT, runtime.project_root, paths.root, runtime.runtime_dir))
+            details = StockFieldReport(args.stock_fields.resolve(), datetime.now(ZoneInfo("Asia/Shanghai")), strategy.company_scoring)
+        try:
+            report = AuditCompanySourceQualification(
+                paths,
+                documents=CompanyDocumentFiles(
+                    paths.company_documents,
+                    max_text_characters=configuration.extended_document_limits.max_text_characters,
+                    max_bytes=configuration.temporary_text_capacity_bytes,
+                    reserve_bytes=configuration.temporary_disk_reserve_bytes,
+                ),
+                sqlite_policy=sqlite_policy, policy=strategy.long_research, unlock_days=strategy.company_scoring.events.unlock_days,
+                stock_fields=details, deadline=time.monotonic() + args.budget_seconds, monotonic=time.monotonic,
+            )
+        except ValueError as exc:
+            reason = str(exc)
+            if reason not in COMPANY_SOURCE_AUDIT_RETRY_REASONS:
+                raise
+            report = {"status": "failed", "findings": [reason], "summary": {"source_qualification_audit": {
+                "scope": "frozen_company_inputs", "read_only": True, "stable_source_read": False, "failure_reason": reason}}}
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     if args.field_replay_keys is not None:

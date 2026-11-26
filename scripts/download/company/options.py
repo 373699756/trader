@@ -23,6 +23,7 @@ class CompanyOptions:
     company_consumer_audit: bool = False
     company_consumer_http: bool = False
     company_source_qualification_audit: bool = False
+    company_stock_fields: Path | None = None
     company_field_proof_audit: bool = False
     company_field_proof_recovery: bool = False
     company_field_proof_recovery_manifest: Path | None = None

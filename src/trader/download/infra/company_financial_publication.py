@@ -26,7 +26,10 @@ _PERIODIC = re.compile(r"(20[0-9]{2})年(第一季度|一季度|一季|半年度
 _ORIGINAL_QUARTER = re.compile(r"(?:[\u4e00-\u9fffA-Za-z0-9（）():：·]{0,80})?20[0-9]{2}年(?:第三季度|三季度|三季)报告(?:全文|正文)?")
 _CORRECTION = re.compile(r"更正|修订|调整|重述|补充|差错|撤回|取消|作废")
 _FINANCIAL = re.compile(r"财务|财报|报表|会计|利润|报告")
-_FINANCIAL_STATEMENTS = re.compile(r"定期报告|财报|财务(?:会计)?(?:报告|报表|数据|信息)|会计差错|前期差错")
+_FINANCIAL_STATEMENTS = re.compile(
+    r"定期报告|财报|财务(?:会计)?(?:报告|报表|数据|信息)|会计差错|前期差错"
+    r"|资产负债表|利润表|现金流量表|(?:股东|所有者)权益变动表"
+)
 _ISSUER_PROOF = "financial_issuer_original"
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 _PERIOD_END = {
@@ -45,7 +48,9 @@ def IsCompanyFinancialDirectoryEvidence(title: str) -> bool:
 
 
 def _is_financial_correction(title: str) -> bool:
-    return _CORRECTION.search(title) is not None and _FINANCIAL.search(title) is not None
+    return _CORRECTION.search(title) is not None and (
+        _FINANCIAL.search(title) is not None or _FINANCIAL_STATEMENTS.search(title) is not None
+    )
 
 
 def PrepareCompanyFinancialAdmissions(
@@ -76,26 +81,31 @@ def PrepareCompanyFinancialAdmissions(
             continue
         proof = matched[0]
         start = report.report_date + timedelta(days=1)
-        rows = collected.run("""SELECT d.*,c.code,
-            (SELECT COUNT(*) FROM disclosure_codes m WHERE m.disclosure_id=d.id) AS member_count,
-            (SELECT COUNT(*) FROM document_extractions x WHERE x.disclosure_id=d.id AND x.record_hash=d.record_hash) AS extracted,
-            EXISTS(SELECT 1 FROM document_supersessions s WHERE s.disclosure_id=d.id OR s.replacement_id=d.id) AS supersession
+        rows = collected.run("""SELECT d.id,d.title
             FROM disclosure_codes c JOIN disclosures d ON d.id=c.disclosure_id
-            WHERE c.code=? AND d.kind='announcement' AND d.published_at>=? AND d.published_at<=?
-            AND (d.title LIKE '%报告%' OR d.title LIKE '%财务%' OR d.title LIKE '%财报%'
-                OR d.title LIKE '%报表%' OR d.title LIKE '%会计%' OR d.title LIKE '%利润%')
-            ORDER BY d.published_at,d.source,d.source_key""", (report.code, start.isoformat(), cutoff.isoformat())).fetchall()
-        originals = []
+            WHERE c.code=? AND d.kind='announcement' AND d.published_at>=? AND d.published_at<=?""",
+            (report.code, start.isoformat(), cutoff.isoformat()))
+        original_id = None
         for row in rows:
+            check()
             title = "".join(row["title"].split())
             period = _period(title)
             if (period is not None and period > report.report_date or _is_financial_correction(title)):
                 break
             if period == report.report_date and _ORIGINAL_QUARTER.fullmatch(title) is not None:
-                originals.append(row)
+                if original_id is not None:
+                    break
+                original_id = row["id"]
         else:
-            if len(originals) == 1:
-                row = originals[0]
+            if original_id is not None:
+                row = collected.run("""SELECT d.*,c.code,
+                    (SELECT COUNT(*) FROM disclosure_codes m WHERE m.disclosure_id=d.id) AS member_count,
+                    EXISTS(SELECT 1 FROM document_extractions x WHERE x.disclosure_id=d.id
+                        AND x.record_hash=d.record_hash) AS extracted,
+                    EXISTS(SELECT 1 FROM document_supersessions s WHERE s.disclosure_id=d.id
+                        OR s.replacement_id=d.id) AS supersession
+                    FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id
+                    WHERE d.id=? AND c.code=?""", (original_id, report.code)).require_one()
                 disclosure = DecodeCompanyDisclosure(row)
                 digest = row["body_hash"]
                 if (disclosure != proof.original or row["member_count"] != 1 or row["extracted"] != 1 or row["supersession"]

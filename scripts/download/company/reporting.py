@@ -14,6 +14,7 @@ from scripts.download.company.projections import ProjectCompanyResume, ProjectCo
 from scripts.download.company.company_official_financial_audit import ProjectCompanyOfficialFinancialAudit
 from scripts.download.company.company_structured_window_audit import ProjectCompanyStructuredWindow
 from scripts.download.company.company_financial_alternatives import ProjectCompanyFinancialAlternatives
+from scripts.download.company.company_source_qualification import COMPANY_SOURCE_AUDIT_RETRY_REASONS
 from trader.download.domain.company_evidence import EvidenceMarket
 
 _FINANCIAL_PAGE_COLUMNS = (
@@ -178,6 +179,10 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
     summary = source.get("summary")
     if report_name == "company_resume" and isinstance(summary, Mapping) and "source_qualification_audit" in summary:
         audit = summary["source_qualification_audit"]
+        if isinstance(audit, Mapping) and source.get("status") == "failed" and audit.get("stable_source_read") is False:
+            reason = audit.get("failure_reason")
+            if isinstance(reason, str) and reason in COMPANY_SOURCE_AUDIT_RETRY_REASONS:
+                return replace(result, error_code=reason)
         valid = isinstance(audit, Mapping) and (
             source.get("status") == "degraded" and audit.get("scope") == "frozen_company_inputs"
             and all(audit.get(name) is True for name in ("read_only", "stable_source_read"))

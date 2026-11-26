@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 import sqlite3
@@ -12,8 +13,10 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from scripts.core.projection_values import ProjectMapping, SafeNonnegativeInt, SafeStringList, SafeText
+from scripts.download.company.company_stock_fields import BuildStockFieldReport, StockFieldReport
 from trader.download.domain.company_evidence import CompanyDocument, StructuredCompanyQuery
 from trader.download.domain.company_events import CompanyDataState
 from trader.download.domain.company_financial_report import ExtractCompanyFinancialReport, IsCompanyFinancialReportTitle
@@ -22,13 +25,16 @@ from trader.download.domain.company_sync import CompanyFinancialRequestIdentity,
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_fact_inputs import DecodeCompanyDisclosure
 from trader.download.infra.company_facts_index import ReadCompanyPublicationIdentity
+from trader.download.infra.company_facts_reader import SQLiteCompanyEvidenceReader
 from trader.download.infra.company_facts_protocol import DATA_STATES
 from trader.download.infra.company_financial_observations import ReadRoundCompanyFinancialObservations
 from trader.download.infra.company_financial_publication import CompanyFinancialReportValue
 from trader.infra.serialization.canonical_codec import CanonicalDigest
+from trader.infra.serialization.sealing import PublishImmutable
 from trader.infra.settings.data_paths import DataPaths
 from trader.infra.sqlite_connection import SqliteConnection, SqliteConnectionOptions, SqliteSession, SqliteTransaction
 from trader.infra.sqlite_policy import SqliteIoPolicy
+from trader.infra.sqlite_publication import SqlitePublicationError
 from trader.recommendation.domain.market.research import LongResearchPolicy
 
 _MISSING_LIMIT = 128
@@ -38,6 +44,11 @@ _REVISION_MARKERS = ("更正", "修订", "重述", "更新")
 _ORIGINAL_TITLE = re.compile(r"报告(?:全文|正文)?$")
 _FINANCIAL_EVIDENCE = ("issuer_original", "first_disclosure", "issuer_revision_lineage", "market_population_coverage")
 _RATIO_EVIDENCE = ("exact_numerator", "same_basis_total_shares", "market_and_window_coverage", "absence_semantics")
+COMPANY_SOURCE_AUDIT_RETRY_REASONS = frozenset({
+    "company_source_qualification_uncheckpointed_database", "company_source_qualification_input_changed",
+    "company_stock_fields_reader_publication_changed",
+    "company_stock_fields_seal_mismatch",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +114,23 @@ def _fingerprints(paths: Sequence[Path]) -> tuple[tuple[int, ...] | None, ...]:
                 raise ValueError("company_source_qualification_uncheckpointed_database")
             fingerprints.append((stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
     return tuple(fingerprints)
+
+
+def _copy_checkpointed_inputs(
+    databases: tuple[Path, ...], destination: Path, check: Callable[[], None],
+) -> tuple[Path, ...]:
+    """Take a common checkpointed generation without keeping a transaction open on a writer."""
+    receipt = databases[-1].with_name(databases[-1].name + ".sha256")
+    members = (*databases, receipt)
+    before = _fingerprints(members)
+    for member in members:
+        with member.open("rb") as source, (destination / member.name).open("xb") as target:
+            while chunk := source.read(1024 * 1024):
+                check()
+                target.write(chunk)
+    if _fingerprints(members) != before:
+        raise ValueError("company_source_qualification_input_changed")
+    return tuple(destination / database.name for database in databases)
 
 
 def _pages(rows: Sequence[sqlite3.Row]) -> _Pages:
@@ -351,6 +379,7 @@ def AuditCompanySourceQualification(
     unlock_days: int,
     deadline: float,
     monotonic: Callable[[], float],
+    stock_fields: StockFieldReport | None = None,
 ) -> dict[str, object]:
     """Inventory evidence only, with immutable reads on checkpointed inputs."""
     def check() -> None:
@@ -363,10 +392,19 @@ def AuditCompanySourceQualification(
     )
     if len(set(databases)) != len(databases):
         raise ValueError("company_source_qualification_same_input")
+    if stock_fields is not None and (stock_fields.output.exists() or stock_fields.output.is_symlink()):
+        raise FileExistsError("company_stock_fields_output_exists")
     before = _fingerprints(databases)
     if len({member[:2] for member in before[::3] if member is not None}) != len(databases):
         raise ValueError("company_source_qualification_same_input")
     with ExitStack() as stack:
+        reader = None
+        if stock_fields is not None:
+            destination = Path(stack.enter_context(TemporaryDirectory(prefix="company-stock-audit-")))
+            databases = _copy_checkpointed_inputs(databases, destination, check)
+            reader = SQLiteCompanyEvidenceReader(
+                databases[-1], event_policy=stock_fields.scoring.events, sqlite_policy=sqlite_policy,
+            )
         options = SqliteConnectionOptions(read_only=True, immutable=True)
         journal, sources, formal = (
             stack.enter_context(SqliteSession(
@@ -415,9 +453,33 @@ def AuditCompanySourceQualification(
                     counts[index] += 1
         for review, count in zip((financial_review, pledge_review, unlock_review), counts, strict=True):
             review["published_complete_stocks"] = count
+        detail = None
+        if stock_fields is not None and reader is not None:
+            try:
+                detail = BuildStockFieldReport(
+                    stock_fields, sources, reader, scope=scope, round_id=round_id, financial_scope=source_scope,
+                    publication=qualified, maximum_age_days=policy.financial_max_age_days, cancelled=lambda: monotonic() >= deadline,
+                    source_pages={name: review["pages"] for name, review in (
+                        ("financial", financial_review), ("pledge", pledge_review), ("unlock", unlock_review))},
+                    source_windows={
+                        "financial": {"from": financial.start.isoformat(), "through": financial.end.isoformat()},
+                        "announcement": {"from": oldest_day.isoformat(), "through": scope.cutoff.isoformat()},
+                        **{name: {"from": review["requested_from"], "through": review["requested_through"]}
+                           for name, review in (("pledge", pledge_review), ("unlock", unlock_review))},
+                    },
+                )
+            except SqlitePublicationError as exc:
+                if str(exc) != "sqlite_publication_checksum_mismatch":
+                    raise
+                raise ValueError("company_stock_fields_seal_mismatch") from exc
     check()
-    if _fingerprints(databases) != before:
+    if stock_fields is None and _fingerprints(databases) != before:
         raise ValueError("company_source_qualification_input_changed")
+    if stock_fields is not None and detail is not None:
+        rendered = json.dumps(detail, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        check()
+        if not PublishImmutable(stock_fields.output, rendered + "\n"):
+            raise FileExistsError("company_stock_fields_output_exists")
     return {
         "status": "degraded",
         "findings": [],
@@ -432,6 +494,7 @@ def AuditCompanySourceQualification(
             "round_id": round_id,
             "source_cutoff": scope.cutoff.isoformat(),
             "population": len(scope.codes),
+            **({"stock_field_rows": len(scope.codes)} if stock_fields is not None else {}),
             "publication_hash": qualified.content_hash.hex(),
             "financial": financial_review,
             "pledge": pledge_review,
@@ -465,6 +528,9 @@ def _project_materials(value: object) -> list[dict[str, object]]:
 
 
 def ProjectCompanySourceQualification(source: Mapping[str, object]) -> dict[str, object]:
+    reason = source.get("failure_reason")
+    if isinstance(reason, str) and reason in COMPANY_SOURCE_AUDIT_RETRY_REASONS:
+        return {"scope": "frozen_company_inputs", "read_only": True, "stable_source_read": False, "failure_reason": reason}
     financial = ProjectMapping(source.get("financial"))
     groups = ProjectMapping(financial.get("observation_groups"))
     sample = ProjectMapping(financial.get("sample"))
@@ -473,6 +539,7 @@ def ProjectCompanySourceQualification(source: Mapping[str, object]) -> dict[str,
     return {
         **{key: SafeText(source.get(key)) for key in ("scope", "round_id", "source_cutoff", "publication_hash")},
         **{key: SafeNonnegativeInt(source.get(key)) for key in ("population", "source_data_writes", "network_requests")},
+        **({"stock_field_rows": SafeNonnegativeInt(source["stock_field_rows"])} if "stock_field_rows" in source else {}),
         **{key: source.get(key) is True for key in (
             "read_only", "production_adopted", "source_admission_verified", "stable_source_read",
         )},

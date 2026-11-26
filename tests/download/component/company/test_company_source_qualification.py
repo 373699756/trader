@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
+from scripts.download.company import company_source_qualification
 from scripts.download.company.company_field_audit import AuditCompanyFields
 from scripts.download.company.company_source_qualification import AuditCompanySourceQualification, ProjectCompanySourceQualification
+from scripts.download.company.company_stock_fields import StockFieldReport
+from tests.helpers.recommendation.configuration import CompanyScoringPolicyFixture
 from tests.download.component.company.test_company_normalized_round import _CUTOFF, _NOTICE, _observation, _page
 from tests.helpers.download.company.company_evidence import _disclosure, _extraction
 from tests.helpers.download.company.company_financial_report import BODY
@@ -126,7 +130,7 @@ def _inputs(tmp_path: Path):
     return paths, documents, policy.unlock_days
 
 
-def _audit(paths, documents, unlock_days):
+def _audit(paths, documents, unlock_days, *, stock_fields=None):
     report = AuditCompanySourceQualification(
         paths,
         documents=documents,
@@ -138,6 +142,7 @@ def _audit(paths, documents, unlock_days):
         unlock_days=unlock_days,
         deadline=10.0,
         monotonic=lambda: 0.0,
+        stock_fields=stock_fields,
     )
     assert report["status"] == "degraded"
     return ProjectCompanySourceQualification(report["summary"]["source_qualification_audit"])
@@ -175,6 +180,46 @@ def test_source_qualification_refuses_uncheckpointed_inputs(tmp_path):
     paths.company_sources.with_name("company_sources.sqlite3-wal").write_bytes(b"pending transaction")
     with pytest.raises(ValueError, match="company_source_qualification_uncheckpointed_database"):
         _audit(paths, documents, unlock_days)
+
+
+def test_stock_fields_keeps_supplier_nulls_and_readable_scoring_separate(tmp_path, monkeypatch):
+    paths, documents, unlock_days = _inputs(tmp_path)
+    policy = CompanyEventPolicyFixture()
+    options = SqlitePolicyFixture()
+    facts = SQLiteCompanyFactsIndex(paths.company, event_policy=policy, sqlite_policy=options)
+    normalized = SQLiteCompanyNormalizedIndex(paths.company_sources, facts, event_policy=policy, sqlite_policy=options,
+                                               clean_material=lambda: None)
+    visible_at = _CUTOFF + timedelta(minutes=15)
+    query = StructuredCompanyQuery("financial", _CUTOFF.date() - timedelta(days=365), _CUTOFF.date())
+    assert normalized.publish_financial_scoring(query, _CODES, _CUTOFF, eligible_codes=_CODES, available_at=visible_at)
+    details = StockFieldReport(tmp_path / "stocks.json", visible_at, CompanyScoringPolicyFixture(events=policy))
+    build_report = company_source_qualification.BuildStockFieldReport
+
+    def advance_live_writer(*args, **kwargs):
+        with SqliteSession(paths.company_sources, sqlite_policy=options) as sources:
+            sources.run("UPDATE company_ratio_observation SET ratio=25 WHERE component='pledge'")
+        return build_report(*args, **kwargs)
+
+    monkeypatch.setattr(company_source_qualification, "BuildStockFieldReport", advance_live_writer)
+    result = _audit(paths, documents, unlock_days, stock_fields=details)
+    assert result["stock_field_rows"] == 2
+    report = json.loads(details.output.read_text())
+    assert report["reader_at_source_cutoff"] == 0
+    assert report["reader_at_audit"] == 2
+    assert report["decision_or_seat_effect"] == "unmeasured"
+    one, two = report["stocks"]
+    assert one["latest_in_supplier_batch"]["source_null_fields"] == ["basic_eps"]
+    assert one["formal"]["latest_financial"] is None
+    assert one["financial_field_comparison"]["source_null"] == ["basic_eps"]
+    assert len(one["financial_field_comparison"]["formal_report_missing"]) == 8
+    assert one["reader_matches_source_record"] is True
+    assert one["d25_reader_at_audit"]["available_at"] == visible_at.isoformat()
+    assert one["source_pledges"] and not two["source_pledges"]
+    assert one["source_pledges"][0]["ratio_pct"] == 15.0
+    assert report["source_windows"]["pledge"]["through"] == one["source_pledges"][0]["date"]
+    assert not one["source_unlocks"] and two["source_unlocks"]
+    with pytest.raises(FileExistsError):
+        _audit(paths, documents, unlock_days, stock_fields=details)
 
 
 def test_field_audit_compares_source_observations_without_certifying_ratio_coverage(tmp_path):

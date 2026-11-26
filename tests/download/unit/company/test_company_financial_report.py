@@ -128,6 +128,8 @@ def test_duplicate_or_outside_main_table_roe_cannot_supply_a_current_cumulative_
     "加权平均净资产收益率 （%）  9.99",
     "加权平均净资产收益率（ % ）  9.99",
     "加权平均净资产收益率 9.99",
+    "加权平均净资产\n收益率 （%）  9.99",
+    "加权平均 净资产收益率 （%）  9.99",
 ))
 def test_duplicate_roe_label_still_rejects_ambiguity_when_its_unit_or_spacing_is_unsupported(label):
     parsed = ExtractCompanyFinancialReport(WrappedRoeDocument(WRAPPED_ROE + "\n" + label))

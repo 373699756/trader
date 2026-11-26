@@ -35,7 +35,7 @@ from trader.download.infra.company_financial_publication import (
 from trader.download.infra.company_financial_observations import WriteCompanyFinancialObservations
 from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
 from trader.download.infra.company_source_schema import COMPANY_SOURCE_SCHEMA
-from trader.infra.sqlite_connection import EnsureSqliteSchema, SqliteSession
+from trader.infra.sqlite_connection import EnsureSqliteSchema, SqliteConnectionOptions, SqliteSession
 
 _CUTOFF = AT + timedelta(days=1)
 _PERIOD = date(2026, 9, 30)
@@ -117,7 +117,10 @@ def test_latest_release_can_fill_partial_without_degrading_previous_complete_sco
     assert ApplyCompanyFinancialAdmission(conflicting, proof, _CUTOFF) is conflicting
 
 
-def test_extraction_qualified_issuer_body_requires_closed_directory_and_no_correction(tmp_path):
+@pytest.mark.parametrize("correction", (
+    "撤回财务报表的公告", "关于更正合并利润表的公告", "关于更正现金流量表的公告", "关于更正财 务信息的公告",
+))
+def test_extraction_qualified_issuer_body_requires_closed_directory_and_no_correction(tmp_path, correction):
     supplier = _observation()
     original = replace(ReportDocument(_ORIGINAL).disclosure, digest="a" * 64)
     body_hash = hashlib.sha256(_ORIGINAL.encode()).digest()
@@ -145,7 +148,8 @@ def test_extraction_qualified_issuer_body_requires_closed_directory_and_no_corre
         assert attempt.policy_id.startswith(f"financial_issuer_original:{_PERIOD}:{supplier.record_hash}:")
         assert prepare(lambda digest: "wrong document", revisions=(revision,)) == ()
 
-        collected.run("INSERT INTO disclosures VALUES (2,'cninfo','second','announcement','撤回财务报表的公告',?,'','x',NULL,0,0)", (_CUTOFF.isoformat(),))
+        collected.run("INSERT INTO disclosures VALUES (2,'cninfo','second','announcement',?,?,'','x',NULL,0,0)",
+                      (correction, _CUTOFF.isoformat()))
         collected.run("INSERT INTO disclosure_codes VALUES ('600001',2)")
         assert prepare(revisions=(revision,)) == ()
 
@@ -177,7 +181,10 @@ def test_published_issuer_receipt_traces_filled_value_at_official_time(tmp_path)
     ))
     raw_path = tmp_path / "collection.sqlite3"
     payload_hash = b"p" * 32
-    with SqliteSession(raw_path, sqlite_policy=policy) as raw, SqliteSession(writer.path, sqlite_policy=policy) as formal:
+    with (
+        SqliteSession(raw_path, sqlite_policy=policy) as raw,
+        SqliteSession(writer.path, SqliteConnectionOptions(read_only=True), sqlite_policy=policy) as formal,
+    ):
         EnsureSqliteSchema(raw, COMPANY_SOURCE_SCHEMA, allow_create=True, exact=True)
         raw.run("INSERT INTO disclosures VALUES (1,?,?,?,?,?,?,?,?,1,1)", (
             original.source, original.identity, original.kind, original.title, original.published_at.isoformat(),

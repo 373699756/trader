@@ -104,6 +104,8 @@ def test_cleanup_preserves_only_in_window_single_issuer_financial_directory_rows
     index.register_disclosures((
         original,
         revision,
+        fixtures._disclosure("income-correction", "关于更正合并利润表的公告"),
+        fixtures._disclosure("cash-correction", "关于更正现金流量表的公告"),
         fixtures._disclosure("boundary", "2025年第三季度报告全文", when=boundary),
         fixtures._disclosure("expired", "2025年第三季度报告全文", when=boundary - timedelta(days=1)),
         fixtures._disclosure("future", original.title, when=NOW + timedelta(minutes=1)),
@@ -119,7 +121,8 @@ def test_cleanup_preserves_only_in_window_single_issuer_financial_directory_rows
     with SqliteSession(index.path) as connection:
         assert tuple(tuple(row) for row in connection.run(
             "SELECT source_key,body_checked,body_retained FROM disclosures ORDER BY source_key"
-        )) == (("boundary", 0, 0), ("original", 0, 0), ("revision", 0, 0))
+        )) == (("boundary", 0, 0), ("cash-correction", 0, 0), ("income-correction", 0, 0),
+               ("original", 0, 0), ("revision", 0, 0))
         assert connection.run("SELECT COUNT(*) FROM company_document_requirements").require_one()[0] == 0
     assert not tuple((tmp_path / "text").rglob("*.gz"))
 
@@ -128,7 +131,7 @@ def test_cleanup_preserves_only_in_window_single_issuer_financial_directory_rows
     with SqliteSession(index.path) as connection:
         assert tuple(row[0] for row in connection.run(
             "SELECT source_key FROM disclosures ORDER BY source_key"
-        )) == ("original", "revision")
+        )) == ("cash-correction", "income-correction", "original", "revision")
 
 
 

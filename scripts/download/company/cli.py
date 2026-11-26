@@ -49,6 +49,7 @@ def BuildParser(
         company_consumer_audit=False,
         company_consumer_http=False,
         company_source_qualification_audit=False,
+        company_stock_fields=None,
         company_field_proof_audit=False,
         company_field_proof_recovery=False,
         company_field_proof_recovery_manifest=None,
@@ -101,6 +102,7 @@ def BuildParser(
         modes.add_argument('--company-consumer-audit', action='store_true', help='read-only formal facts/fields/publication comparison with the production reader; no collection or recovery planning')
         parser.add_argument('--company-consumer-http', action='store_true', help='also verify published document links through a bounded loopback HTTP server using the supplied runtime configuration; requires --company-consumer-audit')
         modes.add_argument('--company-source-qualification-audit', action='store_true', help='review frozen local financial and ratio inputs, and locate retained issuer materials without network or publication')
+        parser.add_argument('--company-stock-fields', type=Path, help='write the fixed round population and field evidence to a new external JSON file with --company-source-qualification-audit')
         modes.add_argument('--company-field-proof-audit', action='store_true', help='read-only current-rule reproof of published verified fields; ignores proof/attempt caches and never publishes')
         modes.add_argument('--company-field-proof-recovery', action='store_true', help='recover only frozen, exact field-proof materials in a new isolated directory; bounded network and no source database writes')
         parser.add_argument('--company-field-proof-recovery-manifest', type=Path, help='frozen exact material recovery plan; requires --company-field-proof-recovery')
@@ -174,6 +176,7 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         company_consumer_audit=args.company_consumer_audit,
         company_consumer_http=args.company_consumer_http,
         company_source_qualification_audit=args.company_source_qualification_audit,
+        company_stock_fields=ExternalPath(args.company_stock_fields, "--company-stock-fields"),
         company_field_proof_audit=args.company_field_proof_audit,
         company_field_proof_recovery=args.company_field_proof_recovery,
         company_field_proof_recovery_manifest=args.company_field_proof_recovery_manifest.expanduser().absolute() if args.company_field_proof_recovery_manifest is not None else None,
@@ -257,6 +260,8 @@ def ParseOptions(args: argparse.Namespace) -> CompanyOptions:
         raise ValueError("company-resume requires --company-replay-directory")
     if options.company_source_qualification_audit and options.company_replay_directory is not None:
         raise ValueError("--company-source-qualification-audit uses configured frozen inputs and does not accept a replay directory")
+    if options.company_stock_fields is not None and not options.company_source_qualification_audit:
+        raise ValueError("--company-stock-fields requires --company-source-qualification-audit")
     if options.company_material_keys and (
         len(options.company_material_keys) > 6
         or len(set(options.company_material_keys)) != len(options.company_material_keys)
