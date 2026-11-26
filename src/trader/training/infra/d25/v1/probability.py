@@ -1,5 +1,6 @@
 """D25 V1 grouped LambdaRank on the matured D25 hit event."""
 
+import logging
 from collections.abc import Callable
 from contextlib import ExitStack
 from datetime import date
@@ -11,11 +12,40 @@ from trader.recommendation.domain.market.v1.features import LEARNED_RANK_FEATURE
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.domain.v1.learned_rank import LearnedRankDateSplit, V1TrainingSettings
 from trader.training.infra.d25.artifact import D25ProbabilityArtifact, D25ProbabilityBinding
-from trader.training.infra.d25.calibration import AssessD25Probabilities, CalibrateD25Probability
+from trader.training.infra.d25.calibration import (
+    AssessD25Probabilities, CalibrateD25Probability, CalibratedD25Probabilities, D25ProbabilityCalibrationError,
+)
 from trader.training.infra.d25.tree import D25TreeModel
 from trader.training.infra.d25.v1.fitting import FitD25LearnedRankClassifier
 from trader.training.infra.d25.v1.samples import LearnedRankMatrixRequest, LearnedRankSampleIndex
 from trader.training.infra.ranking import CheckV1Cancellation
+
+
+def _calibrate_probability(scores: np.ndarray, labels: np.ndarray, check: Callable[[], None]) -> tuple[float, float]:
+    try:
+        return CalibrateD25Probability(scores, labels, check)
+    except D25ProbabilityCalibrationError as exc:
+        if str(exc) != "d25_probability_calibration_not_monotone":
+            raise
+
+    # Calibration-in-the-large: keep the native logit scale and fit the intercept
+    # so the mean predicted probability matches the calibration partition's hit rate.
+    hit_rate = float(labels.mean())
+    base_logit = float(np.log(hit_rate / (1.0 - hit_rate)))
+    lower = base_logit - float(scores.max())
+    upper = base_logit - float(scores.min())
+    for _ in range(64):
+        check()
+        intercept = lower / 2 + upper / 2
+        mean_probability = float(CalibratedD25Probabilities(scores, (intercept, 1.0)).mean())
+        if abs(mean_probability - hit_rate) <= 1e-12:
+            break
+        if mean_probability < hit_rate:
+            lower = intercept
+        else:
+            upper = intercept
+    logging.getLogger(__name__).warning("D25 V1 达标概率校准斜率无效，固定斜率为 1，按校准期命中率校准截距")
+    return intercept, 1.0
 
 
 def FitV1D25Probability(
@@ -42,7 +72,7 @@ def FitV1D25Probability(
             fit, early, settings, compute_threads=compute_threads, cancel_requested=cancel_requested,
         )
         scores = np.asarray(tree.predict(calibration.features, raw_score=True, num_threads=compute_threads))
-        weights = CalibrateD25Probability(scores, calibration.targets, lambda: CheckV1Cancellation(cancel_requested))
+        weights = _calibrate_probability(scores, calibration.targets, lambda: CheckV1Cancellation(cancel_requested))
         training_rows, training_positive = len(fit.targets), int(fit.targets.sum())
         fitting_dates = tuple(sorted(set((*fit.dates, *early.dates))))
         calibration_dates = tuple(sorted(set(calibration.dates)))

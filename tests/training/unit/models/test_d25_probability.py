@@ -22,7 +22,9 @@ from trader.recommendation.domain.scoring.profile_identity import ScoringProfile
 from trader.training.domain.production_diagnostic_dates import BuildProductionDiagnosticDatePlan
 from trader.training.domain.v1.learned_rank import BuildLearnedRankDateSplit
 from trader.training.entrypoints.profile_training import ProjectLearnedRankTrainingResult
-from trader.training.infra.d25.calibration import AssessD25Probabilities
+from trader.training.infra.d25.calibration import (
+    AssessD25Probabilities, CalibratedD25Probabilities, D25ProbabilityCalibrationError,
+)
 from trader.training.infra.d25.labels import D25HitLabel, VerifiedD25Close
 from trader.training.infra.d25.artifact import (
     BuildV1EventRankReplayCandidate,
@@ -37,7 +39,7 @@ from trader.training.infra.d25.training import (
     D25IndustryFitRequest,
     FitIndustryD25Probability,
 )
-from trader.training.infra.d25.v1.probability import FitV1D25Probability
+from trader.training.infra.d25.v1.probability import FitV1D25Probability, _calibrate_probability
 from trader.training.infra.d25.tree import D25TreeModel
 from trader.training.infra.d25.contracts import StandardD25Profile
 from trader.training.infra.fitting_settings import LightGBMFittingParameters, RidgeFittingParameters
@@ -125,7 +127,10 @@ def test_d25_close_event_after_production_history_alignment(condition, expected_
     assert D25HitLabel(_TARGET, signal, future) == expected_label
 
 
-def test_v1_production_fit_builds_d25_probabilities_from_raw_history_rows(tmp_path: Path) -> None:
+@pytest.mark.parametrize("nonfinite_slope", (False, True))
+def test_v1_production_fit_builds_d25_probabilities_from_raw_history_rows(
+    tmp_path: Path, monkeypatch, nonfinite_slope: bool,
+) -> None:
     class VerifiedHistory(_History):
         def iter_training_rows(self, allowed_dates: frozenset[date]) -> Iterator[HistoryTrainingRow]:
             for row in super().iter_training_rows(allowed_dates):
@@ -134,6 +139,12 @@ def test_v1_production_fit_builds_d25_probabilities_from_raw_history_rows(tmp_pa
 
     model_root = tmp_path / "models"
     target = PredictionTarget(Strategy.D25, 50)
+    if nonfinite_slope:
+        monkeypatch.setattr(
+            "trader.training.infra.d25.calibration.FitBinaryLogistic",
+            lambda *args: (float("nan"), np.array([float("nan")])),
+        )
+
     def run():
         return RunV1Training(
             VerifiedHistory, model_root, history_root=tmp_path / "history", sample_root=tmp_path / "samples",
@@ -159,7 +170,24 @@ def test_v1_production_fit_builds_d25_probabilities_from_raw_history_rows(tmp_pa
     assert repeated.reused and repeated.probability == result.probability
 
 
-def test_v1_binary_lambdarank_uses_mature_close_labels_and_reloads(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("slope", (0.0, float("nan"), float("inf"), float("-inf")))
+def test_v1_fixed_slope_matches_calibration_hit_rate(monkeypatch, slope: float) -> None:
+    monkeypatch.setattr(
+        "trader.training.infra.d25.calibration.FitBinaryLogistic",
+        lambda *args: (1.5, np.array([slope])),
+    )
+    scores, labels = np.arange(4), np.array([0, 0, 1, 0])
+    weights = _calibrate_probability(scores, labels, lambda: None)
+    assert weights[1] == 1.0
+    assert CalibratedD25Probabilities(scores, weights).mean() == pytest.approx(0.25, abs=1e-12)
+    with pytest.raises(D25ProbabilityCalibrationError, match="labels_insufficient"):
+        _calibrate_probability(scores, np.ones(4), lambda: None)
+
+
+@pytest.mark.parametrize("reverse_calibration", (False, True))
+def test_v1_binary_lambdarank_uses_mature_close_labels_and_reloads(
+    tmp_path: Path, monkeypatch, reverse_calibration: bool,
+) -> None:
     settings = _settings()
     model_root = tmp_path / "models"
     assert RunV1Training(
@@ -177,7 +205,8 @@ def test_v1_binary_lambdarank_uses_mature_close_labels_and_reloads(tmp_path: Pat
         for position, day in enumerate(split.sample_dates):
             candidates = {}
             for stock in range(12):
-                price = 103.0 if stock >= 6 else 99.0
+                hit = stock < 3 if reverse_calibration and day in split.calibration else stock >= 6
+                price = 103.0 if hit else 99.0
                 code = f"{600000 + stock:06d}"
                 candidates[code] = LearnedRankCandidate(
                     code, "capco:J66货币金融服务", (float(stock),) * 10, 100.0,
@@ -188,7 +217,10 @@ def test_v1_binary_lambdarank_uses_mature_close_labels_and_reloads(tmp_path: Pat
             samples, tmp_path / "matrices", split, settings, binding,
             compute_threads=1, cancel_requested=lambda: False,
         )
-    assert model.calibration[1] > 0
+    if reverse_calibration:
+        assert model.calibration[1] == 1.0
+    else:
+        assert model.calibration[1] > 0
     assert model.fitting_dates[-1] < model.calibration_dates[0]
     profile = model_root / "v1"
     staged = tmp_path / "staged"
@@ -229,8 +261,14 @@ def test_v1_binary_lambdarank_uses_mature_close_labels_and_reloads(tmp_path: Pat
     with pytest.raises(ValueError, match="unique codes"):
         replay.predict((inputs[0], inputs[0]))
     probabilities = tuple(item.target_probability for item in predictions)
-    assert probabilities[0] is not None and 0 < probabilities[0] < 0.5
-    assert probabilities[1] is not None and 0.5 < probabilities[1] < 1
+    if reverse_calibration:
+        population = tuple(ModelInput(str(600000 + i), (float(i),) * 10) for i in range(12))
+        estimates = np.asarray([item.target_probability for item in current.predict(population)])
+        assert estimates.mean() == pytest.approx(0.25, abs=1e-12)
+        assert model.assessment.brier == pytest.approx(np.mean((estimates - (np.arange(12) >= 6)) ** 2))
+    else:
+        assert probabilities[0] is not None and 0 < probabilities[0] < 0.5
+        assert probabilities[1] is not None and 0.5 < probabilities[1] < 1
     tree = model.industry_models[0][1]
     assert isinstance(tree, D25TreeModel)
     ranks = Booster(model_str=tree.tree).predict(
