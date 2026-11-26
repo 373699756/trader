@@ -270,6 +270,85 @@ def test_initial_sync_publishes_verified_snapshot_and_same_cutoff_is_noop(
     assert tuple(item.relative_path for item in snapshot.partitions) == ("prices_2026.sqlite3",)
 
 
+@pytest.mark.parametrize("advance", (False, True))
+@pytest.mark.parametrize("damage", ("file", "file_and_receipt", "receipt", "bytes"))
+def test_invalid_published_year_fails_before_dispatch_or_resealing(tmp_path, advance, damage):
+    days = tuple(date(2026, 9, 8) + timedelta(days=index) for index in range(4))
+    configuration = _configuration(tmp_path)
+    assert RunHistoryFixture(configuration, FakeSupplier(days[:3]), clock=lambda: NOW).state == "completed"
+    previous = _snapshot(tmp_path)
+    annual = tmp_path / "prices_2026.sqlite3"
+    receipt = tmp_path / "prices_2026.sqlite3.sha256"
+    if damage in ("file", "file_and_receipt"):
+        annual.unlink()
+    if damage in ("receipt", "file_and_receipt"):
+        receipt.unlink()
+    if damage == "bytes":
+        with annual.open("ab") as stream:
+            stream.write(b"damaged")
+    receipt_before = receipt.read_bytes() if receipt.exists() else None
+    supplier = FakeSupplier(days[1:] if advance else days[:3])
+    result = RunHistoryFixture(configuration, supplier, clock=lambda: NOW + timedelta(days=int(advance)))
+    assert result.state == "failed" and not supplier.calls
+    assert _snapshot(tmp_path) == previous
+    assert annual.exists() == (damage in ("bytes", "receipt"))
+    assert (receipt.read_bytes() if receipt.exists() else None) == receipt_before
+
+
+def test_restoring_an_older_sealed_year_cannot_hide_a_published_month(tmp_path):
+    days = (date(2026, 8, 30), date(2026, 8, 31), date(2026, 9, 1), date(2026, 9, 2))
+    config = _configuration(tmp_path)
+    base = NOW.replace(month=9, day=1)
+    assert RunHistoryFixture(config, FakeSupplier(days[:3]), clock=lambda: base).state == "completed"
+    files = (tmp_path / "prices_2026.sqlite3", tmp_path / "prices_2026.sqlite3.sha256")
+    original = tuple(path.read_bytes() for path in files)
+    supplier = FakeSupplier(days[1:])
+    assert RunHistoryFixture(config, supplier, clock=lambda: base + timedelta(days=1)).state == "completed"
+    previous = _snapshot(tmp_path)
+    assert len({part.sequence for part in previous.partitions}) == 2
+    assert RunHistoryFixture(config, supplier, clock=lambda: base + timedelta(days=1)).state == "already_current"
+    for path, data in zip(files, original, strict=True):
+        path.write_bytes(data)
+    supplier.calls.clear()
+    failed = RunHistoryFixture(config, supplier, clock=lambda: base + timedelta(days=1))
+    assert failed.state == "failed" and failed.reason == "history_published_price_identity_conflict"
+    assert not supplier.calls and _snapshot(tmp_path) == previous
+
+
+@pytest.mark.parametrize("damaged", (False, True))
+@pytest.mark.parametrize("sealed", (False, True))
+def test_only_intact_pending_price_writes_can_resume(tmp_path, monkeypatch, damaged, sealed):
+    days = tuple(date(2026, 9, 8) + timedelta(days=offset) for offset in range(4))
+    config = _configuration(tmp_path)
+    assert RunHistoryFixture(config, FakeSupplier(days[:3]), clock=lambda: NOW).state == "completed"
+    previous = _snapshot(tmp_path)
+    supplier = FakeSupplier(days[1:])
+
+    def interrupt(*_args, **_kwargs):
+        raise OSError("interrupted_before_publication")
+
+    with monkeypatch.context() as patch:
+        if sealed:
+            patch.setattr(history_sync_module, "PublishHistorySnapshot", interrupt)
+        else:
+            patch.setattr(HistoryDirectPrices, "publishable_partitions", interrupt)
+        interrupted = RunHistoryFixture(config, supplier, clock=lambda: NOW + timedelta(days=1))
+        assert interrupted.state == "failed" and _snapshot(tmp_path) == previous
+
+    if damaged:
+        with SqliteSession(tmp_path / "prices_2026.sqlite3") as connection, SqliteTransaction(connection):
+            connection.run("UPDATE daily_price_revision SET content_hash=zeroblob(32) WHERE trade_date=?",
+                           (EncodeDate(days[0]),))
+    supplier.calls.clear()
+    resumed = RunHistoryFixture(config, supplier, clock=lambda: NOW + timedelta(days=1))
+    assert not supplier.calls
+    if damaged:
+        assert resumed.state == "failed" and _snapshot(tmp_path) == previous
+    else:
+        assert resumed.state == "completed", resumed.reason
+        assert _snapshot(tmp_path).sequence == previous.sequence + 1
+
+
 @pytest.mark.parametrize(
     "minute,expected_cutoff",
     ((14, date(2026, 10, 22)), (15, date(2026, 10, 23))),

@@ -25,7 +25,6 @@ from trader.download.domain.history_sync import HistorySyncProgressStage
 from trader.download.domain.history_download import HistoryDownloadTask
 from trader.download.infra.history_prices import HistoryPricePartition, HistoryPricePartitionError, HistoryPriceWriteSession
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
-from trader.infra.sqlite_publication import PublishSqliteFile
 from trader.infra.sqlite_verification_cache import SqliteVerificationCache
 
 
@@ -83,6 +82,7 @@ class HistoryDirectPrices:
             if current_snapshot
             else {}
         )
+        self._published_years = frozenset(year for year, _month in self._previous)
 
     def _month(self, year: int, month: int) -> HistoryPricePartition:
         return HistoryPricePartition(
@@ -92,6 +92,17 @@ class HistoryDirectPrices:
             activity=self._activity, sqlite_policy=self._sqlite_policy,
             verification_cache=self._verification_cache,
         )
+
+    def writable_month(self, year: int, month: int) -> HistoryPricePartition:
+        partition = self._month(year, month)
+        path = self._root / f"prices_{year:04d}.sqlite3"
+        if not path.is_file():
+            if year in self._published_years:
+                raise HistoryPricePartitionError("history_published_price_file_missing")
+            partition.initialize()
+        elif year in self._published_years and not Path(f"{path}.sha256").is_file():
+            raise HistoryPricePartitionError("history_published_price_receipt_missing")
+        return partition
 
     def read(self, code: str, dates: tuple[date, ...]) -> tuple[BaoStockDailyCell, ...]:
         if self._fresh and code not in self._written_codes:
@@ -287,9 +298,7 @@ class HistoryDirectPrices:
     def commit(self, results: tuple[HistoryPriceResult, ...]) -> None:
         for year, revisions in self._revision_groups(results):
             self._activity.tick()
-            target = self._month(year, 1)
-            if not (self._root / f"prices_{year:04d}.sqlite3").exists():
-                target.initialize()
+            target = self.writable_month(year, 1)
             target.save_revision_batches(revisions)
         self._written_codes.update(result.task.code for result in results if result.revisions)
 
@@ -307,9 +316,7 @@ class HistoryDirectPrices:
             if session is None:
                 if len(self._write_sessions) >= 32:
                     raise RuntimeError("history_month_writer_capacity_exceeded")
-                target = self._month(year, 1)
-                if not (self._root / f"prices_{year:04d}.sqlite3").exists():
-                    target.initialize()
+                target = self.writable_month(year, 1)
                 session = target.open_write_session(
                     fresh=self._fresh, pending_sequence=self._sequence if not self._fresh else None
                 )
@@ -393,9 +400,7 @@ class HistoryDirectPrices:
             ):
                 self._activity.tick()
                 selected_months = tuple(month for candidate_year, month in months if candidate_year == year)
-                target = self._month(year, selected_months[0])
-                if not (self._root / label).exists():
-                    target.initialize()
+                target = self.writable_month(year, selected_months[0])
                 previous = tuple(self._previous[(year, month)] for month in selected_months if (year, month) in self._previous)
                 changed = target.changed_months_since(previous)
                 references.update(
@@ -404,10 +409,7 @@ class HistoryDirectPrices:
                 )
             progress("checking_partitions", "completed", completed + 1, len(calendar_years), label)
 
-        years = tuple(sorted(
-            {year for year, month in months if (year, month) not in references}
-            | {year for year, _ in months if not (self._root / f"prices_{year:04d}.sqlite3.sha256").is_file()}
-        ))
+        years = tuple(sorted({year for year, month in months if (year, month) not in references}))
         for completed, year in enumerate(years):
             label = f"prices_{year:04d}.sqlite3"
             progress("sealing_partitions", "started", completed, len(years), label)
@@ -415,21 +417,13 @@ class HistoryDirectPrices:
             with self._activity.reporting(
                 partial(progress, "sealing_partitions", "waiting", completed, len(years), label)
             ):
-                if selected:
-                    sealed = self._month(year, selected[0]).seal_months(
-                        selected,
-                        self._sequence,
-                        exact_month_ranges=exact_month_ranges,
-                        fingerprint_before_statistics=fingerprint_before_statistics,
-                    )
-                    references.update(((year, month), value) for month, value in zip(selected, sealed, strict=True))
-                else:
-                    PublishSqliteFile(
-                        self._root / label,
-                        sqlite_policy=self._sqlite_policy,
-                        check=self._activity.tick,
-                        verification_cache=self._verification_cache,
-                    )
+                sealed = self.writable_month(year, selected[0]).seal_months(
+                    selected,
+                    self._sequence,
+                    exact_month_ranges=exact_month_ranges,
+                    fingerprint_before_statistics=fingerprint_before_statistics,
+                )
+                references.update(((year, month), value) for month, value in zip(selected, sealed, strict=True))
             progress("sealing_partitions", "completed", completed + 1, len(years), label)
         return tuple(references[month] for month in months)
 

@@ -316,6 +316,19 @@ def RequireHistoryRepackIdle(history_root: Path) -> None:
     _require_no_activation_fence(history_root.resolve().with_name(_ACTIVATION_JOURNAL_NAME))
 
 
+def FinalizedHistoryRepackEvidence(history_root: Path) -> tuple[HistoryPartitionRepackPartitionEvidence, ...]:
+    """Recover the verified source and target fingerprints of an activated physical compaction."""
+    root = history_root.resolve()
+    journal = _optional_journal(root.with_name(_ACTIVATION_JOURNAL_NAME))
+    if journal is None or journal.state != "finalized" or journal.source_root != str(root):
+        return ()
+    state = ReadHistoryPartitionRepackBuildState(root.with_name(_BUILD_STATE_NAME))
+    if (not state.completed or state.source_root != journal.source_root or state.target_root != journal.target_root
+        or state.source_snapshot_hash != journal.source_snapshot_hash or state.target_snapshot_hash != journal.target_snapshot_hash):
+        raise HistoryPartitionRepackError("history repack finalized evidence does not match the build")
+    return state.partitions
+
+
 def _verify_candidate(root: Path, state: HistoryPartitionRepackBuildState, *, target: bool, sqlite_policy: SqliteIoPolicy) -> None:
     _require_clean_source(root)
     try:
@@ -722,6 +735,7 @@ def _directory_size(root: Path) -> int:
 
 
 __all__ = [
+    "FinalizedHistoryRepackEvidence",
     "HistoryPartitionRepackCoordinator",
     "HistoryPartitionRepackError",
     "HistoryPartitionRepackFenceError",

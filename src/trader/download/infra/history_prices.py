@@ -21,6 +21,7 @@ from trader.download.domain.baostock_daily import BaoStockBoard, BaoStockCellSta
 from trader.download.domain.history_control import HistorySnapshotPartition
 from trader.download.domain.history_revision import HistoryRevision, HistoryTrainingPoint, HistoryTrainingRow
 from trader.download.domain.published_history import PublishedHistoryCell, ValidatePublishedHistoryCodes
+from trader.download.infra.history_partition_repack_state import HistoryPartitionRepackPartitionEvidence
 from trader.download.infra.history_revision_codec import (
     PublishedCellFromPriceColumns,
     RevisionColumnValues,
@@ -36,6 +37,7 @@ from trader.infra.sqlite_publication import (
     PublishPreparedSqliteFile,
     PublishSqliteFile,
     SqlitePublicationError,
+    SqlitePublicationFingerprint,
     VerifySqliteFile,
 )
 from trader.infra.sqlite_connection import (
@@ -378,6 +380,71 @@ class HistoryPricePartition:
                 if month in sequences and sequence > sequences[month]:
                     changed.add(month)
             return frozenset(changed)
+
+    def verify_published_year(
+        self, references: tuple[HistorySnapshotPartition, ...], pending_sequence: int | None,
+        repack: HistoryPartitionRepackPartitionEvidence | None = None,
+    ) -> None:
+        """Bind the current annual seal to its latest published months before resuming writes."""
+        try:
+            verified = VerifySqliteFile(
+                self._path, sqlite_policy=self._sqlite_policy, check=self._activity.tick if self._activity else None,
+                file_only=True, verification_cache=self._verification_cache,
+            )
+        except SqlitePublicationError as exc:
+            if pending_sequence is None or str(exc) != "sqlite_publication_checksum_mismatch":
+                raise
+        else:
+            latest = max(reference.sequence for reference in references)
+            def matches(fingerprint: SqlitePublicationFingerprint) -> bool:
+                return all(
+                    reference.logical_hash == _month_publication_hash(fingerprint, reference.calendar_month, latest)
+                    for reference in references if reference.sequence == latest
+                )
+
+            if matches(verified.fingerprint):
+                return
+            # The finalized VACUUM verified identical revisions and observations before replacing the original bytes.
+            if (repack is not None
+                and verified.fingerprint == SqlitePublicationFingerprint(repack.target_bytes, repack.target_sha256, 0, None)
+                and matches(SqlitePublicationFingerprint(repack.source_bytes, repack.source_sha256, 0, None))):
+                return
+            if pending_sequence is None:
+                raise HistoryPricePartitionError("history_published_price_identity_conflict")
+        self._verify_interrupted_write(references, pending_sequence)
+
+    def _verify_interrupted_write(self, references: tuple[HistorySnapshotPartition, ...], pending_sequence: int) -> None:
+        """Check an unsealed year before replaying an identified, unpublished batch."""
+        with (
+            closing(self._read_connection()) as connection, SqliteTransaction(connection),
+            self._activity.watch(connection) if self._activity else nullcontext(),
+        ):
+            self._require_metadata(connection)
+            self._require_schema(connection)
+            latest = connection.run("SELECT MAX(sync_sequence) FROM daily_price_observation").require_one()[0]
+            if latest != pending_sequence or connection.run("PRAGMA foreign_key_check").fetchone() is not None:
+                raise HistoryPricePartitionError("history_pending_price_identity_conflict")
+            # A full row audit is confined to exceptional recovery, when the physical seal changed.
+            for reference in references:
+                first, after = _month_bounds(self._calendar_year, reference.calendar_month)
+                count = 0
+                with closing(connection.run(_LATEST_RANGE_SQL, (reference.sequence, first, after - 1))) as rows:
+                    for row in rows:
+                        if self._activity:
+                            self._activity.tick()
+                        _decode_row(tuple(row))
+                        count += 1
+                if count != reference.row_count:
+                    raise HistoryPricePartitionError("history_published_price_rows_missing")
+            with closing(connection.run(
+                f"SELECT {_REVISION_COLUMNS} FROM daily_price_revision AS records WHERE first_seen_sequence>=?",
+                (pending_sequence,),
+            )) as rows:
+                for row in rows:
+                    if self._activity:
+                        self._activity.tick()
+                    if _decode_row(tuple(row)).first_seen_sequence != pending_sequence:
+                        raise HistoryPricePartitionError("history_pending_price_identity_conflict")
 
     def iter_changed_batches(
         self, revisions: Iterable[HistoryRevision]
@@ -836,7 +903,7 @@ class HistoryPricePartition:
             return tuple(
                 HistorySnapshotPartition(
                     f"prices_{self._calendar_year:04d}.sqlite3",
-                    CanonicalDigest(("sqlite-file-publication", fingerprint, month, sequence)),
+                    _month_publication_hash(fingerprint, month, sequence),
                     counts[month], month, sequence,
                 )
                 for month in calendar_months
@@ -1191,6 +1258,10 @@ def _require_revision_identity(
     )
     if existing_payload != RevisionColumnValues(persisted) or existing_hash != persisted.content_hash:
         raise HistoryPricePartitionConflictError("history monthly revision identity conflicts")
+
+
+def _month_publication_hash(fingerprint: SqlitePublicationFingerprint, month: int, sequence: int) -> str:
+    return CanonicalDigest(("sqlite-file-publication", fingerprint, month, sequence))
 
 
 def _decode_row(row: tuple[object, ...]) -> HistoryRevision:

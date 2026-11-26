@@ -19,7 +19,7 @@ from trader.download.application.history_ports import (
 from trader.download.application.history_progress import PublishHistoryProgress
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockSecurity
 from trader.download.domain.history_control import HistoryDiskRequirement, HistorySnapshot, HistorySnapshotPartition
-from trader.download.domain.history_download import HistoryBatchInput, HistoryPublication
+from trader.download.domain.history_download import HistoryBatchInput, HistoryDownloadBatch, HistoryPublication
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_reference import HistoryReferenceSnapshot
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgress, HistorySyncProgressPort, HistoryTwoStageSupplier
@@ -37,8 +37,9 @@ from trader.infra.shutdown import ShutdownBudget
 from trader.infra.future_cleanup import CloseAfterFutures
 from trader.download.infra.history_download_index import HistoryDownloadIndex
 from trader.download.infra.history_inferred_review import HistoryInferredReviewIndex, IsHistoryReviewBusy
+from trader.download.infra.history_partition_repack import FinalizedHistoryRepackEvidence
 from trader.download.infra.history_price_repair import HistoryPriceRepair
-from trader.download.infra.history_prices import HistoryPricePartitionError
+from trader.download.infra.history_prices import HistoryPricePartition, HistoryPricePartitionError
 from trader.download.infra.history_reference_index import ReadBoundHistoryReference
 from trader.download.infra.history_snapshot_publication import PublishHistorySnapshot
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
@@ -46,7 +47,7 @@ from trader.download.infra.history_sync_failure import HistoryFailureCode, Histo
 from trader.download.infra.history_write_tuning import ChooseHistoryWriteTuning, HistoryWriteTuning
 from trader.infra.disk_types import DiskKind
 from trader.infra.sqlite_policy import SqliteIoPolicy
-from trader.infra.sqlite_publication import PublishSqliteFile
+from trader.infra.sqlite_publication import PublishSqliteFile, SqlitePublicationError
 from trader.infra.sqlite_verification_cache import SqliteVerificationCache
 from trader.infra.workers import WorkerExecutor
 
@@ -136,12 +137,31 @@ class HistorySyncIo:
         except HistoryControlError:
             return None
 
+    def verify_published_prices(self, snapshot: HistorySnapshot, pending: HistoryDownloadBatch | None) -> None:
+        years: dict[str, list[HistorySnapshotPartition]] = {}
+        for reference in snapshot.partitions:
+            years.setdefault(reference.relative_path, []).append(reference)
+        repacked = {item.relative_path: item for item in FinalizedHistoryRepackEvidence(self.configuration.history_root)}
+        pending_sequence = pending.sequence if pending and pending.sequence == snapshot.sequence + 1 else None
+        for completed, (name, references) in enumerate(years.items()):
+            path = self.configuration.history_root / name
+            activity = HistorySqliteActivity(
+                partial(PublishHistoryProgress, self.progress, "checking_partitions", "waiting", (completed, len(years)), name),
+                self.cancel,
+            )
+            first = references[0]
+            partition = HistoryPricePartition(
+                path, first.calendar_year, first.calendar_month, activity=activity, sqlite_policy=self.sqlite_policy,
+                verification_cache=self.resources.verification_cache,
+            )
+            try:
+                partition.verify_published_year(tuple(references), pending_sequence, repacked.get(name))
+            except (sqlite3.Error, OSError, ValueError, HistoryPricePartitionError, SqlitePublicationError) as exc:
+                raise HistorySyncFailureError(exc, "checking_partitions", name) from exc
+
     def finalize(self, result: HistoryMaintenanceStatus) -> None:
         if not result.published:
             return
-        for path in sorted(self.configuration.history_root.glob("prices_[0-9][0-9][0-9][0-9].sqlite3")):
-            if not Path(f"{path}.sha256").is_file():
-                PublishSqliteFile(path, sqlite_policy=self.sqlite_policy, verification_cache=self.resources.verification_cache)
         if result.state == "completed":
             self.control.ensure_published_file()
         else:
@@ -379,7 +399,7 @@ class _HistoryPriceBatch:
     files: tuple[_ReviewPriceFile, ...]
 
     def replay_repairs(self, codes: frozenset[str]) -> None:
-        self.repair.replay(self.inputs.batch.sequence, codes=codes)
+        self.repair.replay(self.inputs.batch.sequence, self.prices, codes=codes)
 
     def download_tencent(self) -> None:
         self.flow.tencent()

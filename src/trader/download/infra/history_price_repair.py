@@ -15,7 +15,6 @@ from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 if TYPE_CHECKING:
     from trader.download.infra.history_direct_prices import HistoryDirectPrices
-from trader.download.infra.history_prices import HistoryPricePartition
 from trader.download.infra.history_inferred_review import RecordHistoryInferredSuspensions
 from trader.download.infra.price_repair_attempts import PriceRepairAttempts, RepairSource, TencentRecheckDue, RecordTencentCheck
 from trader.download.infra.published_history_codec import DecodePublishedHistoryCellPayload, EncodePublishedHistoryCell
@@ -26,7 +25,6 @@ from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSessio
 class HistoryPriceRepair:
     def __init__(self, root: Path, *, sqlite_policy: SqliteIoPolicy) -> None:
         self._sqlite_policy = sqlite_policy
-        self._root = root
         self._path = root / "catalog.sqlite3"
 
     def source(self, code: str, sequence: int) -> RepairSource:
@@ -72,14 +70,14 @@ class HistoryPriceRepair:
                 ((security.code, EncodeDate(c.trade_date), sequence, security.board, source, EncodePublishedHistoryCell(c))
                  for c in candidate.cells),
             )
-        self.replay(sequence, codes=frozenset({security.code}))
+        self.replay(sequence, prices, codes=frozenset({security.code}))
 
     @staticmethod
     def _require_unpublished(published: int | None, sequence: int) -> None:
         if published is not None and published >= sequence:
             raise RuntimeError("history_replacement_already_published")
 
-    def replay(self, sequence: int, *, codes: frozenset[str]) -> None:
+    def replay(self, sequence: int, prices: HistoryDirectPrices, *, codes: frozenset[str]) -> None:
         # The complete validated candidate is durable before touching annual files.
         # A crash may leave some annual writes; replay needs no second supplier call.
         with SqliteSession(self._path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
@@ -104,10 +102,7 @@ class HistoryPriceRepair:
             board = cast(BaoStockBoard, rows[0][2])
             source = cast(RepairSource, rows[0][3])
             for year in sorted({day.year for day in dates}):
-                path = self._root / f"prices_{year:04d}.sqlite3"
-                partition = HistoryPricePartition(path, year, 1, sqlite_policy=self._sqlite_policy)
-                if not path.exists():
-                    partition.initialize()
+                partition = prices.writable_month(year, 1)
                 partition.replace_unpublished_code(
                     tuple(HistoryRevision(sequence, board, cell, None, None, None) for cell in cells if cell.trade_date.year == year), sequence
                 )

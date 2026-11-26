@@ -80,6 +80,8 @@ class DownloadHistoryUseCase:
         if not self.dependencies.maintenance.has_space(self.configuration.minimum_free_bytes):
             return _status("blocked", "disk_space_insufficient", self.configuration, current_snapshot)
         pending = self.dependencies.tasks.pending(current_snapshot.sequence if current_snapshot else 0)
+        if current_snapshot is not None:
+            self.dependencies.maintenance.verify_published_prices(current_snapshot, pending)
         PublishHistoryProgress(self.progress, "initializing", "completed", (1, 1), "published_state")
         target = CompletedDailyCutoff(self.observed_at)
         try:

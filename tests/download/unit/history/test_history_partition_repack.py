@@ -419,7 +419,7 @@ def test_physical_repack_does_not_create_revision_due_or_invalidate_training_cac
 def test_finalize_deletes_only_the_verified_backup_after_bundle_and_memory_match(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interrupted: bool
 ) -> None:
-    source, target, _original = _history(tmp_path)
+    source, target, original = _history(tmp_path)
     coordinator = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements(), sqlite_policy=SqlitePolicyFixture())
     built = coordinator.build()
     coordinator.activate()
@@ -482,6 +482,11 @@ def test_finalize_deletes_only_the_verified_backup_after_bundle_and_memory_match
     assert finalized.released_bytes > 0
     assert not (tmp_path / "data/history-before-repack").exists()
     RequireHistoryRepackIdle(source)
+    (evidence,) = repack_module.FinalizedHistoryRepackEvidence(source)
+    ref = original.partitions[0]
+    partition = HistoryPricePartition(source / ref.relative_path, ref.calendar_year, ref.calendar_month,
+                                      sqlite_policy=SqlitePolicyFixture())
+    partition.verify_published_year(original.partitions, None, evidence)
     with pytest.raises(repack_module.HistoryPartitionRepackError, match="cannot be rolled back"):
         coordinator.rollback()
 
