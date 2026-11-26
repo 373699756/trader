@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
+from time import monotonic
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -11,6 +14,7 @@ from scripts.download.history.cli import BuildParser, ParseOptions
 from scripts.download.history.commands import BuildCommands
 from scripts.download.history.industry_cache_measurement import IndustryCacheMeasurementRequest, MeasureIndustryCache
 from tests.helpers.shared.configuration import SqlitePolicyFixture
+from trader.download.infra.industry_query_index import IndustrySourceDocument, SQLiteIndustryQueryIndex
 from trader.infra.disk_types import DiskProfile
 
 
@@ -19,6 +23,23 @@ def _arguments(evidence: Path, output: Path, *extra):
         "--cninfo-cache-evidence", str(evidence), "--cninfo-cache-codes", "002831", "002832",
         "--industry-work-root", str(output), *extra,
     ]
+
+
+def test_compare_individual_and_batched_lookups_preserves_hits_misses_and_order(tmp_path):
+    cut = datetime(2026, 11, 24, 13, tzinfo=ZoneInfo("Asia/Shanghai"))
+    index = SQLiteIndustryQueryIndex(tmp_path / "industry.sqlite3", "cninfo_industry_queries", sqlite_policy=SqlitePolicyFixture())
+    index.prepare()
+    items = tuple(measurement_module._Input(code, tmp_path / code, "a" * 64, IndustrySourceDocument(
+        "cninfo:p_stock2110:" + code, cut.date(), cut.date(), cut, code.encode(),
+    )) for code in ("000000", "000002", "002831"))
+    index.save_source_documents(tuple(item.document for item in items))
+    for number in (1, 2):
+        stages = measurement_module._lookup_phases(index, items, number, monotonic() + 30, lambda: False)
+        methods = ("individual", "batched") if number == 1 else ("batched", "individual")
+        assert [(stage["phase"], stage["method"]) for stage in stages] == [
+            (phase, method) for phase in ("miss", "partial", "hit") for method in methods
+        ]
+        assert all(stage["exact"] for stage in stages)
 
 
 @pytest.mark.parametrize("candidate", ("baseline", "batched", "compare"))

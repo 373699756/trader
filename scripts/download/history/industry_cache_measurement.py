@@ -9,6 +9,7 @@ import os
 import re
 import time
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime
 from functools import partial
@@ -75,6 +76,7 @@ class _CacheRound(TypedDict):
     database_bytes: int
     readback_exact: bool
     phases: list[dict[str, object]]
+    lookup_phases: list[dict[str, object]]
 
 
 def _fingerprint(path: Path) -> str:
@@ -146,6 +148,46 @@ def _count(metrics: dict[str, object], key: str) -> int:
     return value
 
 
+def _lookup_phases(
+    index: SQLiteIndustryQueryIndex, inputs: tuple[_Input, ...], number: int,
+    deadline: float, cancel_requested: Callable[[], bool],
+) -> list[dict[str, object]]:
+    """Compare the individual and batched reads at one cutoff, outside the ingestion timing."""
+    cut = max(item.document.received_at for item in inputs)
+    keys = tuple(item.document.request_key for item in inputs)
+    expected = {item.document.request_key: item.document.receipt_hash for item in inputs}
+    absent = (f"cninfo:p_stock2110:{n:06}" for n in range(1_000_000))
+    misses = tuple(next(key for key in absent if key not in expected) for _ in inputs)
+    stages: list[dict[str, object]] = []
+    for workload, selected in (("miss", misses), ("partial", keys[::2] + misses[1::2]), ("hit", keys)):
+        def individual() -> tuple[str | None, ...]:
+            rows: list[str | None] = []
+            for key in selected:
+                _check(deadline, cancel_requested)
+                doc = index.read_source_document(key, cut)
+                rows.append(None if doc is None else doc.receipt_hash)
+            return tuple(rows)
+
+        def batched() -> tuple[str | None, ...]:
+            rows: list[str | None] = []
+            with closing(index.iter_source_documents(
+                selected, cut, cancel_requested=lambda: cancel_requested() or time.monotonic() >= deadline,
+            )) as reads:
+                for key, read in zip(selected, reads, strict=True):
+                    if read.request_key != key or read.failure_category is not None:
+                        raise ValueError("industry_cache_measurement_lookup_invalid")
+                    rows.append(None if read.document is None else read.document.receipt_hash)
+            return tuple(rows)
+
+        order = (individual, batched) if number % 2 else (batched, individual)
+        for operation in order:
+            result, measured = _measure(index.path.parent, workload, None, operation)
+            if result != tuple(expected.get(key) for key in selected):
+                raise ValueError("industry_cache_measurement_lookup_mismatch")
+            stages.append({**measured, "method": operation.__name__, "exact": True})
+    return stages
+
+
 def _measure_round(
     directory: Path,
     number: int,
@@ -154,6 +196,7 @@ def _measure_round(
     sqlite_policy: SqliteIoPolicy,
     deadline: float,
     cancel_requested: Callable[[], bool],
+    *, compare_lookups: bool,
 ) -> _CacheRound:
     directory.mkdir()
     index = SQLiteIndustryQueryIndex(directory / "industry.sqlite3", "cninfo_industry_queries", sqlite_policy=sqlite_policy)
@@ -201,6 +244,7 @@ def _measure_round(
         "ingest_operation_seconds": operation_seconds,
         "ingest_unattributed_seconds": max(0.0, ingest_seconds - operation_seconds),
         "round_wall_seconds": time.perf_counter() - started,
+        "lookup_phases": _lookup_phases(index, inputs, number, deadline, cancel_requested) if compare_lookups else [],
         "database_bytes": index.path.stat().st_size, "readback_exact": True, "phases": stages,
     }
     AtomicWriteJson(directory / "measurement.json", result)
@@ -278,7 +322,7 @@ def MeasureIndustryCache(
                 _check(deadline, cancel_requested)
                 rounds.append(_measure_round(
                     root / ("round-" + str(number) + "-" + candidate), number, candidate, inputs,
-                    sqlite_policy, deadline, cancel_requested,
+                    sqlite_policy, deadline, cancel_requested, compare_lookups=request.candidate == "compare",
                 ))
     source_unchanged = identities == {relative: _fingerprint(PROJECT_ROOT / relative) for relative in _SOURCE_FILES}
     input_unchanged = all(
