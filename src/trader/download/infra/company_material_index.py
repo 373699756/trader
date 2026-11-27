@@ -77,9 +77,9 @@ class SQLiteCompanyMaterialIndex:
                 batch = codes[offset : offset + 512]
                 slots = ",".join("?" for _ in batch)
                 row = connection.run(f"""
-                    SELECT COUNT(*) FROM company_document_requirements required
-                    JOIN disclosures d ON d.id=required.disclosure_id
-                    JOIN disclosure_codes c ON c.disclosure_id=d.id
+                    SELECT COUNT(*) FROM disclosure_codes c
+                    CROSS JOIN disclosures d ON d.id=c.disclosure_id
+                    JOIN company_document_requirements required ON required.disclosure_id=d.id
                     WHERE d.source='cninfo' AND d.kind='announcement' AND d.body_checked=0
                       AND d.published_at BETWEEN ? AND ? AND c.code IN ({slots})
                       AND (SELECT COUNT(*) FROM disclosure_codes AS members WHERE members.disclosure_id=d.id)=1

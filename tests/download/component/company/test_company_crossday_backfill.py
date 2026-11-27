@@ -15,6 +15,60 @@ from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.sqlite_connection import SqliteSession
 
 
+def test_only_superseded_pre_intent_can_release_with_receipts_for_both_current_heads(tmp_path):
+    runtime, _, _, _ = _runtime(tmp_path)
+    runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
+    pending = runtime.normalized.has_pending_publication
+    with SqliteSession(runtime.material.path) as raw, SqliteSession(runtime.facts.path) as formal:
+        generation = b"g" * 32
+        current, = raw.run("SELECT content_hash FROM company_publication").require_one()
+        head = formal.run("SELECT content_hash,extraction_hash,published_at FROM company_publication").require_one()
+        raw.run("INSERT INTO company_round_generation VALUES(?,?,?)", ("old", generation, b"o" * 32))
+        assert pending()
+        raw.run("INSERT INTO company_round_generation VALUES(?,?,?)", ("new", generation, current))
+        raw.run("INSERT INTO company_round_intent(scope,generation,confirmed_content_hash) VALUES(?,?,?)",
+                ("new", generation, head[0]))
+        assert pending()
+        formal.run("INSERT INTO company_normalization_commit VALUES(?,?,?,?,?)", ("new", generation, *head))
+        assert not pending()
+        formal.run("UPDATE company_normalization_commit SET generation=? WHERE scope='new'", (b"x" * 32,))
+        assert pending()
+        formal.run("UPDATE company_normalization_commit SET generation=? WHERE scope='new'", (generation,))
+        formal.run("INSERT INTO company_normalization_commit VALUES(?,?,?,?,?)", ("old", generation, *head))
+        assert pending()
+        formal.run("DELETE FROM company_normalization_commit WHERE scope='old'")
+        raw.run("UPDATE company_round_generation SET normalized_hash=? WHERE scope='old'", (current,))
+        assert pending()
+        raw.run("UPDATE company_round_generation SET normalized_hash=? WHERE scope='old'", (b"o" * 32,))
+        raw.run("UPDATE company_round_intent SET confirmed_content_hash=NULL WHERE scope='new'")
+        assert pending()
+
+
+def test_pending_registered_documents_counts_only_unchecked_in_scope_single_issuers(tmp_path):
+    runtime, _, _, _ = _runtime(tmp_path)
+    cutoff = _SCOPE.cutoff
+    codes = tuple(f"{600000 + index:06d}" for index in range(513))
+    runtime.initialize(_SCOPE.codes, cutoff)
+    material = runtime.material
+    notice = Disclosure("cninfo", "at-cutoff", (codes[0],), "立案调查公告", cutoff, "https://example.test/n.pdf", "a" * 64)
+    material.register_disclosures((
+        notice,
+        replace(notice, identity="at-window-start", codes=(codes[-1],), published_at=cutoff - timedelta(days=365)),
+        replace(notice, identity="multi", codes=(codes[0], codes[-1])),
+        replace(notice, identity="outside", codes=("601000",)),
+        replace(notice, identity="expired", published_at=cutoff - timedelta(days=366)),
+        replace(notice, identity="future", published_at=cutoff + timedelta(seconds=1)),
+        replace(notice, identity="other-source", source="other"),
+        replace(notice, identity="no-review", title="股东大会通知"),
+        replace(notice, identity="checked"),
+    ))
+    with SqliteSession(material.path) as source:
+        source.run("UPDATE disclosures SET body_checked=1 WHERE source_key='checked'")
+    assert material.pending_registered_documents((), cutoff) == 0
+    assert material.pending_registered_documents((codes[0],), cutoff) == 1
+    assert material.pending_registered_documents(codes, cutoff) == 2
+
+
 @pytest.mark.parametrize("started", (False, True))
 def test_shifted_window_keeps_partial_edges_and_rechecks_the_whole_prior_intraday(tmp_path, started):
     runtime, _, _, _ = _runtime(tmp_path)

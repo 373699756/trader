@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from collections.abc import Iterator, Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from itertools import chain
 from pathlib import Path
 from sqlite3 import Row
 from zoneinfo import ZoneInfo
@@ -104,10 +105,35 @@ class SQLiteCompanyNormalizedIndex:
                 yield connection
 
     def has_pending_publication(self) -> bool:
-        with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
-            return connection.run("""SELECT 1 FROM company_round_intent WHERE confirmed_content_hash IS NULL
-                UNION ALL SELECT 1 FROM company_round_generation g WHERE NOT EXISTS(
-                    SELECT 1 FROM company_round_intent i WHERE i.scope=g.scope) LIMIT 1""").fetchone() is not None
+        options = SqliteConnectionOptions(read_only=True)
+        with self._session(self.path, options, sqlite_policy=self._sqlite_policy) as source, SqliteTransaction(source):
+            if source.run("SELECT 1 FROM company_round_intent WHERE confirmed_content_hash IS NULL LIMIT 1").fetchone():
+                return True
+            pending = source.run("""SELECT g.scope,g.normalized_hash FROM company_round_generation g
+                WHERE NOT EXISTS(SELECT 1 FROM company_round_intent i WHERE i.scope=g.scope)""")
+            first = pending.fetchone()
+            if first is None:
+                return False
+            # A superseded pre-intent snapshot cannot be published. Require a
+            # matching receipt for both current heads before releasing its round.
+            current = ReadCompanyPublicationIdentity(source)
+            with self._session(self._facts.path, options, sqlite_policy=self._sqlite_policy) as formal, SqliteTransaction(formal):
+                head = ReadCompanyPublicationIdentity(formal)
+                if current is None or head is None:
+                    return True
+                for scope, normalized_hash in chain((first,), pending):
+                    if normalized_hash == current.content_hash or formal.run(
+                        "SELECT 1 FROM company_normalization_commit WHERE scope=?", (scope,)
+                    ).fetchone():
+                        return True
+                for scope, generation in source.run("""SELECT g.scope,g.generation FROM company_round_generation g
+                    JOIN company_round_intent i ON i.scope=g.scope AND i.generation=g.generation
+                    WHERE g.normalized_hash=? AND i.confirmed_content_hash=?""", (current.content_hash, head.content_hash)):
+                    if formal.run("""SELECT 1 FROM company_normalization_commit WHERE scope=? AND generation=?
+                        AND content_hash=? AND extraction_hash=? AND published_at=?""",
+                        (scope, generation, head.content_hash, head.extraction_hash, EncodeCompanyTime(head.published_at))).fetchone():
+                        return False
+            return True
 
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
