@@ -11,6 +11,8 @@ from decimal import ROUND_HALF_UP, Decimal
 from trader.recommendation.domain.market.feature_contracts import TOMORROW_RAW_ALPHA_FEATURE_MANIFEST
 from trader.recommendation.domain.market.models import CrossSectionStats
 
+_BATCH_PERCENTILE_MIN_ROWS = 128
+
 PRODUCTION_FACTOR_IDS = frozenset(
     {
         "atr20_pct",
@@ -182,10 +184,12 @@ class PercentileReference:
             raise ValueError("percentile reference must contain finite values")
         lower = _quantile(finite, self.lower_quantile) if finite else None
         upper = _quantile(finite, self.upper_quantile) if finite else None
-        bounded = (
-            tuple(min(upper, max(lower, value)) for value in finite) if lower is not None and upper is not None else ()
-        )
-        object.__setattr__(self, "values", bounded)
+        if lower is not None and upper is not None:
+            low_end = bisect_right(finite, lower)
+            high_start = bisect_left(finite, upper)
+            finite[:low_end] = [min(upper, lower)] * low_end
+            finite[high_start:] = [upper] * (len(finite) - high_start)
+        object.__setattr__(self, "values", tuple(finite))
         object.__setattr__(self, "lower_bound", lower)
         object.__setattr__(self, "upper_bound", upper)
 
@@ -209,6 +213,29 @@ class PercentileReference:
         inverse: bool = False,
         population_data_version: str = "",
     ) -> tuple[dict[str, float], CrossSectionStats]:
+        if len(values) >= _BATCH_PERCENTILE_MIN_ROWS and len(self.values) >= 2:
+            import numpy as np
+
+            # Both insertion points preserve average ranks for ties and values between observations.
+            observed = np.fromiter(values.values(), dtype=np.float64, count=len(values))
+            valid = np.isfinite(observed)
+            reference = np.asarray(self.values)
+            bounded = np.clip(observed, reference[0], reference[-1])
+            left = np.searchsorted(reference, bounded, side="left")
+            right = np.searchsorted(reference, bounded, side="right")
+            ranks = (left + right - 1) / (2.0 * (len(reference) - 1))
+            scores = 100.0 * (1.0 - ranks if inverse else ranks)
+            scores[~valid] = 50.0
+            result = dict(zip(values, scores.tolist(), strict=True))
+            missing_count = len(values) - int(np.count_nonzero(valid))
+        else:
+            result, missing_count = self._scalar_scores(values, inverse)
+        return result, CrossSectionStats(
+            self.lower_bound, self.upper_bound, len(self.values), missing_count,
+            self.lower_quantile, self.upper_quantile, population_data_version,
+        )
+
+    def _scalar_scores(self, values: Mapping[str, float | None], inverse: bool) -> tuple[dict[str, float], int]:
         result: dict[str, float] = {}
         missing_count = 0
         for key, value in values.items():
@@ -220,15 +247,7 @@ class PercentileReference:
             else:
                 rank = self.rank(float(value))
                 result[key] = 100.0 * (1.0 - rank if inverse else rank)
-        return result, CrossSectionStats(
-            self.lower_bound,
-            self.upper_bound,
-            len(self.values),
-            missing_count,
-            self.lower_quantile,
-            self.upper_quantile,
-            population_data_version,
-        )
+        return result, missing_count
 
 
 def PercentileScoresWithMetadata(

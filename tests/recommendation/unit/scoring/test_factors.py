@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from trader.recommendation.domain.market.factors import (
@@ -96,6 +98,24 @@ def test_round_score_uses_round_half_up() -> None:
     assert RoundScore(83.405) == 83.41
     assert RoundScore(-2.0) == 0.0
     assert RoundScore(101.0) == 100.0
+
+
+@pytest.mark.parametrize("inverse", (False, True))
+def test_batch_scores_match_individual_ranks_against_fixed_reference(inverse: bool) -> None:
+    reference = PercentileReference((-4.0, -1.0, -1.0, 0.0, 2.0, 9.0))
+    sample = (-100.0, -1.0, -0.25, 2.0, 100.0, None, math.nan, math.inf)
+    observations = {str(index): sample[index % len(sample)] for index in range(256)}
+    scores, stats = reference.scores(observations, inverse=inverse, population_data_version="fixed")
+    assert tuple(scores) == tuple(observations)
+    for code, value in observations.items():
+        if value is None or not math.isfinite(value):
+            assert scores[code] == 50.0
+        else:
+            rank = reference.rank(value)
+            assert scores[code] == 100.0 * (1.0 - rank if inverse else rank)
+    assert stats.sample_size == 6
+    assert stats.missing_count == 96
+    assert stats.population_data_version == "fixed"
 
 
 def test_weighted_score_rejects_component_drift() -> None:
