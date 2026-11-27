@@ -70,7 +70,7 @@ class PreviewCycleRunner:
             self._set_status("failed", FailureCode(exc, "preview_inputs_unavailable"))
             return
         try:
-            if not self._dependencies.rounds.prepared(self._dependencies.round_profile, sequence):
+            if self._dependencies.rounds.prepared(self._dependencies.round_profile, sequence, True) is None:
                 self._check_round(scheduled)
                 raise DataRefreshUnavailableError("preview_round_cancelled")
             self._refresh(PipelineTask.INDUSTRY_HEAT, context, scheduled)

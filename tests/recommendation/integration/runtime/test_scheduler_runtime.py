@@ -355,6 +355,32 @@ def test_round_refreshes_candidates_after_auxiliary_inputs_before_scoring(monkey
     rounds.finish(profile, following.sequence)
 
 
+@pytest.mark.parametrize(("hour", "minute_changed", "expected"), (
+    (14, True, (PipelineTask.INTRADAY_TAIL, PipelineTask.CANDIDATE_QUOTES, PipelineTask.SCORE)),
+    (14, False, (PipelineTask.INTRADAY_TAIL,)),
+    (12, True, (PipelineTask.INTRADAY_TAIL, PipelineTask.SCORE)),
+    (15, True, ()),
+))
+def test_isolated_intraday_task_refreshes_candidates_for_changed_live_inputs(monkeypatch, hour, minute_changed, expected):
+    runtime = _round_cleanup_runtime()
+    at = NOW.replace(hour=hour, minute=0)
+    runtime._dependencies.clock.current = at
+    task = ScheduledPipelineTask(PipelineTask.INTRADAY_TAIL, at, MarketPhase.BEFORE_CLOSE)
+    rounds = runtime._dependencies.rounds
+    admission = rounds.enter(runtime._dependencies.round_profile, (task,))
+    assert admission is not None
+    executed = []
+
+    def execute(request):
+        executed.append(request.task)
+        return minute_changed if request.task is PipelineTask.INTRADAY_TAIL else False
+
+    monkeypatch.setattr(runtime, "_execute_pipeline_task", execute)
+    monkeypatch.setattr(runtime, "_execute_score_pair", lambda *_a, **_kw: executed.append(PipelineTask.SCORE))
+    runtime._process_recommendation_round(replace(task, round_sequence=admission.sequence, round_tasks=(task,)))
+    assert tuple(executed) == expected
+
+
 @pytest.mark.parametrize("outcome,reported", (
     ("cancelled", False), ("waiting_inputs", False), ("publication_window_closed", False), ("timeout", True),
 ))
@@ -366,7 +392,7 @@ def test_round_collection_reports_only_an_actual_deadline_timeout(monkeypatch, o
     admission = rounds.enter(profile, (scheduled,))
     assert admission is not None
     status = replace(rounds.status(), outcome=outcome)
-    monkeypatch.setattr(rounds, "prepared", lambda *_args: False)
+    monkeypatch.setattr(rounds, "prepared", lambda *_args: None)
     monkeypatch.setattr(rounds, "status", lambda: status)
     try:
         runtime._execute_recommendation_round(replace(scheduled, round_sequence=admission.sequence))

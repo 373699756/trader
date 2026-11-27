@@ -250,9 +250,9 @@ def test_collection_waits_for_every_profile_without_resetting_deadline() -> None
     assert first is not None
     assert rounds.enter("v3", _tasks()) is first
     with ThreadPoolExecutor(max_workers=1) as pool:
-        waiting = pool.submit(rounds.prepared, "v2", first.sequence)
+        waiting = pool.submit(rounds.prepared, "v2", first.sequence, False)
         assert not waiting.done()
-        assert rounds.prepared("v3", first.sequence)
+        assert rounds.prepared("v3", first.sequence, True)
         assert waiting.result(timeout=2)
 
 
@@ -323,9 +323,9 @@ def test_failure_wakes_waiting_peers_without_waiting_for_deadline() -> None:
     admission = rounds.enter("v1", _tasks())
     assert admission is not None and rounds.enter("v5", _tasks()) is admission
     with ThreadPoolExecutor(max_workers=1) as pool:
-        waiting = pool.submit(rounds.prepared, "v1", admission.sequence)
+        waiting = pool.submit(rounds.prepared, "v1", admission.sequence, True)
         rounds.finish("v5", admission.sequence)
-        assert waiting.result(timeout=2.0) is False
+        assert waiting.result(timeout=2.0) is None
         assert rounds.enter("v5", _tasks()) is None
         rounds.finish("v1", admission.sequence)
     following = rounds.enter("v1", _tasks())

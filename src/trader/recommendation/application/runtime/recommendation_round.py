@@ -81,6 +81,7 @@ class RecommendationRounds:
         self._publication: UnifiedProfiledPublishResult | None = None
         self._cancelled = False
         self._inputs_pending = False
+        self._scoring_inputs_changed = False
         self._inputs: RoundInputs | None = None
         self._observation = SqliteObservation()
         self._round_profiles: tuple[str, ...] = ()
@@ -129,6 +130,7 @@ class RecommendationRounds:
                 self._revoked_at = None
                 self._cancelled = False
                 self._inputs_pending = False
+                self._scoring_inputs_changed = False
                 self._staged.clear()
                 self._publication = None
                 sequence = self._sequence
@@ -237,11 +239,19 @@ class RecommendationRounds:
         with self._condition:
             return self._current_admission is not None and self._current_admission.sequence == sequence and self._inputs_pending
 
-    def prepared(self, profile: str, sequence: int) -> bool:
-        return self._wait_for_collection(profile, sequence, self._preparing)
+    def prepared(self, profile: str, sequence: int, inputs_changed: bool) -> bool | None:
+        """Return the shared change decision once all profiles arrive, or None on cancellation."""
+        with self._condition:
+            if not self._matches_locked(sequence):
+                return None
+            self._scoring_inputs_changed |= inputs_changed
+            if not self._wait_for_collection_locked(profile, sequence, self._preparing):
+                return None
+            return self._scoring_inputs_changed
 
     def collected(self, profile: str, sequence: int) -> bool:
-        return self._wait_for_collection(profile, sequence, self._collecting)
+        with self._condition:
+            return self._matches_locked(sequence) and self._wait_for_collection_locked(profile, sequence, self._collecting)
 
     def stage(self, profile: str, sequence: int, pair: PreparedCurrentPair) -> UnifiedPairedPublishResult:
         with self._condition:
@@ -295,21 +305,18 @@ class RecommendationRounds:
         ):
             self._publish_batch_event(sequence, publication.events, publication.head_gaps)
 
-    def _wait_for_collection(self, profile: str, sequence: int, remaining_profiles: set[str]) -> bool:
-        with self._condition:
+    def _wait_for_collection_locked(self, profile: str, sequence: int, remaining_profiles: set[str]) -> bool:
+        remaining_profiles.discard(profile)
+        self._condition.notify_all()
+        while self._pending or remaining_profiles:
+            remaining = self._remaining_locked()
+            if remaining <= 0.0:
+                self._cancel_locked("timeout")
+                return False
+            self._condition.wait(remaining)
             if not self._matches_locked(sequence):
                 return False
-            remaining_profiles.discard(profile)
-            self._condition.notify_all()
-            while self._pending or remaining_profiles:
-                remaining = self._remaining_locked()
-                if remaining <= 0.0:
-                    self._cancel_locked("timeout")
-                    return False
-                self._condition.wait(remaining)
-                if not self._matches_locked(sequence):
-                    return False
-            return True
+        return True
 
     def finish(self, profile: str, sequence: int) -> None:
         with self._condition:

@@ -134,6 +134,30 @@ def test_gateway_uses_composed_full_market_fetcher_for_deadline_and_cancellation
     assert isinstance(calls[0][1], threading.Event)
 
 
+@pytest.mark.parametrize(("round_seconds", "primary_seconds"), ((120, 12), (5, 5), (None, 12)))
+def test_full_market_fetchers_receive_their_own_route_deadlines(round_seconds, primary_seconds) -> None:
+    calls: list[tuple[str, datetime | None]] = []
+
+    def primary(deadline: datetime | None, cancel_event: threading.Event):
+        calls.append(("tencent_market", deadline))
+        raise RuntimeError("primary unavailable")
+
+    def backup(deadline: datetime | None, cancel_event: threading.Event):
+        calls.append(("sina", deadline))
+        return (_quote(),)
+
+    gateway = MarketDataGateway(
+        StaticMarketClient(()), StaticMarketClient(()), StaticTencentClient(()),
+        minimum_market_rows=1, circuit_breaker_failures=2, circuit_breaker_seconds=60,
+        full_market_primary_timeout_seconds=12, full_market_fetchers={"tencent_market": primary, "sina": backup},
+        wall_clock=lambda: NOW,
+    )
+    deadline = NOW + timedelta(seconds=round_seconds) if round_seconds is not None else None
+    fetched = gateway.fetch_market(observed_at=NOW, deadline=deadline)
+    assert [item.source for item in fetched] == ["sina"]
+    assert calls == [("tencent_market", NOW + timedelta(seconds=primary_seconds)), ("sina", deadline)]
+
+
 def test_candidate_request_reserves_deadline_for_normalization_and_commit() -> None:
     quote = replace(_quote(), source="tencent")
 
@@ -580,12 +604,19 @@ def test_feature_service_rejects_targeted_quote_older_than_full_market_snapshot(
 
 def test_feature_service_does_not_commit_full_market_result_after_deadline() -> None:
     deadline = NOW + timedelta(seconds=1)
-    wall_times = iter((NOW, deadline))
+    now = NOW
+
+    class LateGateway(StaticGateway):
+        def fetch_market(self, **kwargs):
+            nonlocal now
+            now = deadline
+            return super().fetch_market(**kwargs)
+
     service = _service(
-        StaticGateway((_quote(),)),
+        LateGateway((_quote(),)),
         StaticHistoryClient(),
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
-        wall_clock=lambda: next(wall_times),
+        wall_clock=lambda: now,
     )
 
     with pytest.raises(MarketDataDeadlineExceededError, match="completed after"):

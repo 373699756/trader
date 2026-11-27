@@ -66,6 +66,7 @@ from trader.recommendation.application.runtime.schedule_requests import (
 from trader.recommendation.application.runtime.status import SchedulerRuntimeStatus, TradingCalendarRuntimeStatus
 from trader.recommendation.application.runtime.trading_session import SessionGuard, StaleSessionError, TradingSession
 from trader.recommendation.domain.evidence.pipeline import StageState
+from trader.recommendation.domain.market.quote_freshness import QuoteSnapshotTime
 from trader.recommendation.domain.publication.freeze_identity import (
     FreezeIdentity,
     LongProjection,
@@ -602,10 +603,19 @@ class SchedulerRuntime:
                 changed = changed or (outcome_changed and task in _SCORING_INPUT_TASKS)
             # Finish slow auxiliary inputs across profiles before refreshing the
             # final candidate quote cut, so their wait does not age that cut.
-            if not rounds.prepared(profile, sequence):
+            prepared_change = rounds.prepared(profile, sequence, changed)
+            if prepared_change is None:
                 self._record_collection_failure(sequence)
                 return
+            changed = prepared_change
             candidate = tasks.get(PipelineTask.CANDIDATE_QUOTES)
+            minute_task = tasks.get(PipelineTask.INTRADAY_TAIL)
+            if (
+                candidate is None and changed and minute_task is not None
+                and minute_task.phase is MarketPhase.BEFORE_CLOSE
+                and QuoteSnapshotTime(minute_task.scheduled_at, sessions=self._dependencies.cadence.sessions) is None
+            ):
+                candidate = replace(minute_task, task=PipelineTask.CANDIDATE_QUOTES, schedule_point=None)
             if candidate is not None:
                 with SessionGuard(scheduled.session):
                     pass

@@ -102,7 +102,6 @@ class _MarketRouteContext:
     force: bool
     deadline: datetime | None
     cancellation: Mapping[str, threading.Event]
-    fetchers: Mapping[str, Callable[[], Sequence[MarketQuote]]]
 
 
 class MarketSourceTelemetry(Protocol):
@@ -153,11 +152,7 @@ class MarketSourceCoordinator:
         cancelled: Callable[[], bool] | None = None,
     ) -> tuple[MarketSourceFetch, ...]:
         cancellation = {"tencent_market": CancellationEvent(cancelled), "sina": CancellationEvent(cancelled)}
-        fetchers = {
-            "tencent_market": self._full_market_fetcher("tencent_market", deadline, cancellation["tencent_market"]),
-            "sina": self._full_market_fetcher("sina", deadline, cancellation["sina"]),
-        }
-        context = _MarketRouteContext(observed_at, force, deadline, cancellation, fetchers)
+        context = _MarketRouteContext(observed_at, force, deadline, cancellation)
         return self._fetch_primary_then_backup(context)
 
     def _fetch_primary_then_backup(
@@ -255,7 +250,7 @@ class MarketSourceCoordinator:
                     "full_market_quotes",
                     "market",
                     {"universe": "ashare", "fields": ["realtime_quote"]},
-                    context.fetchers[source],
+                    self._full_market_fetcher(source, deadline, context.cancellation[source]),
                     context.observed_at,
                     context.force,
                     deadline,
