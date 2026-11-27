@@ -70,7 +70,7 @@ BaoStock补缺取得完整目标窗口后立即逐股打印“获取成功，待
 
 普通 `./run.sh sync company` 以最新字段为完成目标。首次按报告期寻找每股最新有效财报，核对当前质押批次、未来解禁日程、已有证据及当天公告。后续公告逐市场从已确认的日期续查；当天盘中查过的范围重新核对，以发现迟到披露与修订。未使用历史数据的冷启动无法证明较早事件的完整性，保留未知。东财缺少已证实的全市场修订与撤回序号，使用固定截止的批量查询核对最新记录，逐股比较来源摘要。供应商新报告中的空值保留在该报告期，已有凭据沿原期与原时间保存。普通运行结束展示本批观测与正式采用；完整风险窗、质押分母等业务证明单独计数。
 
-`./run.sh sync compnay fill` 是显式年度公告补采入口，复用已保存的分区与原件。以下年度目录遍历、历史正文队列和完整窗口验收描述该模式。最新字段同步只派发当前增量及其需要的证据。
+`./run.sh sync company fill` 是显式年度公告补采入口，复用已保存的分区与原件。以下年度目录遍历、历史正文队列和完整窗口验收描述该模式。最新字段同步只派发当前增量及其需要的证据。
 
 巨潮按板块或发行人分组返回的当日公告，需要按记录身份去重并与市场目录核对。盘中或盘后新增披露可能使两者的条数发生变化。市场目录在供应商分页上限内时，复用已保存并核对过请求身份的市场首页，继续核对剩余页。该次分页的总数、行数和成员通过校验后才登记日期覆盖，原有分组回执继续保留。
 
@@ -1130,7 +1130,7 @@ company整数协议由 `company_facts_protocol.py`唯一维护，不是自定义
 | company_field_repairs（WR）；company_field_recovery.py | disclosure_id INTEGER；code/record_hash/event_id/field/rule_id/state TEXT；前六列联合PK；均非空，disclosure FK→disclosures且级联 | QueueCompanyFieldRepairs／RegisterCompanyFieldAttempts写，CompleteCompanyFieldRepairs／RestoreCompanyFieldRepairs及材料恢复消费；state=pending/attempted/complete，只表达字段恢复任务，不替代正式字段值 |
 | company_material_dependencies（WR）；同上 | disclosure_id INTEGER；code/record_hash/scope/reason_code TEXT；body_hash/extraction_hash H；七列联合PK；均非空，两hash32字节，disclosure FK→disclosures且级联；索引 company_material_dependency_codes(code,disclosure_id) | RegisterCompanyMaterialDependencies写；字段review及材料清理按精确原有效回执读取；无原文只报告缺口，不自动重下 |
 | document_contract_link_rules（WR）；company_contract_link_rules.py | source/source_key/code/record_hash/rule_id TEXT；body_hash/extraction_hash/payload_hash H；PK(source,source_key,code,record_hash,extraction_hash)；均非空，body/payload hash32字节 | WriteCompanyContractLinkRules写，ReadCompanyContractLinkRules／ReadCompanyPublicationLinks核当前候选及局部主体／签署规则；不能绕过同案／主体守卫 |
-| `company_annual_income_observation` | scope/code/report_date/disclosed_at/updated_at/observed_at/currency/record_hash TEXT，revenue REAL，PK(scope,code,report_date,disclosed_at,updated_at) | `SQLiteCompanySyncInputStore`在来源库保存逐期观察。达到年度、正式披露和币种条件后才用于补合同证据。 |
+| `company_annual_income_observation` | scope/code/report_date/disclosed_at/updated_at/observed_at/currency/record_hash TEXT，revenue REAL，PK(scope,code,report_date,disclosed_at,updated_at) | `SQLiteCompanySyncInputs`在来源库保存逐期观察。达到年度、正式披露和币种条件后才用于补合同证据。 |
 
 采集库还安装8.5的 download_failure。材料原件、压缩文字及OCR页是 `CompanyRawFiles`／`CompanyDocumentFiles` 管理的文件，不是遗漏在本表的SQLite列；容量、引用保护及清理前提见5.11–5.14。
 

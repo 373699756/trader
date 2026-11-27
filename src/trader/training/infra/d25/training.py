@@ -10,8 +10,8 @@ import numpy as np
 
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.application.tomorrow_training import (
-    TomorrowTrainingProgress, TomorrowTrainingProgressState, TrainingFitCounts, TrainingFitDetail,
+from trader.training.application.training_progress import (
+    TrainingProgress, TrainingProgressState, TrainingFitCounts, TrainingFitDetail,
 )
 from trader.training.domain.production_diagnostic_dates import ProductionDiagnosticDatePlan
 from trader.training.infra.d25.artifact import (
@@ -45,7 +45,7 @@ def FitIndustryD25Probability(
     request: D25IndustryFitRequest,
     check: Callable[[], None],
     *,
-    progress: Callable[[TomorrowTrainingProgress], None] | None = None,
+    progress: Callable[[TrainingProgress], None] | None = None,
 ) -> D25ProbabilityArtifact:
     models: list[tuple[str, D25Model]] = []
     fitted_dates: set[date] = set()
@@ -60,10 +60,10 @@ def FitIndustryD25Probability(
     validation_position = training_rows = training_positive_rows = 0
     position = skipped = 0
 
-    def report(state: TomorrowTrainingProgressState, detail: TrainingFitDetail | None = None) -> None:
+    def report(state: TrainingProgressState, detail: TrainingFitDetail | None = None) -> None:
         if progress is not None:
             fitted = len(models)
-            progress(TomorrowTrainingProgress(
+            progress(TrainingProgress(
                 "event_model_fit", state, fitted + skipped, len(counts), fitted, Strategy.D25,
                 fit_detail=detail, count_unit="industries", fit_counts=TrainingFitCounts(fitted + skipped, len(counts), fitted, skipped),
             ))
@@ -129,15 +129,15 @@ def FitIndustryD25Probability(
     if tuple(sorted(fitted_dates)) != request.split.fitting_dates or tuple(sorted(calibration_dates)) != request.split.calibration_dates:
         raise ValueError("d25_probability_dates_incomplete")
     if progress is not None:
-        progress(TomorrowTrainingProgress("model_calibration", "started", 0, 1, strategy=Strategy.D25))
+        progress(TrainingProgress("model_calibration", "started", 0, 1, strategy=Strategy.D25))
     try:
         weights = CalibrateD25Probability(scores[:position], labels[:position], check)
     except ValueError:
         if progress is not None:
-            progress(TomorrowTrainingProgress("model_calibration", "failed", 0, 1, strategy=Strategy.D25))
+            progress(TrainingProgress("model_calibration", "failed", 0, 1, strategy=Strategy.D25))
         raise
     if progress is not None:
-        progress(TomorrowTrainingProgress("model_calibration", "completed", 1, 1, strategy=Strategy.D25))
+        progress(TrainingProgress("model_calibration", "completed", 1, 1, strategy=Strategy.D25))
     sample_rows, labeled_rows = samples.d25_validation_counts()
     assessment = AssessD25Probabilities(
         validation_scores[:validation_position], validation_labels[:validation_position], weights,

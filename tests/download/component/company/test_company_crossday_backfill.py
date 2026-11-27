@@ -135,13 +135,13 @@ def test_backfill_handoff_installs_one_new_scope_without_acknowledging_old_reque
     if pending != "none":
         with pytest.raises(ValueError, match="handoff_changed"):
             journal.begin(new_scope, plans, max_source_calls=None, after_backfill=old)
-        assert journal.active().round_id == old
+        assert journal.unfinished_round().round_id == old
         assert journal.source_calls(old) == int(pending == "unknown")
         if pending == "unknown":
             return
         journal.finish(old, CompanySyncFamily.FIELDS, CompanySyncStepResult(True, False))
     new = journal.begin(new_scope, plans, max_source_calls=None, after_backfill=old)
-    assert new != old and journal.active().round_id == new
+    assert new != old and journal.unfinished_round().round_id == new
     assert journal.family(old, CompanySyncFamily.ANNOUNCEMENTS).result.can_continue
     assert not journal.family(old, CompanySyncFamily.ANNOUNCEMENTS).result.processed_scope_complete
 

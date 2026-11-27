@@ -12,7 +12,7 @@ from trader.download.infra.history_partition_repack_state import (
     HistoryPartitionRepackActivationJournal,
     HistoryPartitionRepackActivationState,
     HistoryPartitionRepackBuildState,
-    HistoryPartitionRepackPartitionEvidence,
+    HistoryRepackPartitionEvidence,
     HistoryPartitionRepackSourceFileIdentity,
 )
 from trader.infra.serialization.canonical import ContentHash
@@ -171,7 +171,7 @@ def _decode_source_file(raw: object) -> HistoryPartitionRepackSourceFileIdentity
     )
 
 
-def _decode_partition(raw: object) -> HistoryPartitionRepackPartitionEvidence:
+def _decode_partition(raw: object) -> HistoryRepackPartitionEvidence:
     payload = _object(raw)
     _require_fields(
         payload,
@@ -191,7 +191,7 @@ def _decode_partition(raw: object) -> HistoryPartitionRepackPartitionEvidence:
             "snapshot_sequence",
         },
     )
-    return HistoryPartitionRepackPartitionEvidence(
+    return HistoryRepackPartitionEvidence(
         _text(payload, "relative_path"),
         _text(payload, "source_sha256"),
         _text(payload, "target_sha256"),

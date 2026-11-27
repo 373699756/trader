@@ -47,8 +47,8 @@ def ProjectSyncTerminalState(result: SyncResult) -> ProgressState:
 
 def _task(task: SyncTaskResult) -> dict[str, object]:
     summary: dict[str, object] = {"task": task.task, "status": task.status, "reason": task.reason}
-    if task.incompatible_company_store is not None:
-        summary["incompatible_company_store"] = task.incompatible_company_store.value
+    if task.incompatible_company_database is not None:
+        summary["incompatible_company_store"] = task.incompatible_company_database.value
     if task.history is not None:
         summary["history"] = ProjectHistoryMaintenanceStatus(task.history)
     if task.company is not None:

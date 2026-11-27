@@ -15,7 +15,7 @@ from trader.download.domain.company_sync import (
     CompanySyncInterrupted,
 )
 from trader.download.domain.download_failure import DownloadValidationFailure
-from trader.download.infra.company_sync_inputs import SQLiteCompanySyncInputStore
+from trader.download.infra.company_sync_inputs import SQLiteCompanySyncInputs
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 
 
@@ -30,7 +30,7 @@ class _AnnualDemand:
 class CompanyAnnualIncomeProducer:
     def __init__(
         self,
-        inputs: SQLiteCompanySyncInputStore,
+        inputs: SQLiteCompanySyncInputs,
         source: CompanyAnnualIncomeSource,
         read_facts: Callable[[], tuple[CompanyFacts, ...]],
         *,

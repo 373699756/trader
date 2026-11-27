@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import re
 from typing import Literal
 
-from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingProgressPort
+from trader.training.application.training_progress import TrainingProgress, TrainingProgressPort
 from trader.training.application.error_diagnostics import CaptureTrainingError, TrainingErrorDiagnostic
 
 TrainingIssueStage = Literal[
@@ -41,11 +41,11 @@ def BuildTrainingOperationIssue(stage: TrainingIssueStage, exc: BaseException) -
     )
 
 
-def NotifyTrainingCommit(progress: TomorrowTrainingProgressPort | None) -> TrainingOperationIssue | None:
+def NotifyTrainingCommit(progress: TrainingProgressPort | None) -> TrainingOperationIssue | None:
     if progress is None:
         return None
     try:
-        progress.publish(TomorrowTrainingProgress("artifact_publish", "completed", 1, 1))
+        progress.publish(TrainingProgress("artifact_publish", "completed", 1, 1))
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         return BuildTrainingOperationIssue("completion_notification", exc)
     return None

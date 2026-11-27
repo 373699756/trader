@@ -40,10 +40,10 @@ from trader.recommendation.domain.outcomes.tomorrow_target import TomorrowCloseG
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.application.resources import TrainingMemoryAdmission
-from trader.training.application.tomorrow_training import (
-    TomorrowTrainingProgress,
-    TomorrowTrainingProgressState,
-    TomorrowTrainingStage,
+from trader.training.application.training_progress import (
+    TrainingProgress,
+    TrainingProgressState,
+    TrainingStage,
     TrainingSampleProgress,
     TrainingValidationProgress,
 )
@@ -79,23 +79,23 @@ _SEATS = 6
 _BOARDS = ("main", "chinext", "star")
 _FloatArray: TypeAlias = NDArray[np.float64]
 _IntArray: TypeAlias = NDArray[np.int64]
-_ProfileProgress = Callable[[ScoringProfileId, TomorrowTrainingProgress], None]
+_ProfileProgress = Callable[[ScoringProfileId, TrainingProgress], None]
 
 
 @dataclass(slots=True)
 class _Progress:
-    notify: Callable[[TomorrowTrainingProgress], None] | None
-    latest: TomorrowTrainingProgress | None = None
+    notify: Callable[[TrainingProgress], None] | None
+    latest: TrainingProgress | None = None
 
-    def publish(self, event: TomorrowTrainingProgress) -> None:
+    def publish(self, event: TrainingProgress) -> None:
         self.latest = event
         if self.notify is not None:
             self.notify(event)
 
     def stage(
-        self, stage: TomorrowTrainingStage, state: TomorrowTrainingProgressState, *, validation_rows: int | None = None,
+        self, stage: TrainingStage, state: TrainingProgressState, *, validation_rows: int | None = None,
     ) -> None:
-        self.publish(TomorrowTrainingProgress(
+        self.publish(TrainingProgress(
             stage, state, int(state == "completed"), 1, strategy=Strategy.TOMORROW,
             validation=(
                 TrainingValidationProgress(validation_rows if state == "completed" else 0, validation_rows)
@@ -284,7 +284,7 @@ def _train_sample_group(
     cpu_budget: TrainingCpuBudget, memory: TrainingMemoryAdmission, check: Callable[[], None],
     reporters: tuple[_Progress, ...],
 ) -> tuple[TomorrowProbabilityProfileResult, ...]:
-    def publish_samples(event: TomorrowTrainingProgress) -> None:
+    def publish_samples(event: TrainingProgress) -> None:
         for reporter in reporters:
             reporter.publish(event)
 
@@ -414,14 +414,14 @@ def _collect_samples(
     source_identity: str = "",
     alignment_calendar: tuple[date, ...] | None = None,
     listing_intervals: tuple[tuple[str, date, date | None], ...] = (),
-    progress: Callable[[TomorrowTrainingProgress], None] | None = None,
+    progress: Callable[[TrainingProgress], None] | None = None,
 ) -> _Samples:
-    def report(state: TomorrowTrainingProgressState, phase: Literal["warmup", "generation"]) -> None:
+    def report(state: TrainingProgressState, phase: Literal["warmup", "generation"]) -> None:
         if progress is not None:
             sample_progress = TrainingSampleProgress(
                 read_days, len(calendar), processed_rows, warmup_rows, phase, pending,
             )
-            progress(TomorrowTrainingProgress(
+            progress(TrainingProgress(
                 "history_conversion", state, read_days, len(calendar), written,
                 Strategy.TOMORROW, sample_progress=sample_progress,
             ))

@@ -19,7 +19,8 @@ from trader.infra.atomic_files.json import AtomicWriteJson
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.infra.settings import RuntimeSettings
 from trader.infra.sqlite_policy import SqliteIoPolicy
-from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingWindow
+from trader.training.application.tomorrow_training import TomorrowTrainingWindow
+from trader.training.application.training_progress import TrainingProgress
 from trader.training.application.resources import TrainingSampleSettings
 from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra.history.aligned_training_rows import AlignmentReadDates, AlignTrainingRows
@@ -54,7 +55,7 @@ class _Progress:
         self.deadline = deadline
         self.reported = 0.0
 
-    def publish(self, update: TomorrowTrainingProgress) -> None:
+    def publish(self, update: TrainingProgress) -> None:
         now = time.monotonic()
         if now >= self.deadline:
             raise TimeoutError("v5_quality_sample_budget_exhausted")
@@ -124,7 +125,7 @@ def PrepareV5QualitySamples(
             identity,
             TrainingFeatureNames(V5_TRAINING_PROFILE.heads),
             split.content_hash,
-            checkpoint=lambda: progress.publish(TomorrowTrainingProgress("sample_cache_seal", "running", 0, 1)),
+            checkpoint=lambda: progress.publish(TrainingProgress("sample_cache_seal", "running", 0, 1)),
             sequence_layout=SampleSequenceLayout(6, 60, 6),
             sqlite_policy=sqlite_policy,
             sample_settings=sample_settings,
@@ -146,7 +147,7 @@ def PrepareV5QualitySamples(
                 physical_total = history.training_row_upper_bound(dates)
 
                 def report_read(completed: int) -> None:
-                    progress.publish(TomorrowTrainingProgress(
+                    progress.publish(TrainingProgress(
                         "input_read", "running", min(completed, physical_total), physical_total,
                     ))
 
@@ -169,7 +170,7 @@ def PrepareV5QualitySamples(
                 if after != snapshot:
                     raise ValueError("v5_quality_history_changed")
                 cache.seal(samples)
-                progress.publish(TomorrowTrainingProgress("sample_cache_seal", "completed", 1, 1))
+                progress.publish(TrainingProgress("sample_cache_seal", "completed", 1, 1))
             rows = samples.count()
         return V5QualitySamples(
             root,

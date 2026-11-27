@@ -29,7 +29,7 @@ from trader.download.infra.company_financial_observations import ReadCommittedCo
 from trader.download.infra.company_material_index import SQLiteCompanyMaterialIndex
 from trader.download.infra.company_normalized_index import CompanyNormalizationBaseline, SQLiteCompanyNormalizedIndex
 from trader.download.infra.company_raw_files import CompanyRawFiles
-from trader.download.infra.company_sync_inputs import SQLiteCompanySyncInputStore
+from trader.download.infra.company_sync_inputs import SQLiteCompanySyncInputs
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession
 from trader.infra.sqlite_publication import PublishSqliteFile, SqlitePublicationError
 
@@ -107,7 +107,7 @@ def test_working_source_writes_preserve_the_formal_publication_seal(tmp_path):
         sqlite_policy=SqlitePolicyFixture(),
         raw_files=raw_files,
     )
-    inputs = SQLiteCompanySyncInputStore(index.path, sqlite_policy=SqlitePolicyFixture())
+    inputs = SQLiteCompanySyncInputs(index.path, sqlite_policy=SqlitePolicyFixture())
     material.initialize()
     index.validate_existing()
     inputs.validate_existing()

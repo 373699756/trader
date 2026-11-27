@@ -155,14 +155,14 @@ def AuditCompanySyncRestart(
         event_policy=LoadStrategySettings(isolated.strategy_config_path).company_scoring.events, sqlite_policy=policy)
     journal = SQLiteCompanySyncRoundJournal(isolated.data_paths.company_sync, sqlite_policy=policy,
         publication_identity=reader.publication_identity)
-    active = journal.active()
-    if active is None or active.scope != scope:
+    unfinished_round = journal.unfinished_round()
+    if unfinished_round is None or unfinished_round.scope != scope:
         raise ValueError("company_sync_restart_audit_scope_mismatch")
-    before_calls, before_publication = journal.source_calls(active.round_id), reader.publication_identity()
+    before_calls, before_publication = journal.source_calls(unfinished_round.round_id), reader.publication_identity()
     if requested_cutoff is not None and (
         requested_cutoff.utcoffset() is None or requested_cutoff < scope.cutoff
         or requested_cutoff.astimezone(scope.cutoff.tzinfo).date() != scope.cutoff.date()
-        or active.max_source_calls is None or before_calls < active.max_source_calls
+        or unfinished_round.max_source_calls is None or before_calls < unfinished_round.max_source_calls
     ):
         raise ValueError("company_sync_restart_audit_cutoff_invalid")
     requested_scope = CompanySyncRoundScope(scope.codes, requested_cutoff or scope.cutoff)
@@ -173,7 +173,7 @@ def AuditCompanySyncRestart(
     after_calls = sum(value for value in calls if value is not None) if len(calls) == len(scope.families) and all(value is not None for value in calls) else None
     return {
         "probe": "normal_company_restart", "isolated_sample": True, "writes_current_company_data": False,
-        "same_finite_round": result.round_id == active.round_id and result.scope == scope,
+        "same_finite_round": result.round_id == unfinished_round.round_id and result.scope == scope,
         "scope_identity": result.scope.identity, "before_reserved_slots": before_calls, "after_reserved_slots": after_calls,
         "requested_cutoff": requested_scope.cutoff.isoformat(),
         "no_new_source_calls": after_calls == before_calls, "cancelled": result.cancelled,

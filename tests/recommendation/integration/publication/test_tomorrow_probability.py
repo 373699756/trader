@@ -108,6 +108,12 @@ def test_independent_tomorrow_freezes_preserve_read_only_grouped_history_and_its
             ("v2", EncodeDate(legacy_record.trade_date), legacy_record.version,
              "v3", EncodeDate(legacy_record.trade_date), legacy_record.version),
         )
+        # A second target on the same day has unreadable bytes. The first target must still settle.
+        connection.run(
+            "INSERT INTO freeze_record SELECT strategy,trade_date,?,freeze_hash,record_hash,?,"
+            "committed_at,commit_kind,status,failure_code,? FROM freeze_record WHERE freeze_id=?",
+            ("damaged-target", b"damaged", PredictionTarget(Strategy.TOMORROW, 800).identity, legacy_record.version),
+        )
     archived_database = grouped_path.read_bytes()
     with pytest.raises(FreezeRecordUnavailableError, match="read-only"):
         grouped.initialize()

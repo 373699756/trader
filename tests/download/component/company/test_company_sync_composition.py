@@ -9,7 +9,7 @@ from tests.helpers.download.company.company_evidence import NOW
 from tests.helpers.shared.configuration import RuntimeSettingsFixture
 from tests.helpers.shared.reference_fixtures import PreparedFixture
 from trader import bootstrap
-from trader.download.domain.company_evidence import CompanyDownloadStore, CompanyFinancial
+from trader.download.domain.company_evidence import CompanyDatabaseRole, CompanyFinancial
 from trader.download.domain.company_source_records import (
     CompanyFinancialMissingField, CompanyFinancialSourceObservation, CompanyFinancialSourcePage,
     CompanyFinancialSourceRecordHash,
@@ -156,7 +156,7 @@ def test_company_deadline_reports_last_checked_fields_without_a_final_read(tmp_p
 
 
 @pytest.mark.parametrize("rejected", (False, True))
-def test_company_cli_reports_three_stores_and_fixed_ledger_on_resume(tmp_path, monkeypatch, capsys, rejected):
+def test_company_cli_reports_three_databases_and_fixed_ledger_on_resume(tmp_path, monkeypatch, capsys, rejected):
     settings, physical = _settings(tmp_path, monkeypatch, allowance=1)
     monkeypatch.setattr("trader.entrypoints.cli.LoadRuntimeSettings", lambda _: settings)
     monkeypatch.setattr(bootstrap, "PrepareRuntimeDisk", lambda runtime, **_kwargs: runtime)
@@ -210,7 +210,7 @@ def test_company_cli_reports_three_stores_and_fixed_ledger_on_resume(tmp_path, m
         assert ledger.run("SELECT COUNT(*) FROM company_sync_request").require_one()[0] == 1
 
 
-def test_normal_composition_creates_only_three_company_stores(tmp_path, monkeypatch):
+def test_normal_composition_creates_only_three_company_databases(tmp_path, monkeypatch):
     settings, physical = _settings(tmp_path, monkeypatch)
     result = bootstrap.ExecuteSync(settings.config_path, "company")
     assert result.tasks[0].company is not None and not physical
@@ -225,7 +225,7 @@ def test_normal_composition_creates_only_three_company_stores(tmp_path, monkeypa
         for profile in ("v1", "v2", "v3", "v5"))
 
 
-def test_old_formal_schema_is_identified_before_other_company_stores_are_created(tmp_path, monkeypatch):
+def test_old_formal_schema_is_identified_before_other_company_databases_are_created(tmp_path, monkeypatch):
     settings, physical = _settings(tmp_path, monkeypatch)
     path = settings.data_paths.company
     path.parent.mkdir(parents=True)
@@ -234,7 +234,7 @@ def test_old_formal_schema_is_identified_before_other_company_stores_are_created
     before = path.read_bytes()
     result = bootstrap.ExecuteSync(settings.config_path, "company")
     task, = result.tasks
-    assert task.status == "failed" and task.incompatible_company_store is CompanyDownloadStore.FACTS
+    assert task.status == "failed" and task.incompatible_company_database is CompanyDatabaseRole.FACTS
     assert path.read_bytes() == before and physical == []
     assert not settings.data_paths.company_sources.exists()
     assert not settings.data_paths.company_sync.exists()
@@ -251,13 +251,13 @@ def test_company_sync_uses_current_database_names_when_other_files_exist(tmp_pat
         path.write_bytes(b"must remain intact")
     result = bootstrap.ExecuteSync(settings.config_path, "company")
     task, = result.tasks
-    assert task.company is not None and task.incompatible_company_store is None
+    assert task.company is not None and task.incompatible_company_database is None
     assert not physical and all(path.read_bytes() == b"must remain intact" for path in unrelated)
     assert all(path.is_file() for path in (paths.company, paths.company_sources, paths.company_sync))
 
 
 @pytest.mark.parametrize("cancelled", (False, True))
-def test_local_probe_budget_or_user_cancel_pauses_before_creating_company_stores(tmp_path, monkeypatch, cancelled):
+def test_local_probe_budget_or_user_cancel_pauses_before_creating_company_databases(tmp_path, monkeypatch, cancelled):
     settings, physical = _settings(tmp_path, monkeypatch, timeout=60)
     clock, cancel = [100.0], [False]
     monkeypatch.setattr(bootstrap.time, "monotonic", lambda: clock[0])

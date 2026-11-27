@@ -23,6 +23,14 @@ class FreezeRecordUnavailableError(FreezeRecordError):
     """A persistence or verification failure prevented a trusted read/write."""
 
 
+class InvalidFreezeRecordError(FreezeRecordUnavailableError):
+    """One persisted row failed verification."""
+
+    def __init__(self, reason: str, record_digest: str) -> None:
+        super().__init__(reason)
+        self.record_digest = record_digest
+
+
 @dataclass(frozen=True)
 class FreezeRecordRecoverySummary:
     recovered: int = 0
@@ -56,6 +64,7 @@ class FreezeRecordPort(Protocol):
 
 
 __all__ = [
+    "InvalidFreezeRecordError",
     "FreezeRecordConflictError",
     "FreezeRecordError",
     "FreezeRecordRecoverySummary",

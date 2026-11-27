@@ -881,6 +881,23 @@ def test_settlement_retry_exposes_finite_reason_and_preserves_formal_records(rea
         assert runtime.stop(ShutdownDeadline.start(2.0)).completed
 
 
+def test_settlement_recovery_matches_system_and_strategy_independently():
+    from trader.recommendation.application.runtime.runtime_issues import RuntimeIssueIndex
+
+    issues = RuntimeIssueIndex()
+    at = datetime.fromisoformat("2026-11-27T16:00:00+08:00")
+    for strategy in (None, Strategy.D25, Strategy.TOMORROW):
+        issues.record("settlement_failed", "settlement", strategy, at)
+    for scope in (None, Strategy.TOMORROW):
+        issues.resolve(at, stages=frozenset({"settlement"}), strategy=scope)
+    result = issues.snapshot()
+    assert dict(result.strategy_error_codes) == {"d25": "settlement_failed"}
+    assert [i.strategy for i in result.recent_errors if i.recovery_status == "active"] == [Strategy.D25]
+    issues.resolve(at, stages=frozenset({"settlement"}), strategy=Strategy.D25)
+    assert issues.snapshot().last_error_code == ""
+    assert all(i.recovery_status == "recovered" for i in issues.snapshot().recent_errors)
+
+
 def test_calendar_failure_fails_closed_with_backoff_and_observable_recovery() -> None:
     observed_at = datetime(2026, 8, 11, 10, 0, tzinfo=SHANGHAI)
     clock = FixedClock(observed_at)
@@ -1883,6 +1900,13 @@ def test_after_close_target_settlement_does_not_wait_for_new_formal_records(miss
     settlement = Settlement()
     tomorrow_settlements: list[datetime] = []
     d25_settlements: list[datetime] = []
+    elapsed = 0.0
+
+    def settle_d25(at):
+        d25_settlements.append(at)
+        if missing_head is None and len(d25_settlements) == 1:
+            raise RuntimeError("temporary settlement failure")
+
     for strategy in (Strategy.TOMORROW, Strategy.D25):
         if strategy is missing_head:
             continue
@@ -1908,7 +1932,8 @@ def test_after_close_target_settlement_does_not_wait_for_new_formal_records(miss
             sealing=Sealing(),
             settlement=settlement,
             tomorrow_settlement=tomorrow_settlements.append,
-            d25_settlement=d25_settlements.append,
+            d25_settlement=settle_d25,
+            monotonic=lambda: elapsed,
             research_factory=noop_research_factory,
             publish_freeze=lambda _event: None,
         ),
@@ -1919,11 +1944,21 @@ def test_after_close_target_settlement_does_not_wait_for_new_formal_records(miss
     runtime.start()
     runtime.submit_due(after_close)
     assert runtime.wait_idle(2.0)
+    if missing_head is None:
+        code = "settlement:d25_settlement:RuntimeError"
+        assert dict(runtime.status().strategy_error_codes)["d25"] == code
+        assert next(i for i in runtime.status().recent_errors if i.code == code).recovery_status == "active"
+        elapsed = 61.0
+        runtime.submit_due(after_close + timedelta(seconds=61))
+        assert runtime.wait_idle(2.0)
+        assert "d25" not in dict(runtime.status().strategy_error_codes)
+        assert next(i for i in runtime.status().recent_errors if i.code == code).recovery_status == "recovered"
     runtime.stop(ShutdownDeadline.start(2.0))
 
     assert (PipelineTask.CLOSE_QUOTES in {request.task for request in data.task_requests}) is (missing_head is not None)
     assert not [request for request in data.task_requests if request.task is PipelineTask.TOPK_QUOTES]
-    assert tomorrow_settlements == d25_settlements == [after_close]
+    expected = [after_close, after_close + timedelta(seconds=61)] if missing_head is None else [after_close]
+    assert tomorrow_settlements == d25_settlements == expected
     assert settlement.calls == ([after_close] if missing_head is None else [])
     assert {strategy: index.snapshot(strategy).formal for strategy in existing} == existing
     assert index.snapshot(Strategy.LONG).current is not None

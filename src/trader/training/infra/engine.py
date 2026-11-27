@@ -47,12 +47,8 @@ from trader.recommendation.domain.outcomes.prediction_target import PredictionTa
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT
 from trader.training.application.resources import TrainingCpuAdmission, TrainingExecutionObserver, TrainingMemoryAdmission
-from trader.training.application.tomorrow_training import (
-    TOMORROW_TRAINING_COMPUTE_THREADS,
-    TomorrowTrainingProgress,
-    TomorrowTrainingProgressPort,
-    ProductionTrainingWindow,
-)
+from trader.training.application.tomorrow_training import TOMORROW_TRAINING_COMPUTE_THREADS, ProductionTrainingWindow
+from trader.training.application.training_progress import TrainingProgress, TrainingProgressPort
 from trader.training.domain.final_fit import BuildFinalFitDatePlan, FINAL_FIT_CONTRACT, FinalFitDatePlan
 from trader.training.domain.tomorrow_training_input import FrozenDailyInputDescriptor
 from trader.training.domain.production_diagnostic_dates import (
@@ -161,7 +157,7 @@ class ProfileTrainingRequest:
     sample_root: Path = field(kw_only=True)
     sample_settings: TrainingSampleSettings = field(kw_only=True)
     industry_snapshot: CurrentIndustrySnapshot = field(kw_only=True)
-    progress: TomorrowTrainingProgressPort | None = None
+    progress: TrainingProgressPort | None = None
     expected_history_snapshot_hash: str | None = None
     memory_admission: TrainingMemoryAdmission | None = None
     cpu_admission: TrainingCpuAdmission | None = None
@@ -204,7 +200,7 @@ class _HeadFitRequest:
     metrics: tuple[TargetMetric, ...]
     train_root: Path
     run_id: str
-    progress: TomorrowTrainingProgressPort | None
+    progress: TrainingProgressPort | None
     peak_bytes: int
     final_fit_plan: FinalFitDatePlan
 
@@ -237,8 +233,8 @@ def RunRepackProfileTraining(request: ProfileTrainingRequest, *, sqlite_policy: 
 
 
 def _run_training(request: ProfileTrainingRequest, *, sqlite_policy: SqliteIoPolicy) -> TrainingRunResult:
-    _publish(request.progress, TomorrowTrainingProgress("resource_preflight", "completed", 1, 1))
-    _publish(request.progress, TomorrowTrainingProgress("input_read", "started", 0, 1))
+    _publish(request.progress, TrainingProgress("resource_preflight", "completed", 1, 1))
+    _publish(request.progress, TrainingProgress("input_read", "started", 0, 1))
     try:
         history = SQLiteHistoryTrainingInputSnapshot.open(
             request.history_root, industry_snapshot=request.industry_snapshot, sqlite_policy=sqlite_policy,
@@ -246,8 +242,8 @@ def _run_training(request: ProfileTrainingRequest, *, sqlite_policy: SqliteIoPol
     except (HistoryTrainingInputError, OSError, ValueError) as exc:
         heads = tuple(_unavailable_result(item, _reason(exc)) for item in request.contracts)
         return TrainingRunResult(None, "", 0, heads)
-    _publish(request.progress, TomorrowTrainingProgress("input_read", "completed", 1, 1))
-    _publish(request.progress, TomorrowTrainingProgress("training_preparation", "started", 0, 1))
+    _publish(request.progress, TrainingProgress("input_read", "completed", 1, 1))
+    _publish(request.progress, TrainingProgress("training_preparation", "started", 0, 1))
     try:
         # Full-history maintenance and either training profile are deliberately
         # serialized: concurrent multi-gigabyte scans make a rotating disk seek
@@ -388,9 +384,9 @@ class _ProfileTrainingAdapter:
             if self.cache is None:
                 self.cache = _sample_cache_for(snapshot, plan.split, request, sqlite_policy=self.sqlite_policy)
             cache = self.cache
-            _publish(request.progress, TomorrowTrainingProgress("sample_cache", "started", 0, 1))
+            _publish(request.progress, TrainingProgress("sample_cache", "started", 0, 1))
             with cache.open(inspected=inspected) as samples:
-                _publish(request.progress, TomorrowTrainingProgress("sample_cache", "completed", 1, 1, int(cache.reused)))
+                _publish(request.progress, TrainingProgress("sample_cache", "completed", 1, 1, int(cache.reused)))
                 self.metrics = _prepare_samples(
                     TrainingSampleBuildRequest(
                         self.history, snapshot.training_codes, window, samples, request.profile, request.progress,
@@ -479,7 +475,7 @@ class _ProfileTrainingAdapter:
                 reservation = resources.enter_context(ReserveTrainingFittingResources(
                     request.cpu_admission, request.memory_admission, requested_threads,
                     lambda: self._memory_requirement(samples),
-                    lambda: _publish(request.progress, TomorrowTrainingProgress("model_fit", "running", 0, 1)),
+                    lambda: _publish(request.progress, TrainingProgress("model_fit", "running", 0, 1)),
                     memory_first=request.execution_options.memory_first,
                 ))
                 yield _ProfileFittingAdapter(self, plan, samples, resources, reservation)
@@ -636,7 +632,7 @@ def _sample_cache_for(
         sample_settings=request.sample_settings,
         progress=lambda phase, state, done, total: _publish(
             request.progress,
-            TomorrowTrainingProgress(
+            TrainingProgress(
                 "sample_cache_check" if phase == "checking" else "sample_cache_seal", state, done, total
             ),
         ), sqlite_policy=sqlite_policy,
@@ -658,9 +654,9 @@ def _prepare_samples(
         raise ValueError("profile_training_rows_empty")
     if not cache.reused:
         cache.seal(request.index)
-    _publish(request.progress, TomorrowTrainingProgress("target_statistics", "started", 0, 1))
+    _publish(request.progress, TrainingProgress("target_statistics", "started", 0, 1))
     metrics = request.index.validation_target_metrics()
-    _publish(request.progress, TomorrowTrainingProgress("target_statistics", "completed", 1, 1))
+    _publish(request.progress, TrainingProgress("target_statistics", "completed", 1, 1))
     return metrics
 
 
@@ -1090,7 +1086,7 @@ def _unavailable_result(contract: TrainedHeadContract, reason: str) -> HeadTrain
     return HeadTrainingResult(contract.strategy, "blocked", "unavailable", None, "", 0, 0, "", "", 0, 0, 0, (reason,))
 
 
-def _publish(progress: TomorrowTrainingProgressPort | None, update: TomorrowTrainingProgress) -> None:
+def _publish(progress: TrainingProgressPort | None, update: TrainingProgress) -> None:
     if progress is not None:
         progress.publish(update)
 

@@ -20,7 +20,7 @@ def BuildCommands(
         commands = (
             DiagnosticCommand("configuration", cli + ("validate-config",), common_timeout),
             DiagnosticCommand(
-                "history_maintenance", cli + ("history-automation-status",), common_timeout
+                "training_reminder", cli + ("training-reminder-status",), common_timeout
             ),
             DiagnosticCommand(
                 "research_readiness",
@@ -107,7 +107,7 @@ def BuildCommands(
     if selection is not None:
         selected = []
         for command in commands:
-            if command.name == "history_maintenance":
+            if command.name == "training_reminder":
                 selected.append(command)
                 continue
             profile_arguments = ("--profile", selection)

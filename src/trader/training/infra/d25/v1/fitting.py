@@ -24,7 +24,7 @@ from trader.training.domain.v1.learned_rank import (
 from trader.training.domain.final_fit import FinalFitDatePlan
 from trader.training.infra.d25.v1.samples import LearnedRankMatrix
 from trader.training.infra.ranking import CheckV1Cancellation, DailyBinaryRankRows, DailyRankWeights, FitDailyBinaryRanker, RankerParameters, TrainRankDatasets
-from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingProgressPort, TrainingFitCounts, TrainingValidationProgress
+from trader.training.application.training_progress import TrainingProgress, TrainingProgressPort, TrainingFitCounts, TrainingValidationProgress
 
 _CHUNK_ROWS = 8192
 
@@ -45,7 +45,7 @@ def FitLearnedRankHead(
     *,
     compute_threads: int,
     cancel_requested: Callable[[], bool] | None = None,
-    progress: TomorrowTrainingProgressPort | None = None,
+    progress: TrainingProgressPort | None = None,
 ) -> LearnedRankHead:
     """Read validation only after fitting, early stopping and past calibration finish."""
 
@@ -88,7 +88,7 @@ def FitLearnedRankHead(
     slope = covariance / (variance + 1e-12)
     calibration_intercept = y_mean - slope * x_mean
     if progress is not None:
-        progress.publish(TomorrowTrainingProgress(
+        progress.publish(TrainingProgress(
             "model_fit", "running", 0, 1, strategy=strategy,
             validation=TrainingValidationProgress(0, len(validation.targets)),
             fit_counts=TrainingFitCounts(0, 1, 0, 0),
@@ -97,7 +97,7 @@ def FitLearnedRankHead(
     rank_raw = np.asarray(booster.predict(validation.features, num_threads=compute_threads), dtype=np.float64)
     metrics = _metrics(validation, predicted, rank_raw)
     if progress is not None:
-        progress.publish(TomorrowTrainingProgress(
+        progress.publish(TrainingProgress(
             "model_fit", "running", 0, 1, strategy=strategy,
             validation=TrainingValidationProgress(len(validation.targets), len(validation.targets)),
             fit_counts=TrainingFitCounts(0, 1, 0, 0),

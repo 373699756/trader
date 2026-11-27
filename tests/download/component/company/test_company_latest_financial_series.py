@@ -113,7 +113,7 @@ def test_interrupted_old_window_keeps_unknown_network_attempt_and_is_not_reissue
     budget = CompanySyncBudget(100, 20, 20, 10)
     with transport, pytest.raises(KeyboardInterrupt):
         runtime.run(_CODES, _CUTOFF, budget, cancel_requested=lambda: False, monotonic=lambda: 0, financial_query=old)
-    previous = runtime.journal.active()
+    previous = runtime.journal.unfinished_round()
     resumed, _, fresh_transport, fresh = _runtime(tmp_path)
     with fresh_transport:
         result = resumed.run(_CODES, _CUTOFF + timedelta(days=1), budget, cancel_requested=lambda: False,

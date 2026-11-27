@@ -17,7 +17,7 @@ from trader.download.application.company_sync import CompanySyncProducer, Resume
 from trader.download.domain.company_event_extraction import CompanyDocumentNeedsReview
 from trader.download.domain.company_events import CompanyDataState, CompanyEventPolicy
 from trader.download.domain.company_evidence import (
-    CompanyDatabaseIncompatibleError, CompanyDownloadStore, CompanyDocumentPolicies, CompanyRatio, CompanySyncConfiguration, EvidenceMarket, StructuredCompanyQuery,
+    CompanyDatabaseIncompatibleError, CompanyDatabaseRole, CompanyDocumentPolicies, CompanyRatio, CompanySyncConfiguration, EvidenceMarket, StructuredCompanyQuery,
 )
 from trader.download.domain.company_facts import CompanyFacts
 from trader.download.domain.company_financial_admission import CompanyFinancialAdmission, CompanyFinancialRevisionProof
@@ -29,20 +29,20 @@ from trader.download.infra.company_financial_observations import ReadCompanyFina
 from trader.download.domain.company_sync import (
     CompanyLatestSnapshot, CompanySourceDownloadProgress, CompanySyncBudget, CompanySyncFamily, CompanySyncFamilyResult, CompanySyncPauseReason,
     CompanySyncInterrupted, CompanySyncPhasePlan, CompanySyncPhaseState,
-    CompanySyncRebuildActiveRound, CompanySyncRoundIdentity, CompanySyncRoundResult, CompanySyncRoundScope, CompanySyncStepResult, CompanySourceCancelled,
+    CompanySyncRoundRebuildBlocked, CompanySyncRoundIdentity, CompanySyncRoundResult, CompanySyncRoundScope, CompanySyncStepResult, CompanySourceCancelled,
 )
 from trader.download.domain.company_unlock_notice import IsCompanyUnlockListingNotice
 from trader.download.infra.company_fact_rows import CompanyFactRowCache, ReadCompanyFactRows
 from trader.download.infra.company_announcement_preparation import ReadCompanyAnnouncementCoverage
 from trader.download.infra.company_document_link_rows import ReadCompanyDocumentLinks
 from trader.download.infra.company_facts_index import CompanyPublicationIdentity, ReadCompanyPublicationIdentity, SQLiteCompanyFactsIndex
-from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash, StoredCompanyFieldResults
+from trader.download.infra.company_field_publication import CompanyFieldProofRulesHash, PublishedCompanyFieldResults
 from trader.download.infra.company_field_result_rows import ReadCompanyFactsWithFieldResults
 from trader.download.infra.company_field_recovery import RegisterCompanyMaterialDependencies
 from trader.download.infra.company_financial_publication import CompanyFinancialAdmissionReceipts, PrepareCompanyFinancialAdmissions
 from trader.download.infra.company_material_index import SQLiteCompanyMaterialIndex
 from trader.download.infra.company_normalized_index import CompanyNormalizationBaseline, SQLiteCompanyNormalizedIndex
-from trader.download.infra.company_sync_inputs import SQLiteCompanySyncInputStore
+from trader.download.infra.company_sync_inputs import SQLiteCompanySyncInputs
 from trader.download.infra.company_sync_io import CompanySyncIoBudget
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
 from trader.download.infra.company_sync_preparation import PrepareCompanyIssuerInputs
@@ -63,7 +63,7 @@ class CompanySyncRuntime:
 
     def __init__(
         self, normalized: SQLiteCompanyNormalizedIndex, facts: SQLiteCompanyFactsIndex,
-        material: SQLiteCompanyMaterialIndex, journal: SQLiteCompanySyncRoundJournal, inputs: SQLiteCompanySyncInputStore,
+        material: SQLiteCompanyMaterialIndex, journal: SQLiteCompanySyncRoundJournal, inputs: SQLiteCompanySyncInputs,
         *, event_policy: CompanyEventPolicy, sqlite_policy: SqliteIoPolicy, read_document: Callable[[bytes], str],
         financial_source: CompanyFinancialObservationSource, ratio_source: CompanyRatioSource,
         annual_source: CompanyAnnualIncomeSource, official_source: CompanyOfficialDocumentSource,
@@ -109,18 +109,18 @@ class CompanySyncRuntime:
         A clean source store cannot reuse a request cursor for discarded inputs.
         """
         scope = CompanySyncRoundScope(codes, cutoff)
-        validations: tuple[tuple[CompanyDownloadStore, Callable[[], None]], ...] = (
-            (CompanyDownloadStore.FACTS, self.facts.validate_existing),
-            (CompanyDownloadStore.SOURCES, self.material.validate_existing),
-            (CompanyDownloadStore.REQUEST_JOURNAL, self.journal.validate_existing),
+        validations: tuple[tuple[CompanyDatabaseRole, Callable[[], None]], ...] = (
+            (CompanyDatabaseRole.FACTS, self.facts.validate_existing),
+            (CompanyDatabaseRole.SOURCES, self.material.validate_existing),
+            (CompanyDatabaseRole.REQUEST_JOURNAL, self.journal.validate_existing),
         )
-        for store, validate in validations:
+        for database_role, validate in validations:
             try:
                 validate()
             except sqlite3.DatabaseError as exc:
                 if str(exc) != "sqlite_schema_unsupported":
                     raise
-                raise CompanyDatabaseIncompatibleError(store) from exc
+                raise CompanyDatabaseIncompatibleError(database_role) from exc
         try:
             self.facts.verify_publication()
         except SqlitePublicationError:
@@ -129,8 +129,8 @@ class CompanySyncRuntime:
             elif not self.normalized.recover_publication_seal():
                 raise
             self.facts.verify_publication()
-        publication = self._read_store_publication(self.facts.path)
-        normalized_publication = self._read_store_publication(self.material.path)
+        publication = self._read_publication_identity(self.facts.path)
+        normalized_publication = self._read_publication_identity(self.material.path)
         if baseline is None:
             if publication is None and normalized_publication is None:
                 self._release_scope_for_rebuild(scope)
@@ -147,7 +147,7 @@ class CompanySyncRuntime:
             identity = CompanyPublicationIdentity(bytes.fromhex(CanonicalDigest(("initial_unavailable_population", scope))), self.facts.extraction_hash, cutoff)
             self.normalized.seed(CompanyNormalizationBaseline(initial, (), (), (), identity, CompanyFieldProofRulesHash()))
 
-    def _read_store_publication(self, path: Path) -> CompanyPublicationIdentity | None:
+    def _read_publication_identity(self, path: Path) -> CompanyPublicationIdentity | None:
         if not path.exists():
             return None
         check = self._io_budget.check if self._io_budget is not None else lambda: None
@@ -157,15 +157,15 @@ class CompanySyncRuntime:
     def _release_scope_for_rebuild(self, scope: CompanySyncRoundScope) -> None:
         if not self.journal.path.exists():
             return
-        active = self.journal.active()
-        if active is None:
+        unfinished_round = self.journal.unfinished_round()
+        if unfinished_round is None:
             return
-        if scope.cutoff.date() <= active.scope.cutoff.date():
-            raise CompanySyncRebuildActiveRound("company_sync_rebuild_requires_later_scope")
-        if self.journal.can_refresh(active.round_id):
-            self.journal.finish_refresh(active.round_id)
-        elif not self.journal.defer_unconfirmed_directory(active.round_id, scope.cutoff):
-            raise CompanySyncRebuildActiveRound("company_sync_rebuild_requires_previous_scope_reconciliation")
+        if scope.cutoff.date() <= unfinished_round.scope.cutoff.date():
+            raise CompanySyncRoundRebuildBlocked("company_sync_rebuild_requires_later_scope")
+        if self.journal.can_refresh(unfinished_round.round_id):
+            self.journal.finish_refresh(unfinished_round.round_id)
+        elif not self.journal.defer_unconfirmed_directory(unfinished_round.round_id, scope.cutoff):
+            raise CompanySyncRoundRebuildBlocked("company_sync_rebuild_requires_previous_scope_reconciliation")
 
     def run(
         self, codes: tuple[str, ...], cutoff: datetime, budget: CompanySyncBudget, *,
@@ -201,33 +201,33 @@ class CompanySyncRuntime:
             return self._stopped("", CompanySyncRoundScope(codes, cutoff), budget, cancel_requested, monotonic)
         requested_scope = CompanySyncRoundScope(codes, cutoff)
         requested_source_limit = budget.max_source_calls
-        active = self.journal.active() if after_backfill is None else None
+        unfinished_round = self.journal.unfinished_round() if after_backfill is None else None
         current_codes = frozenset(codes)
-        exhausted = active is not None and active.max_source_calls is not None and active.source_calls >= active.max_source_calls
-        resume_exhausted = active is not None and exhausted and (
-            budget.max_source_calls is None or cutoff.astimezone(active.scope.cutoff.tzinfo).date() == active.scope.cutoff.date())
-        if active is not None and new_refresh and (codes != active.scope.codes or cutoff != active.scope.cutoff) and self.journal.can_refresh(active.round_id):
-            if cutoff < active.scope.cutoff:
+        exhausted = unfinished_round is not None and unfinished_round.max_source_calls is not None and unfinished_round.source_calls >= unfinished_round.max_source_calls
+        resume_exhausted = unfinished_round is not None and exhausted and (
+            budget.max_source_calls is None or cutoff.astimezone(unfinished_round.scope.cutoff.tzinfo).date() == unfinished_round.scope.cutoff.date())
+        if unfinished_round is not None and new_refresh and (codes != unfinished_round.scope.codes or cutoff != unfinished_round.scope.cutoff) and self.journal.can_refresh(unfinished_round.round_id):
+            if cutoff < unfinished_round.scope.cutoff:
                 raise ValueError("company_sync_refresh_cutoff_before_active")
             if not resume_exhausted:
                 # A terminal predecessor can contribute its closed batch before
                 # its round is released for a new network scope.
                 self._publish_financial_scoring(
-                    active.scope,
-                    ResolveCompanyFinancialScoringQuery(active.scope.cutoff, next(plan for plan in active.plans if plan.family is CompanySyncFamily.FINANCIAL)),
-                    tuple(code for code in active.scope.codes if code in current_codes),
+                    unfinished_round.scope,
+                    ResolveCompanyFinancialScoringQuery(unfinished_round.scope.cutoff, next(plan for plan in unfinished_round.plans if plan.family is CompanySyncFamily.FINANCIAL)),
+                    tuple(code for code in unfinished_round.scope.codes if code in current_codes),
                 )
-                self.journal.finish_refresh(active.round_id)
-                active = None
-        elif (active is not None and new_refresh and requested_scope.cutoff.date() > active.scope.cutoff.date()
-            and self.journal.defer_unconfirmed_directory(active.round_id, requested_scope.cutoff)):
+                self.journal.finish_refresh(unfinished_round.round_id)
+                unfinished_round = None
+        elif (unfinished_round is not None and new_refresh and requested_scope.cutoff.date() > unfinished_round.scope.cutoff.date()
+            and self.journal.defer_unconfirmed_directory(unfinished_round.round_id, requested_scope.cutoff)):
             logging.getLogger(__name__).warning("公司旧轮次公告响应未确认，保留已占用额度和原请求。新范围独立推进。")
-            active = None
-        if active is not None:
-            scope = active.scope
-            self._execution_round_id = active.round_id
-            if budget.max_source_calls is not None and active.max_source_calls is not None:
-                budget = replace(budget, max_source_calls=active.max_source_calls)
+            unfinished_round = None
+        if unfinished_round is not None:
+            scope = unfinished_round.scope
+            self._execution_round_id = unfinished_round.round_id
+            if budget.max_source_calls is not None and unfinished_round.max_source_calls is not None:
+                budget = replace(budget, max_source_calls=unfinished_round.max_source_calls)
         else:
             scope = requested_scope
         self._execution_scope = scope
@@ -246,7 +246,7 @@ class CompanySyncRuntime:
                     "SELECT DISTINCT code FROM company_positive_event WHERE event_type=? ORDER BY code",
                     (POSITIVE_TYPES[CompanyPositiveType.OPERATING_CONTRACT],)) if row[0] in eligible_codes)
                 return ReadCompanyFactRows(formal, selected)
-        plan = next(plan for plan in active.plans if plan.family is CompanySyncFamily.FINANCIAL) if active else None
+        plan = next(plan for plan in unfinished_round.plans if plan.family is CompanySyncFamily.FINANCIAL) if unfinished_round else None
         query = financial_query or ResolveCompanyFinancialScoringQuery(scope.cutoff, plan)
         def publish_financial_scoring(selected: CompanySyncRoundScope) -> None:
             check()
@@ -274,9 +274,9 @@ class CompanySyncRuntime:
             fields,
         )
         plans = tuple(producer.plan for producer in producers)
-        if (new_refresh and active is not None and requested_scope.cutoff > scope.cutoff
-            and CompanySyncRoundIdentity(scope, plans) == active.round_id
-            and self.journal.can_handoff_backfill(active.round_id, requested_scope.cutoff, latest_only=latest_only)
+        if (new_refresh and unfinished_round is not None and requested_scope.cutoff > scope.cutoff
+            and CompanySyncRoundIdentity(scope, plans) == unfinished_round.round_id
+            and self.journal.can_handoff_backfill(unfinished_round.round_id, requested_scope.cutoff, latest_only=latest_only)
             and self.normalized.cursor(query, scope.codes, scope.cutoff) is None
             and self._ratio_inputs_closed(scope)
             and (latest_only or self.material.can_retain_backfill(
@@ -287,26 +287,26 @@ class CompanySyncRuntime:
             # Source plans are frozen. The journal retains both local proof-rule
             # identities when the same scope needs a new proof before handoff.
             self.journal.begin(scope, plans, max_source_calls=budget.max_source_calls)
-            finished = ResumeCompanySyncPendingStep(self.journal, (fields,), scope, active.round_id, budget,
+            finished = ResumeCompanySyncPendingStep(self.journal, (fields,), scope, unfinished_round.round_id, budget,
                 monotonic=monotonic, cancel_requested=cancel_requested)
             if finished and budget.max_steps is not None:
                 if budget.max_steps == 1:
-                    return CompanySyncRoundResult(active.round_id, scope, (), False, True, "", pause_reason="step_limit")
+                    return CompanySyncRoundResult(unfinished_round.round_id, scope, (), False, True, "", pause_reason="step_limit")
                 budget = replace(budget, max_steps=budget.max_steps - 1)
             check()
             publish_financial_scoring(scope)
             scoring_may_be_deferred = self.normalized.has_pending_publication()
             state = fields.state(scope)
-            previous = self.journal.family(active.round_id, CompanySyncFamily.FIELDS)
-            if self.journal.completed_state(active.round_id, CompanySyncFamily.FIELDS) != state or previous is None or previous.result.can_continue:
-                self.journal.start(active.round_id, CompanySyncFamily.FIELDS, state)
+            previous = self.journal.family(unfinished_round.round_id, CompanySyncFamily.FIELDS)
+            if self.journal.completed_state(unfinished_round.round_id, CompanySyncFamily.FIELDS) != state or previous is None or previous.result.can_continue:
+                self.journal.start(unfinished_round.round_id, CompanySyncFamily.FIELDS, state)
                 prepared = fields.advance(scope, cancel_requested=cancel_requested, deadline=budget.deadline)
-                self.journal.finish(active.round_id, CompanySyncFamily.FIELDS, prepared)
+                self.journal.finish(unfinished_round.round_id, CompanySyncFamily.FIELDS, prepared)
                 if budget.max_steps is not None:
                     if budget.max_steps == 1:
-                        return CompanySyncRoundResult(active.round_id, scope, (), False, True, "", pause_reason="step_limit")
+                        return CompanySyncRoundResult(unfinished_round.round_id, scope, (), False, True, "", pause_reason="step_limit")
                     budget = replace(budget, max_steps=budget.max_steps - 1)
-            last_field = self.journal.family(active.round_id, CompanySyncFamily.FIELDS)
+            last_field = self.journal.family(unfinished_round.round_id, CompanySyncFamily.FIELDS)
             if (last_field is not None and last_field.result.processed_scope_complete and not last_field.result.failure
                 and not self.normalized.has_pending_publication() and not self.inputs.pending_recovered(scope.identity)
                 and self._annual_inputs_settled(scope, check) and not annual.state(scope).source_required):
@@ -314,7 +314,7 @@ class CompanySyncRuntime:
                     publish_financial_scoring(scope)
                 check()
                 return self._run(codes, cutoff, replace(budget, max_source_calls=requested_source_limit), cancel_requested=cancel_requested, monotonic=monotonic,
-                    financial_query=financial_query, new_refresh=new_refresh, after_backfill=active.round_id, latest_only=latest_only)
+                    financial_query=financial_query, new_refresh=new_refresh, after_backfill=unfinished_round.round_id, latest_only=latest_only)
         round_id = (self.journal.begin(scope, plans, max_source_calls=budget.max_source_calls) if after_backfill is None else
             self.journal.begin(scope, plans, max_source_calls=budget.max_source_calls, after_backfill=after_backfill, latest_only=latest_only))
         if after_backfill is not None:
@@ -557,14 +557,14 @@ class CompanySyncRuntime:
             SqliteTransaction(raw), SqliteTransaction(formal),
         ):
             marker = formal.run("SELECT rules_hash FROM company_field_proof_rule WHERE singleton=1").fetchone()
-            stored_rules = marker[0] if marker is not None else None
+            published_rules_hash = marker[0] if marker is not None else None
             published = ReadCompanyPublicationIdentity(formal)
-            revalidate = stored_rules != rules_hash
+            revalidate = published_rules_hash != rules_hash
             all_codes = tuple(sorted(set(eligible_codes) | {row[0] for row in formal.run("SELECT code FROM company_facts ORDER BY code")})) if revalidate else eligible_codes
-            facts, stored_fields = ReadCompanyFactsWithFieldResults(formal, all_codes, row_cache=row_cache)
+            facts, published_fields = ReadCompanyFactsWithFieldResults(formal, all_codes, row_cache=row_cache)
             old = {fact.code: fact for fact in facts}
             fields_by_code: dict[str, list[CompanyFieldConclusion]] = defaultdict(list)
-            for field in stored_fields:
+            for field in published_fields:
                 fields_by_code[field.code].append(field)
             links_by_code: dict[str, list[CompanyPublishedEvidenceLink]] = defaultdict(list)
             for link in ReadCompanyDocumentLinks(formal, all_codes):
@@ -594,7 +594,7 @@ class CompanySyncRuntime:
                     include_new_announcements=True, published_links=tuple(links_by_code.get(code, ())), recovered=recovered,
                     annual_incomes=annuals, unlock_observations=tuple(unlock_by_code.get(code, ())),
                     field_rules_hash=rules_hash, announcement_coverage=announcement_coverage.get(code),
-                    stored_fields=StoredCompanyFieldResults(code, stored_rules, published.extraction_hash if published else None, tuple(current_fields)))
+                    published_fields=PublishedCompanyFieldResults(code, published_rules_hash, published.extraction_hash if published else None, tuple(current_fields)))
                 if proof is not None and admitted != fact:
                     receipts = CompanyFinancialAdmissionReceipts(proof, extraction_hash=self.facts.extraction_hash, published_at=scope.cutoff)
                     item = replace(item, receipts=(*item.receipts, *receipts))

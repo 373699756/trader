@@ -32,7 +32,7 @@ class HistoryPartitionRepackSourceFileIdentity:
 
 
 @dataclass(frozen=True)
-class HistoryPartitionRepackPartitionEvidence:
+class HistoryRepackPartitionEvidence:
     relative_path: str
     source_sha256: str
     target_sha256: str
@@ -89,7 +89,7 @@ class HistoryPartitionRepackBuildState:
     trading_day_count: int
     expected_partition_count: int
     page_size: int
-    partitions: tuple[HistoryPartitionRepackPartitionEvidence, ...]
+    partitions: tuple[HistoryRepackPartitionEvidence, ...]
     target_snapshot_hash: str | None = None
     completed: bool = False
 
@@ -207,7 +207,7 @@ __all__ = [
     "HistoryPartitionRepackActivationState",
     "HistoryPartitionRepackAction",
     "HistoryPartitionRepackBuildState",
-    "HistoryPartitionRepackPartitionEvidence",
+    "HistoryRepackPartitionEvidence",
     "HistoryPartitionRepackRequirements",
     "HistoryPartitionRepackStatus",
     "HistoryPartitionRepackSourceFileIdentity",

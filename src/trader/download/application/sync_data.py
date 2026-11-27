@@ -5,8 +5,8 @@ from concurrent.futures import CancelledError
 from dataclasses import dataclass
 from typing import Literal
 
-from trader.download.domain.company_sync import CompanySyncRoundResult
-from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDownloadStore
+from trader.download.domain.company_sync import CompanySyncRoundRebuildBlocked, CompanySyncRoundResult
+from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDatabaseRole
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.prepared_reference import PreparedReference
 from trader.download.application.download_failure import DownloadFailurePort
@@ -26,7 +26,9 @@ class SyncDatabaseError(RuntimeError):
 def _failure_category(error: BaseException) -> str:
     if isinstance(error, DownloadValidationFailure):
         return str(error)
-    return error.category if isinstance(error, SyncDatabaseError) else type(error).__name__
+    if isinstance(error, (SyncDatabaseError, CompanySyncRoundRebuildBlocked)):
+        return error.category
+    return type(error).__name__
 
 
 @dataclass(frozen=True)
@@ -36,7 +38,7 @@ class SyncTaskResult:
     reason: str | None = None
     company: CompanySyncRoundResult | None = None
     history: HistoryMaintenanceStatus | None = None
-    incompatible_company_store: CompanyDownloadStore | None = None
+    incompatible_company_database: CompanyDatabaseRole | None = None
 
 
 @dataclass(frozen=True)
@@ -90,12 +92,12 @@ class SyncData:
                         return SyncResult(tuple(tasks), cancelled=True)
                 except CompanyDatabaseIncompatibleError as exc:
                     if self.cancelled():
-                        tasks.append(SyncTaskResult(task, "cancelled", incompatible_company_store=exc.store))
+                        tasks.append(SyncTaskResult(task, "cancelled", incompatible_company_database=exc.database_role))
                         return SyncResult(tuple(tasks), cancelled=True)
                     if self.failures is not None:
                         self.failures(DownloadFailureContext(f"{task}_synchronization"), exc)
                     tasks.append(SyncTaskResult(task, "failed", "CompanyDatabaseIncompatibleError",
-                                               incompatible_company_store=exc.store))
+                                               incompatible_company_database=exc.database_role))
                 except (CancelledError, OSError, RuntimeError, ValueError) as exc:
                     if self.cancelled():
                         tasks.append(SyncTaskResult(task, "cancelled"))

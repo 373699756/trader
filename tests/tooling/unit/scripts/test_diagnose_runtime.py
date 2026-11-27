@@ -44,11 +44,11 @@ def test_local_selected_profile_selects_only_offline_business_checks(profile):
     commands = BuildToolCommands(_options(action_identity="snapshot", scoring_profile=profile), python_executable="/python")
     assert tuple(command.name for command in commands) == (
         f"configuration:{profile}",
-        "history_maintenance",
+        "training_reminder",
         f"research_readiness:{profile}",
         f"production_performance:{profile}",
     )
-    assert all("--profile" in command.argv for command in commands if command.name != "history_maintenance")
+    assert all("--profile" in command.argv for command in commands if command.name != "training_reminder")
     assert all(
         not any(part in command.argv for part in ("serve", "sync", "train", "trader.entrypoints.server"))
         for command in commands

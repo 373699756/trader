@@ -20,7 +20,7 @@ def NormalizeResult(result: DiagnosticResult, *, local: bool = False) -> Diagnos
         return result
     if result.name == "configuration" and status == "ok" and not isinstance(source.get("passed"), bool):
         return replace(result, payload=dict(source, passed=True))
-    if result.name == "history_maintenance" and status is None and not isinstance(source.get("passed"), bool):
+    if result.name == "training_reminder" and status is None and not isinstance(source.get("passed"), bool):
         return replace(result, payload=dict(source, passed=True))
     if result.name != "research_readiness":
         return result
@@ -128,7 +128,7 @@ def _configuration_details(_result: DiagnosticResult, source: Mapping[str, objec
     }
 
 
-def _maintenance_details(_result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]) -> None:
+def _training_reminder_details(_result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]) -> None:
     payload["summary"] = {
         key: source.get(key)
         for key in (
@@ -195,7 +195,7 @@ def _valid_research_status(payload: Mapping[str, object]) -> bool:
 _DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], dict[str, object]], None]] = {
     "research_readiness": _research_details,
     "configuration": _configuration_details,
-    "history_maintenance": _maintenance_details,
+    "training_reminder": _training_reminder_details,
     "production_performance": _performance_details,
 }
 

@@ -251,6 +251,8 @@ class CloseControlCoordinator:
             settle(at)
         except (OSError, RuntimeError, ValueError) as exc:
             self._hooks.failure("settlement", f"{strategy.value}_settlement:{type(exc).__name__}", strategy)
+        else:
+            self._hooks.success("settlement", strategy)
         finally:
             # The next round must still inspect newly committed History.
             self._finish_control(key, success=False)

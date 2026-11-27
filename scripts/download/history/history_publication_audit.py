@@ -224,12 +224,12 @@ class _FileProof:
 class _FieldCount:
     name: str
     nulls: int = 0
-    active_missing: int = 0
+    trading_missing: int = 0
     invalid_type: int = 0
     nonfinite: int = 0
     invalid_range: int = 0
     forbidden: int = 0
-    active_auxiliary_missing: int = 0
+    trading_auxiliary_missing: int = 0
 
 
 @dataclass
@@ -534,14 +534,14 @@ def _scan_row(scan: _UnitScan, stock: _StockBits, bit: int, values: tuple[object
         value = values[position]
         local = index % 9
         side = index // 9
-        active = states[side] == (1, "trading")
+        is_trading = states[side] == (1, "trading")
         if value is None:
             metric.nulls += 1
-            if active and local < 6:
-                metric.active_missing += 1
+            if is_trading and local < 6:
+                metric.trading_missing += 1
                 bad = True
-            elif active and side == 0:
-                metric.active_auxiliary_missing += 1
+            elif is_trading and side == 0:
+                metric.trading_auxiliary_missing += 1
             continue
         if type(value) not in (float, int):
             metric.invalid_type += 1
@@ -551,7 +551,7 @@ def _scan_row(scan: _UnitScan, stock: _StockBits, bit: int, values: tuple[object
         if not math.isfinite(number):
             metric.nonfinite += 1
             bad = True
-        elif number < 0 and local != 7 or active and local < 4 and number == 0:
+        elif number < 0 and local != 7 or is_trading and local < 4 and number == 0:
             metric.invalid_range += 1
             bad = True
         if side == 1 and local >= 6:
@@ -699,10 +699,10 @@ def _unit_document(result: _UnitResult) -> dict[str, object]:
         "binding_hash_mismatches": result.logical_errors,
         "sqlite_integrity": result.integrity,
         "fields": [{
-            "column": metric.name, "nulls": metric.nulls, "active_core_nulls": metric.active_missing,
+            "column": metric.name, "nulls": metric.nulls, "active_core_nulls": metric.trading_missing,
             "invalid_type": metric.invalid_type, "nonfinite": metric.nonfinite,
             "invalid_range": metric.invalid_range, "forbidden_qfq_raw_only_values": metric.forbidden,
-            "active_raw_auxiliary_nulls": metric.active_auxiliary_missing,
+            "active_raw_auxiliary_nulls": metric.trading_auxiliary_missing,
         } for metric in result.fields],
         "stock_date_coverage": [{
             "code": stock.code, "expected_stock_days": stock.expected, "actual_row_days": stock.observed,
@@ -946,13 +946,13 @@ def AuditPriceFields(
     complete = failure is None and len(completed) == len(plan.units)
     invalid = sum(
         unit.invalid_flags + unit.invalid_states + unit.raw_ohlc_errors + unit.qfq_ohlc_errors + unit.outside_lifetime + unit.unexpected_dates + unit.logical_errors +
-        sum(metric.active_missing + metric.invalid_type + metric.nonfinite + metric.invalid_range + metric.forbidden for metric in unit.fields)
+        sum(metric.trading_missing + metric.invalid_type + metric.nonfinite + metric.invalid_range + metric.forbidden for metric in unit.fields)
         for unit in units
     )
     inferred = sum(stock.inferred for unit in units for stock in unit.stocks)
     unexplained = sum(stock.unexplained for unit in units for stock in unit.stocks)
     orphaned = sum(max(0, unit.latest_rows - unit.rows) for unit in units if unit.complete)
-    auxiliary_missing = sum(metric.active_auxiliary_missing for unit in units for metric in unit.fields)
+    auxiliary_missing = sum(metric.trading_auxiliary_missing for unit in units for metric in unit.fields)
     return {
         "complete": complete, "status": "failed" if failure or invalid or orphaned else "degraded" if inferred or unexplained or auxiliary_missing else "passed",
         "failure": failure, "phase": budget.phase, "source_data_writes": 0, "network_requests": 0,

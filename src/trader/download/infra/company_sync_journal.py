@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from trader.download.application.company_round_progress import CompanyRequestProgress
 from trader.download.application.company_sync import CompanyDirectoryResponseReceipt
-from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDownloadStore
+from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDatabaseRole
 from trader.download.infra.company_journal_projection import (
     CanRetryJournalRejection, CompanyJournalProjection, DIRECTORY_RECOVERY_GAP_PREFIX, JournalStrings,
 )
@@ -168,9 +168,9 @@ class SQLiteCompanySyncRoundJournal:
     def validate_existing(self) -> None:
         if self.path.exists():
             with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
-                EnsureSqliteSchema(connection, _SCHEMA, validate=_validate_active_families, exact=True)
+                EnsureSqliteSchema(connection, _SCHEMA, validate=_validate_unfinished_families, exact=True)
 
-    def active(self) -> CompanySyncResume | None:
+    def unfinished_round(self) -> CompanySyncResume | None:
         with self._session(self.path, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection, SqliteTransaction(connection):
             row = connection.run("SELECT round_id,cutoff,max_source_calls FROM company_sync_round WHERE active=1").fetchone()
             if row is None:
@@ -494,7 +494,7 @@ def _phase_family(value: object) -> CompanySyncFamily:
     try:
         return CompanySyncFamily(value)
     except ValueError as exc:
-        raise CompanyDatabaseIncompatibleError(CompanyDownloadStore.REQUEST_JOURNAL) from exc
+        raise CompanyDatabaseIncompatibleError(CompanyDatabaseRole.REQUEST_JOURNAL) from exc
 
 
 def _only_backfill(connection: SqliteConnection, round_id: str, next_cutoff: datetime, *, allow_local_step: bool,
@@ -519,7 +519,7 @@ def _only_backfill(connection: SqliteConnection, round_id: str, next_cutoff: dat
     return not pending or allow_local_step and len(pending) == 1 and tuple(pending[0]) == ("fields", 0)
 
 
-def _validate_active_families(connection: SqliteConnection) -> None:
+def _validate_unfinished_families(connection: SqliteConnection) -> None:
     for (family,) in connection.run("""
         SELECT plan.family FROM company_sync_round round JOIN company_sync_plan plan USING(round_id)
         WHERE round.active=1

@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 import torch
 
-from trader.training.application.tomorrow_training import TrainingFitDetail, TrainingFitPhase
+from trader.training.application.training_progress import TrainingFitDetail, TrainingFitPhase
 from trader.training.domain.v5.early_stopping import TcnEarlyStopping
 from trader.training.domain.final_fit import FinalFitDatePlan
 from trader.training.infra.model_bundles.bundle_codec import TrainedTcnModelSnapshot

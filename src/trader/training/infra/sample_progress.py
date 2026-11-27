@@ -2,10 +2,10 @@
 
 from datetime import date
 
-from trader.training.application.tomorrow_training import (
-    TomorrowTrainingProgress,
-    TomorrowTrainingProgressPort,
-    TomorrowTrainingProgressState,
+from trader.training.application.training_progress import (
+    TrainingProgress,
+    TrainingProgressPort,
+    TrainingProgressState,
     TrainingSampleDiagnostics,
     TrainingSampleProgress,
 )
@@ -16,7 +16,7 @@ class TrainingSampleProgressTracker:
         self,
         dates: frozenset[date],
         first_sample_date: date,
-        progress: TomorrowTrainingProgressPort | None,
+        progress: TrainingProgressPort | None,
         *,
         interval_rows: int = 4096,
     ) -> None:
@@ -55,12 +55,12 @@ class TrainingSampleProgressTracker:
         produced: int,
         diagnostics: TrainingSampleDiagnostics,
         *,
-        state: TomorrowTrainingProgressState = "running",
+        state: TrainingProgressState = "running",
         pending_samples: int = 0,
     ) -> None:
         if self._progress is not None:
             value = self.snapshot(finished=state == "completed", pending_samples=pending_samples)
-            self._progress.publish(TomorrowTrainingProgress(
+            self._progress.publish(TrainingProgress(
                 "history_conversion", state, value.completed_days, value.total_days, produced,
                 sample_diagnostics=diagnostics, sample_progress=value,
             ))

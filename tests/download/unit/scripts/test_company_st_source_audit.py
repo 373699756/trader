@@ -290,25 +290,25 @@ def test_audit_rejects_body_over_the_transport_limit_without_decoding():
 
 def test_bounded_parallel_workers_use_only_two_simultaneous_calls():
     barrier, lock = Barrier(2), Lock()
-    active, peak = 0, 0
+    running_requests, peak = 0, 0
 
     class Transport:
         def get(self, url, **kwargs):
-            nonlocal active, peak
+            nonlocal running_requests, peak
             with lock:
-                active += 1
-                peak = max(peak, active)
+                running_requests += 1
+                peak = max(peak, running_requests)
             try:
                 barrier.wait(timeout=3)
                 return _json_response(code="600001", current="正常公司", former="正常公司") if "PageAjax" in url else _sina_response("正常公司")
             finally:
                 with lock:
-                    active -= 1
+                    running_requests -= 1
 
     report = AuditCompanyStSources((CompanyStSourceRequest("600001", "正常公司", "clear"),),
         session_factory=lambda: nullcontext(Transport()), rounds=1, workers=2,
         timeout_seconds=1, deadline=time.monotonic() + 5, clock=lambda: _NOW)
-    assert peak == 2 and active == 0 and report["actual_requests"] == 2 and report["status"] == "observed"
+    assert peak == 2 and running_requests == 0 and report["actual_requests"] == 2 and report["status"] == "observed"
 
 
 @pytest.mark.parametrize("options", ({"rounds": 0}, {"rounds": 6}, {"workers": 0}, {"workers": 5}, {"timeout_seconds": 16}))

@@ -1,4 +1,4 @@
-"""Compact stderr progress for the explicit Tomorrow training command."""
+"""Render progress for Tomorrow and D25 training on stderr."""
 
 from __future__ import annotations
 
@@ -18,16 +18,16 @@ from trader.infra.progress_heartbeat import ProgressHeartbeat
 from trader.infra.shutdown import ShutdownStep
 from trader.infra.signal_cancellation import ManualCancellationScope
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.application.tomorrow_training import (
-    TomorrowTrainingProgress,
-    TomorrowTrainingStage,
+from trader.training.application.training_progress import (
+    TrainingProgress,
+    TrainingStage,
     TrainingFitPhase,
     TrainingFitDetail,
     TrainingSampleDiagnostics,
     TrainingSampleProgress,
 )
 
-_STAGE_LABELS: dict[TomorrowTrainingStage, str] = {
+_STAGE_LABELS: dict[TrainingStage, str] = {
     "resource_preflight": "资源预检",
     "input_read": "输入检查",
     "training_preparation": "训练准备",
@@ -56,8 +56,8 @@ _FIT_PHASE_LABELS: dict[TrainingFitPhase, str] = {
 _HEAD_LABELS = {Strategy.TOMORROW: "明日", Strategy.D25: "D25"}
 _PROGRESS_INTERVAL_SECONDS = 5.0
 _HEARTBEAT_INTERVAL_SECONDS = 30.0
-TomorrowTrainingCommandStatus = Literal["blocked", "rejected", "engineering_ready", "failed"]
-_RESULT_LABELS: dict[TomorrowTrainingCommandStatus, str] = {
+TrainingCommandStatus = Literal["blocked", "rejected", "engineering_ready", "failed"]
+_RESULT_LABELS: dict[TrainingCommandStatus, str] = {
     "blocked": "阻塞",
     "rejected": "拒绝",
     "engineering_ready": "完成",
@@ -92,13 +92,13 @@ def ReadTrainingProgressLayout() -> TrainingProgressLayout:
     return TrainingProgressLayout(columns if columns > 0 else 180)
 
 
-class StderrTomorrowTrainingProgress:
+class TrainingProgressPrinter:
     def __init__(
         self,
         *,
         monotonic: Callable[[], float] = time.monotonic,
         start_heartbeat: bool = False,
-        command_label: str = "Tomorrow训练",
+        command_label: str = "模型训练",
         started_at: float | None = None,
         cancellation: ManualCancellationScope | None = None,
         layout: TrainingProgressLayout | None = None,
@@ -115,25 +115,25 @@ class StderrTomorrowTrainingProgress:
         self._shutdown_step: ShutdownStep | None = None
         self._command_label = command_label
         self._layout = TrainingProgressLayout() if layout is None else layout
-        self._latest: TomorrowTrainingProgress | None = None
-        self._stage_started_at: dict[tuple[TomorrowTrainingStage, Strategy | None], float] = {}
-        self._completed_stages: set[tuple[TomorrowTrainingStage, Strategy | None]] = set()
-        self._stage_durations: dict[TomorrowTrainingStage, float] = {}
+        self._latest: TrainingProgress | None = None
+        self._stage_started_at: dict[tuple[TrainingStage, Strategy | None], float] = {}
+        self._completed_stages: set[tuple[TrainingStage, Strategy | None]] = set()
+        self._stage_durations: dict[TrainingStage, float] = {}
         self._display_started: dict[tuple[str, Strategy | None], float] = {}
         self._advanced_at = now
         self._emitted_at = float("-inf")
         self._notice_started: dict[str, float] = {}
         self._current_notice: tuple[str, str, float] | None = None
-        self._eta_key: tuple[TomorrowTrainingStage, Strategy | None, str, TrainingFitPhase, int] | None = None
+        self._eta_key: tuple[TrainingStage, Strategy | None, str, TrainingFitPhase, int] | None = None
         self._eta_samples: deque[tuple[float, int]] = deque(maxlen=32)
-        self._skipped: set[tuple[TomorrowTrainingStage, Strategy | None, str]] = set()
+        self._skipped: set[tuple[TrainingStage, Strategy | None, str]] = set()
         self._skip_reasons: Counter[str] = Counter()
         self._sample_diagnostics: TrainingSampleDiagnostics | None = None
         self._input_progress: TrainingSampleProgress | None = None
         self._lock = threading.Lock()
         self._heartbeat = ProgressHeartbeat[bool](lambda _tick: self._emit_heartbeat(self._monotonic()), interval_seconds=1)
 
-    def __enter__(self) -> StderrTomorrowTrainingProgress:
+    def __enter__(self) -> TrainingProgressPrinter:
         if self._start_heartbeat:
             self._heartbeat.__enter__()
             self._heartbeat(True)
@@ -180,7 +180,7 @@ class StderrTomorrowTrainingProgress:
     def report_disk(self, text: str) -> None:
         self.report_notice("存储检测", text)
 
-    def publish(self, progress: TomorrowTrainingProgress) -> None:
+    def publish(self, progress: TrainingProgress) -> None:
         now = self._monotonic()
         with self._lock:
             if progress.input_progress is not None:
@@ -228,7 +228,7 @@ class StderrTomorrowTrainingProgress:
                 self._emit(progress, now)
 
     @property
-    def stage_durations(self) -> tuple[tuple[TomorrowTrainingStage, float], ...]:
+    def stage_durations(self) -> tuple[tuple[TrainingStage, float], ...]:
         with self._lock:
             return tuple(self._stage_durations.items())
 
@@ -241,7 +241,7 @@ class StderrTomorrowTrainingProgress:
                 details.append(f"最后阶段 {self._stage_label(latest)} {self._count(latest)}")
             self._finish(now, "取消", details)
 
-    def publish_result(self, status: TomorrowTrainingCommandStatus, failure_reason: str | None) -> None:
+    def publish_result(self, status: TrainingCommandStatus, failure_reason: str | None) -> None:
         now = self._monotonic()
         with self._lock:
             details = [f"状态 {status}"]
@@ -295,10 +295,10 @@ class StderrTomorrowTrainingProgress:
             elif self._latest is not None and self._latest.state in {"started", "running"}:
                 self._emit(self._latest, now, waiting=True)
 
-    def _stage_label(self, progress: TomorrowTrainingProgress) -> str:
+    def _stage_label(self, progress: TrainingProgress) -> str:
         return "验证" if progress.validation is not None else _STAGE_LABELS[progress.stage]
 
-    def _count(self, progress: TomorrowTrainingProgress) -> str:
+    def _count(self, progress: TrainingProgress) -> str:
         if progress.sample_progress is not None:
             value = progress.sample_progress
             return "本档输入处理 " + _day_count(value)
@@ -324,7 +324,7 @@ class StderrTomorrowTrainingProgress:
             return f"{label}已处理 {progress.completed_units}"
         return f"{label} {progress.completed_units:>6}/{progress.total_units:<6}"
 
-    def _observe_epoch(self, progress: TomorrowTrainingProgress, now: float) -> None:
+    def _observe_epoch(self, progress: TrainingProgress, now: float) -> None:
         detail = progress.fit_detail
         if (
             progress.validation is not None or detail is None or detail.phase != "training"
@@ -342,7 +342,7 @@ class StderrTomorrowTrainingProgress:
         while len(self._eta_samples) > 2 and now - self._eta_samples[0][0] > 60:
             self._eta_samples.popleft()
 
-    def _epoch_eta(self, now: float, progress: TomorrowTrainingProgress) -> str:
+    def _epoch_eta(self, now: float, progress: TrainingProgress) -> str:
         detail = progress.fit_detail
         if detail is None or self._eta_key is None or detail.completed_batches == detail.total_batches:
             return ""
@@ -357,7 +357,7 @@ class StderrTomorrowTrainingProgress:
         seconds = remaining * elapsed / advanced
         return "本轮余约 <1秒" if seconds < 1 else f"本轮余约 {ProgressDuration(seconds)}"
 
-    def _emit(self, progress: TomorrowTrainingProgress, now: float, *, waiting: bool = False) -> None:
+    def _emit(self, progress: TrainingProgress, now: float, *, waiting: bool = False) -> None:
         label = self._stage_label(progress)
         if progress.strategy is not None:
             label = f"{_HEAD_LABELS[progress.strategy]}·{label}"
@@ -436,16 +436,16 @@ def _fit_position(detail: TrainingFitDetail | None) -> tuple[str, TrainingFitPha
     return None if detail is None else (detail.industry, detail.phase, detail.epoch, detail.completed_batches)
 
 
-def _display_key(progress: TomorrowTrainingProgress) -> tuple[str, Strategy | None]:
+def _display_key(progress: TrainingProgress) -> tuple[str, Strategy | None]:
     return (f"{progress.stage}:validation" if progress.validation is not None else progress.stage, progress.strategy)
 
 
-def _fit_counts_position(progress: TomorrowTrainingProgress) -> tuple[int, int, int] | None:
+def _fit_counts_position(progress: TrainingProgress) -> tuple[int, int, int] | None:
     counts = progress.fit_counts
     return None if counts is None else (counts.processed, counts.fitted, counts.skipped)
 
 
-def _has_advanced(previous: TomorrowTrainingProgress | None, current: TomorrowTrainingProgress) -> bool:
+def _has_advanced(previous: TrainingProgress | None, current: TrainingProgress) -> bool:
     if previous is None:
         return True
     return (
@@ -463,6 +463,6 @@ def _has_advanced(previous: TomorrowTrainingProgress | None, current: TomorrowTr
 
 __all__ = [
     "ReadTrainingProgressLayout",
-    "StderrTomorrowTrainingProgress",
+    "TrainingProgressPrinter",
     "TrainingProgressLayout",
 ]

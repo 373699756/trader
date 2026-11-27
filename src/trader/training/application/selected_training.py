@@ -22,7 +22,7 @@ from trader.recommendation.domain.scoring.profile_identity import ScoringProfile
 from trader.training.application.learned_rank_training import V1TrainingResult
 from trader.training.application.profile_training import TrainingRunResult
 from trader.training.application.resources import TrainingExecutionObserver, TrainingExecutionTiming, TrainingFanoutSettings
-from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort
+from trader.training.application.training_progress import TrainingProgressPort
 from trader.training.application.training_diagnostics import BuildTrainingOperationIssue, TrainingOperationIssue
 from trader.training.application.error_diagnostics import CaptureTrainingError, TrainingErrorDiagnostic
 from trader.training.domain.tomorrow_probability import TomorrowProbabilityProfileResult
@@ -105,7 +105,7 @@ class SelectedTrainingSessionPort(Protocol[ResultT]):
     def abort(self) -> ShutdownDeadline: ...
 
     def prepare_task(
-        self, profile: ScoringProfileId, progress: TomorrowTrainingProgressPort,
+        self, profile: ScoringProfileId, progress: TrainingProgressPort,
     ) -> SelectedTrainingTask[ResultT]: ...
 
     def read_rows(self, dates: frozenset[date]) -> AbstractContextManager[Iterator[HistoryTrainingRow]]: ...
@@ -125,7 +125,7 @@ class SelectedTrainingPort(Protocol[ResultT]):
     def profiles(self) -> tuple[ScoringProfileId, ...]: ...
 
     @property
-    def progresses(self) -> tuple[TomorrowTrainingProgressPort, ...]: ...
+    def progresses(self) -> tuple[TrainingProgressPort, ...]: ...
 
     @property
     def cancelled(self) -> Callable[[], bool]: ...

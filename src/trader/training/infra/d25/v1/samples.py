@@ -35,7 +35,7 @@ from trader.recommendation.domain.market.v1.features import (
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
-from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort, TrainingSampleDiagnostics
+from trader.training.application.training_progress import TrainingProgressPort, TrainingSampleDiagnostics
 from trader.training.domain.label_benchmark import ObservedTrainingBenchmark
 from trader.training.domain.final_fit import FinalFitDatePlan
 from trader.training.domain.v1.learned_rank import IsLearnedRankIndustryIdentity, LearnedRankDateSplit
@@ -362,7 +362,7 @@ class LearnedRankSampleIndex:
 
 @dataclass(frozen=True)
 class LearnedRankSampleStream:
-    progress: TomorrowTrainingProgressPort | None = None
+    progress: TrainingProgressPort | None = None
     cancel_requested: Callable[[], bool] | None = None
     aligned_rows: Iterator[HistoryTrainingRow] | None = None
 

@@ -69,7 +69,7 @@ def Main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
     _configure_resources()
-    from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
+    from trader.training.entrypoints.training_progress import TrainingProgressPrinter
     from trader.training.infra.research.close_return.v3_training import RunRepackV3Training
     from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
@@ -83,7 +83,7 @@ def Main(argv: list[str] | None = None) -> int:
     os.nice(10)
     before = _peak_rss_bytes()
     settings = LoadProfileTrainingSettings(TOOL_ROOT, "v3")
-    with StderrTomorrowTrainingProgress() as progress:
+    with TrainingProgressPrinter() as progress:
         result = RunRepackV3Training(
             args.history_root.resolve(),
             args.train_root.resolve(),

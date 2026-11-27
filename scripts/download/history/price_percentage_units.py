@@ -50,8 +50,8 @@ class _PriceEvidence:
     database: str
     raw_close: float | None
     raw_preclose: float | None
-    stored_pct: float | None
-    stored_turnover: float | None
+    reported_pct: float | None
+    reported_turnover: float | None
     implied_pct: float | None
     assessment: str
     reason: str
@@ -90,7 +90,7 @@ def _number(value: object) -> float | None:
 
 
 def _classify(identity: _SourceEvidence, path: Path, values: tuple[object, ...] | None) -> _PriceEvidence:
-    close, preclose, stored, turnover = tuple(_number(item) for item in values) if values is not None else (None,) * 4
+    close, preclose, reported_pct, turnover = tuple(_number(item) for item in values) if values is not None else (None,) * 4
     implied = _number((close / preclose - 1) * 100) if close is not None and close > 0 and preclose is not None and preclose > 0 else None
     assessment = "unassessable"
     if values is None:
@@ -99,21 +99,21 @@ def _classify(identity: _SourceEvidence, path: Path, values: tuple[object, ...] 
         reason = "close_missing_or_invalid"
     elif preclose is None or preclose <= 0:
         reason = "preclose_missing_or_invalid"
-    elif stored is None:
+    elif reported_pct is None:
         reason = "stored_pct_missing_or_invalid"
     elif implied is None or not math.isfinite(implied):
         reason = "raw_return_not_finite"
-    elif stored == 0 or implied == 0:
+    elif reported_pct == 0 or implied == 0:
         reason = "zero_change_cannot_identify_unit"
     else:
-        normal = math.isclose(stored, implied, rel_tol=_RELATIVE_TOLERANCE, abs_tol=_ABSOLUTE_TOLERANCE_PCT)
-        shrunk = math.isclose(stored * 100, implied, rel_tol=_RELATIVE_TOLERANCE, abs_tol=_ABSOLUTE_TOLERANCE_PCT)
+        normal = math.isclose(reported_pct, implied, rel_tol=_RELATIVE_TOLERANCE, abs_tol=_ABSOLUTE_TOLERANCE_PCT)
+        shrunk = math.isclose(reported_pct * 100, implied, rel_tol=_RELATIVE_TOLERANCE, abs_tol=_ABSOLUTE_TOLERANCE_PCT)
         if normal and shrunk:
             reason = "unit_ambiguous_at_tolerance"
         else:
             assessment = "suspected_shrunk_100x" if shrunk else "consistent" if normal else "other_mismatch"
             reason = "stored_times_100_matches_raw_return" if shrunk else "raw_return_comparison"
-    return _PriceEvidence(identity, path.name, close, preclose, stored, turnover, implied, assessment, reason)
+    return _PriceEvidence(identity, path.name, close, preclose, reported_pct, turnover, implied, assessment, reason)
 
 
 def _identity(code: object, day: object) -> tuple[str, date]:
@@ -303,7 +303,7 @@ def AuditPricePercentageUnits(
                             "observation_sequence": item.identity.observation_sequence, "revision": item.identity.revision,
                         },
                         "database": item.database, "raw_close": item.raw_close, "raw_preclose": item.raw_preclose,
-                        "stored_pct": item.stored_pct, "stored_turnover": item.stored_turnover,
+                        "stored_pct": item.reported_pct, "stored_turnover": item.reported_turnover,
                         "implied_pct": item.implied_pct, "assessment": item.assessment, "reason": item.reason,
                     }
                     for item in samples

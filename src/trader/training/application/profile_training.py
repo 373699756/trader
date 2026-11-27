@@ -6,7 +6,8 @@ from datetime import date
 from typing import Literal, Protocol
 
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.application.tomorrow_training import ProductionTrainingWindow, TomorrowTrainingProgress, TomorrowTrainingProgressPort
+from trader.training.application.tomorrow_training import ProductionTrainingWindow
+from trader.training.application.training_progress import TrainingProgress, TrainingProgressPort
 from trader.training.application.training_diagnostics import (
     BuildTrainingOperationIssue, NotifyTrainingCommit, TrainingIssueStage, TrainingOperationIssue,
 )
@@ -160,7 +161,7 @@ def InspectProfileReuse(
 
 
 def TrainProfile(
-    operations: ProfileTrainingPort, *, progress: TomorrowTrainingProgressPort | None = None,
+    operations: ProfileTrainingPort, *, progress: TrainingProgressPort | None = None,
 ) -> TrainingRunResult:
     source = operations.read_source()
     if not source.target_matches:
@@ -181,7 +182,7 @@ def TrainProfile(
     if admission is not None:
         return admission
     if progress is not None:
-        progress.publish(TomorrowTrainingProgress("training_preparation", "completed", 1, 1))
+        progress.publish(TrainingProgress("training_preparation", "completed", 1, 1))
     completed: list[HeadTrainingResult] = []
     coverage: tuple[SampleCoverage, ...] = ()
     peak_bytes = 0
@@ -217,7 +218,7 @@ def TrainProfile(
             ):
                 try:
                     if progress is not None:
-                        progress.publish(TomorrowTrainingProgress("artifact_publish", "started", 0, 1))
+                        progress.publish(TrainingProgress("artifact_publish", "started", 0, 1))
                     fitting.publish_pair()
                     published = True
                 except ProfileTrainingOperationError as exc:

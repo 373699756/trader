@@ -82,6 +82,21 @@ def test_default_runtime_config_uses_the_canonical_namespace() -> None:
     assert config["runtime_dir"] == ".runtime/trader"
 
 
+@pytest.mark.parametrize("missing", [None, "runtime.json", "training.json", "download.json", "research.json"])
+def test_validate_config_reports_each_configuration_boundary(tmp_path, capsys, missing):
+    path = _runtime_config(tmp_path)
+    if missing is not None:
+        (path.parent / missing).unlink()
+    result = Main(["--config", str(path), "validate-config"])
+    payload = json.loads(capsys.readouterr().out)
+    if missing is None:
+        assert result == 0 and payload["status"] == "ok"
+        assert set(payload["training_fit_dates"]) == {"v1", "v2", "v3", "v5"}
+    else:
+        assert result == 2 and payload["failure"] == "configuration_invalid"
+        assert payload["category"]
+
+
 def test_cli_exposes_current_maintenance_and_explicit_offline_research_commands() -> None:
     help_text = BuildParser().format_help()
 
@@ -201,7 +216,7 @@ def test_run_script_help_lists_retained_download_and_training_commands(tmp_path:
         "./run.sh sync",
         "./run.sh sync history",
         "./run.sh sync company",
-        "./run.sh sync compnay fill",
+        "./run.sh sync company fill",
         "./run.sh train", "./run.sh train v1,v5",
         "./run.sh train tomorrow", "./run.sh train d25",
         "./run.sh train tomorrow v3", "./run.sh train d25 v5",
@@ -468,7 +483,7 @@ def test_training_command_selects_profiles_and_strategy(arguments, profiles, str
 
 @pytest.mark.parametrize("arguments", (
     (), ("history",),
-    ("company",), ("compnay", "fill"),
+    ("company",), ("company", "fill"),
 ))
 def test_run_script_forwards_retained_sync_commands(tmp_path: Path, arguments: tuple[str, ...]) -> None:
     venv_bin = tmp_path / "venv" / "bin"
@@ -495,20 +510,20 @@ def test_run_script_forwards_retained_sync_commands(tmp_path: Path, arguments: t
 
 @pytest.mark.parametrize("error", (OSError, RuntimeError, ValueError))
 def test_train_reports_local_failure_without_exposing_details(tmp_path, monkeypatch, capsys, error):
-    from trader.training.entrypoints import tomorrow_training_progress
+    from trader.training.entrypoints import training_progress
 
     config = _runtime_config(tmp_path)
     layout_reads = []
 
     def read_layout():
         layout_reads.append(True)
-        return tomorrow_training_progress.TrainingProgressLayout(96)
+        return training_progress.TrainingProgressLayout(96)
 
     def train(_runtime, _profiles, *, started_at, terminal_columns, report_output, strategy):
         assert started_at >= 0 and terminal_columns == 96 and strategy is None
         raise error("private training details")
 
-    monkeypatch.setattr(tomorrow_training_progress, "ReadTrainingProgressLayout", read_layout)
+    monkeypatch.setattr(training_progress, "ReadTrainingProgressLayout", read_layout)
     monkeypatch.setattr("trader.bootstrap.ExecuteSelectedTraining", train)
     assert Main(["--config", str(config), "train", "v2,v3", "--json"]) == 1
     assert layout_reads == [True]
@@ -729,7 +744,7 @@ def test_tomorrow_training_resource_policy_is_two_threads_and_lower_priority(
     } == {"2"}
 
 
-def test_research_status_and_h1_audit_read_the_same_registered_archive(tmp_path: Path, capsys) -> None:
+def test_research_status_and_h1_audit_read_the_same_registered_snapshot(tmp_path: Path, capsys) -> None:
     from tests.helpers.shared.configuration import SqlitePolicyFixture
     from trader.training.application.historical_label import HistoricalLabelPreregistrationService
     from trader.training.application.historical_screening import HistoricalSecurity
@@ -740,11 +755,11 @@ def test_research_status_and_h1_audit_read_the_same_registered_archive(tmp_path:
     config = _runtime_config(tmp_path)
     runtime = LoadRuntimeSettings(config)
     root = runtime.data_paths.research("v2")
-    archive = SQLiteH1PointInTimeSnapshot(root, sqlite_policy=SqlitePolicyFixture(runtime))
+    snapshot = SQLiteH1PointInTimeSnapshot(root, sqlite_policy=SqlitePolicyFixture(runtime))
     securities = (HistoricalSecurity("600001", "main", "A", False, False),)
     for spec in (H1PointInTimeSpec("tomorrow"), H1PointInTimeSpec("d25")):
-        archive.register_universe(spec, securities)
-    labels = HistoricalLabelPreregistrationService(archive).execute()
+        snapshot.register_universe(spec, securities)
+    labels = HistoricalLabelPreregistrationService(snapshot).execute()
 
     assert h1_audit(["--config", str(config), "--runtime-dir", str(root)]) == 1
     audit = json.loads(capsys.readouterr().out)["strategies"]

@@ -22,11 +22,10 @@ from trader.recommendation.domain.scoring.residualization import (
     CreateExposureContext,
     ResidualizeExposureWithContext,
 )
-from trader.training.application.tomorrow_training import (
-    ProductionTrainingWindow,
-    TomorrowTrainingProgress,
-    TomorrowTrainingProgressPort,
-    TomorrowTrainingWindow,
+from trader.training.application.tomorrow_training import ProductionTrainingWindow, TomorrowTrainingWindow
+from trader.training.application.training_progress import (
+    TrainingProgress,
+    TrainingProgressPort,
     TrainingSampleDiagnostics,
     TrainingSampleProgress,
 )
@@ -67,7 +66,7 @@ class TrainingSampleBuildRequest:
     window: TomorrowTrainingWindow | ProductionTrainingWindow
     index: SQLiteTrainingSampleIndex
     profile: TrainedProfileContract
-    progress: TomorrowTrainingProgressPort | None = None
+    progress: TrainingProgressPort | None = None
     d25_target: PredictionTarget | None = None
 
 
@@ -104,7 +103,7 @@ class _RollingCodeState:
 class _SampleBuildState:
     index: SQLiteTrainingSampleIndex
     profile: TrainedProfileContract
-    progress: TomorrowTrainingProgressPort | None
+    progress: TrainingProgressPort | None
     calendar_positions: dict[date, int]
     readable_dates: frozenset[date]
     allowed_codes: frozenset[str]
@@ -133,7 +132,7 @@ class _SampleBuildState:
 
     def report_source_scanned(self, value: int) -> None:
         # Keep the source callback's cancellation/deadline observation during alignment seeding.
-        _publish(self.progress, TomorrowTrainingProgress(
+        _publish(self.progress, TrainingProgress(
             "input_read", "running", value, value, total_is_exact=False,
             input_progress=TrainingSampleProgress(0, 0, value),
         ))
@@ -293,9 +292,9 @@ def _complete_sample_state(
 ) -> None:
     state.flush_matured(state.current_position, all_days=True)
     tracker.publish(state.converted_samples, state.diagnostics(), state="completed")
-    _publish(request.progress, TomorrowTrainingProgress("sample_index", "started", 0, 1))
+    _publish(request.progress, TrainingProgress("sample_index", "started", 0, 1))
     request.index.prepare_for_model_fitting(request.window.split)
-    _publish(request.progress, TomorrowTrainingProgress("sample_index", "completed", 1, 1))
+    _publish(request.progress, TrainingProgress("sample_index", "completed", 1, 1))
 
 
 def _eligible_future_close(point: HistoryTrainingPoint) -> float | None:
@@ -484,7 +483,7 @@ def ResidualizeSampleDay(
     )
 
 
-def _publish(progress: TomorrowTrainingProgressPort | None, update: TomorrowTrainingProgress) -> None:
+def _publish(progress: TrainingProgressPort | None, update: TrainingProgress) -> None:
     if progress is not None:
         progress.publish(update)
 

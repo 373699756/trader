@@ -2,8 +2,8 @@
 
 from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 from trader.training.entrypoints.profile_training import ProjectTrainingIndustryCoverage
-from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TrainingSampleDiagnostics
-from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
+from trader.training.application.training_progress import TrainingProgress, TrainingSampleDiagnostics
+from trader.training.entrypoints.training_progress import TrainingProgressPrinter
 
 
 def test_current_industry_projection_lists_missing_codes_and_actual_publication_times():
@@ -19,8 +19,8 @@ def test_current_industry_projection_lists_missing_codes_and_actual_publication_
 
 
 def test_discarded_sample_rows_are_reported_as_stock_days_with_warmup(capsys):
-    output = StderrTomorrowTrainingProgress(command_label="train·V3", monotonic=lambda: 0)
-    output.publish(TomorrowTrainingProgress(
+    output = TrainingProgressPrinter(command_label="train·V3", monotonic=lambda: 0)
+    output.publish(TrainingProgress(
         "cross_section_conversion", "completed", 0, 0,
         sample_diagnostics=TrainingSampleDiagnostics(3_000_000, 0, 42, 0, 0),
     ))

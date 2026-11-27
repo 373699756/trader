@@ -9,7 +9,7 @@ from tests.helpers.download.company import company_evidence as fixtures
 from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
 
 
-@pytest.mark.parametrize(("store", "statement"), (
+@pytest.mark.parametrize(("database_role", "statement"), (
     ("collection", "DROP TABLE document_retries"),
     ("collection", "DROP TABLE document_extractions"),
     ("collection", "DROP TABLE document_announcement_numbers"),
@@ -28,9 +28,9 @@ from trader.infra.sqlite_connection import SqliteSession, SqliteTransaction
     ("formal", "DROP TABLE company_input_receipt"),
     ("formal", "ALTER TABLE company_facts RENAME COLUMN code TO removed_code"),
 ))
-def test_incompatible_pair_is_rejected_before_initialization_or_file_recovery(tmp_path, monkeypatch, store, statement):
+def test_incompatible_pair_is_rejected_before_initialization_or_file_recovery(tmp_path, monkeypatch, database_role, statement):
     index = fixtures._index(tmp_path)
-    path = index.path if store == "collection" else index.facts_path
+    path = index.path if database_role == "collection" else index.facts_path
     with SqliteSession(path) as connection, SqliteTransaction(connection):
         connection.run(statement)
     before = (index.path.read_bytes(), index.facts_path.read_bytes())
@@ -41,7 +41,7 @@ def test_incompatible_pair_is_rejected_before_initialization_or_file_recovery(tm
     material = SQLiteCompanyMaterialIndex(index.path,facts=index._facts,documents=index._documents,
         event_policy=fixtures.CompanyEventPolicy(),sqlite_policy=SqlitePolicyFixture())
     monkeypatch.setattr(material, "validate_material", forbidden)
-    if store == "collection":
+    if database_role == "collection":
         with pytest.raises((RuntimeError,ValueError), match="persistence_unavailable|contract_mismatch"):
             material.initialize()
     else:

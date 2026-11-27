@@ -6,8 +6,8 @@ from typing import Literal, Protocol
 
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.error_diagnostics import CaptureTrainingError, TrainingErrorDiagnostic
-from trader.training.application.tomorrow_training import (
-    TomorrowTrainingProgress, TomorrowTrainingProgressPort, TomorrowTrainingProgressState, TomorrowTrainingStage,
+from trader.training.application.training_progress import (
+    TrainingProgress, TrainingProgressPort, TrainingProgressState, TrainingStage,
     TrainingFitCounts,
 )
 from trader.training.application.training_diagnostics import (
@@ -84,7 +84,7 @@ class LearnedRankInspectionPort(Protocol):
 
 class LearnedRankTrainingSessionPort(LearnedRankInspectionPort, Protocol):
     @property
-    def progress(self) -> TomorrowTrainingProgressPort | None: ...
+    def progress(self) -> TrainingProgressPort | None: ...
 
     def samples(self) -> AbstractContextManager[LearnedRankSamplesPort]: ...
 
@@ -237,14 +237,14 @@ def InspectLearnedRankDateAdmission(
 
 
 def _progress(
-    progress: TomorrowTrainingProgressPort | None,
-    stage: TomorrowTrainingStage,
-    state: TomorrowTrainingProgressState,
+    progress: TrainingProgressPort | None,
+    stage: TrainingStage,
+    state: TrainingProgressState,
     strategy: Strategy | None,
 ) -> None:
     if progress is not None:
         completed = int(state == "completed")
-        progress.publish(TomorrowTrainingProgress(
+        progress.publish(TrainingProgress(
             stage, state, completed, 1, produced_units=completed if stage in {"model_fit", "final_model_refit"} else 0,
             strategy=strategy,
             fit_counts=TrainingFitCounts(completed, 1, completed, 0) if stage in {"model_fit", "final_model_refit"} else None,

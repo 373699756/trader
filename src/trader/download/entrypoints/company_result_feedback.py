@@ -21,6 +21,7 @@ from trader.download.domain.company_sync import (
     CompanySyncFamily,
     CompanySyncFamilyResult,
     CompanySyncPauseReason,
+    CompanySyncRoundRebuildBlocked,
     CompanySyncRoundResult,
     CompanySyncStepResult,
 )
@@ -55,7 +56,7 @@ _SUMMARY_FAILURES = {
     "preparation_ReferenceDatabaseIncompatibleError": "ST资格及交易日历参考库结构不兼容",
     "preparation_AkshareCalendarTimeoutError": "交易日历准备超时",
     "CompanyDatabaseIncompatibleError": "公司资料库或请求账本结构不兼容，具体范围见上方诊断",
-    "CompanySyncRebuildActiveRound": "原请求轮次仍需核对，空库重下载暂缓",
+    CompanySyncRoundRebuildBlocked.category: "原请求轮次仍需核对，空库重下载暂缓",
     "ProcessLockError": "另一个任务持有公司同步锁",
 }
 _REASONS = {
@@ -386,7 +387,7 @@ class CompanyResultFeedback:
         self._recent: deque[tuple[str, str, str]] = deque()
         self._counts: Counter[str] = Counter()
         self._published: dict[str, _PublishedState | None] = {}
-        self._active: dict[_FailureKey, tuple[DownloadFailureRecord, str]] = {}
+        self._unresolved_failures: dict[_FailureKey, tuple[DownloadFailureRecord, str]] = {}
         self._recovered: set[_BusinessKey] = set()
         self._run_id = ""
         self._error_attempts = 0
@@ -485,16 +486,16 @@ class CompanyResultFeedback:
 
     def _resolve(self, result: CompanyOperationResult) -> tuple[ProgressMessage, ...]:
         candidates = []
-        for key, (record, _component_name) in self._active.items():
+        for key, (record, _component_name) in self._unresolved_failures.items():
             same_object = key[:3] == (result.source, result.object_id, result.revision)
             if same_object and (not _raw_input_result(result) or record.context.operation_kind == "download"):
                 candidates.append((key, record))
         if not candidates:
             return ()
         for key, _record in candidates:
-            del self._active[key]
+            del self._unresolved_failures[key]
         business = (result.source, result.object_id, result.revision)
-        if not any(key[:3] == business for key in self._active):
+        if not any(key[:3] == business for key in self._unresolved_failures):
             self._recovered.add(business)
         operations = ",".join(str(record.context.operation_id or "未采集") for _key, record in candidates)
         return (_message(result.component or _component(result.kind, result.scope), "错误恢复", "恢复成功", (
@@ -526,7 +527,7 @@ class CompanyResultFeedback:
         self._error_attempts += 1
         self._errors_by_component[component] += 1
         business = (context.supplier, context.object_id or context.code or context.stage, context.revision)
-        self._active[(*business, context.operation_kind or context.stage)] = (record, component)
+        self._unresolved_failures[(*business, context.operation_kind or context.stage)] = (record, component)
         self._diagnosed.add((component, context.object_id, context.revision, record.reason))
         self._recovered.discard(business)
         stock = stocks.get(context.code)
@@ -638,8 +639,8 @@ class CompanyResultFeedback:
         ) not in self._seen
 
     def summary(self) -> tuple[str, ...]:
-        active_objects = {key[:3] for key in self._active}
-        parts = [f"本轮错误 {self._error_attempts}次，已恢复 {len(self._recovered)}个对象，本轮仍未恢复 {len(active_objects)}个对象"]
+        unresolved_objects = {key[:3] for key in self._unresolved_failures}
+        parts = [f"本轮错误 {self._error_attempts}次，已恢复 {len(self._recovered)}个对象，本轮仍未恢复 {len(unresolved_objects)}个对象"]
         if self._counts:
             outcomes = {"accepted": "接纳", "empty": "无记录", "reused": "复用", "rejected": "未采用",
                         "downloaded": "获取成功", "split": "范围拆分", "ocr_queued": "转OCR", "unchanged": "查询未变化"}
@@ -652,7 +653,7 @@ class CompanyResultFeedback:
     def conclude(self, component: str, *, incomplete: bool = False) -> tuple[ProgressMessage, ...]:
         counts = {key.partition(":")[2]: count for key, count in self._counts.items()
                   if key.partition(":")[0] == component}
-        unresolved = len({key[:3] for key, (_record, owner) in self._active.items() if owner == component})
+        unresolved = len({key[:3] for key, (_record, owner) in self._unresolved_failures.items() if owner == component})
         signature = tuple(sorted(counts.items())), self._errors_by_component[component], unresolved, incomplete
         if self._concluded.get(component) == signature or not counts and not self._errors_by_component[component]:
             return ()
@@ -667,12 +668,12 @@ class CompanyResultFeedback:
                          level=ProgressLevel.WARNING if incomplete else ProgressLevel.NORMAL),)
 
     def confirm_component(self, component: str) -> tuple[ProgressMessage, ...]:
-        confirmed = [(key, record) for key, (record, owner) in self._active.items() if owner == component]
+        confirmed = [(key, record) for key, (record, owner) in self._unresolved_failures.items() if owner == component]
         if not confirmed:
             return ()
         for key, _record in confirmed:
-            del self._active[key]
-            if not any(other[:3] == key[:3] for other in self._active):
+            del self._unresolved_failures[key]
+            if not any(other[:3] == key[:3] for other in self._unresolved_failures):
                 self._recovered.add(key[:3])
         operations = ",".join(str(record.context.operation_id or "未采集") for _key, record in confirmed[:10])
         return (_message(component, "恢复核验", "本阶段确认完成，前述操作错误已恢复", (

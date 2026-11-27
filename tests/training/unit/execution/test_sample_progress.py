@@ -12,12 +12,15 @@ from tests.helpers.training.profiles.v1.learned_rank_training import _History, _
 from tests.helpers.training.training_resources import TrainingSampleSettingsFixture
 from trader.download.domain.history_revision import HistoryTrainingRow
 from trader.download.domain.baostock_daily import BaoStockCalendar
-from trader.training.application.tomorrow_training import (
-    ProductionTrainingWindow, TomorrowTrainingProgress, TrainingSampleDiagnostics, TrainingSampleProgress,
+from trader.training.application.tomorrow_training import ProductionTrainingWindow
+from trader.training.application.training_progress import (
+    TrainingProgress,
+    TrainingSampleDiagnostics,
+    TrainingSampleProgress,
 )
 from trader.training.domain.production_diagnostic_dates import BuildProductionDiagnosticDatePlan
 from trader.training.domain.v1.learned_rank import BuildLearnedRankDateSplit
-from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
+from trader.training.entrypoints.training_progress import TrainingProgressPrinter
 from trader.training.infra.d25.v1.samples import BuildLearnedRankSamples, LearnedRankSampleIndex, LearnedRankSampleStream
 from trader.training.infra.research.close_return.v2_contracts import V2_TRAINING_PROFILE
 from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
@@ -135,9 +138,9 @@ def test_v1_interrupted_input_keeps_partial_progress(tmp_path, failure):
 
 
 def test_exhausted_input_with_missing_days_preserves_the_gap(capsys):
-    output = StderrTomorrowTrainingProgress(monotonic=lambda: 0)
+    output = TrainingProgressPrinter(monotonic=lambda: 0)
     value = TrainingSampleProgress(2, 3, 50, phase="generation")
-    output.publish(TomorrowTrainingProgress("history_conversion", "completed", 2, 3, sample_progress=value))
+    output.publish(TrainingProgress("history_conversion", "completed", 2, 3, sample_progress=value))
     text = "".join(line.strip() for line in capsys.readouterr().err.splitlines())
     assert "2/3交易日 (66.6%)" in text and "输入缺日 1" in text and "100.0%" not in text
 
@@ -162,22 +165,22 @@ def test_shared_scan_reports_preceding_days_to_every_profile_and_does_not_fake_e
 @pytest.mark.parametrize("profile", ("V1", "V2", "V3", "V5"))
 def test_shared_progress_keeps_waiting_sample_visible_without_overwriting_fit(capsys, profile):
     clock = [0.0]
-    output = StderrTomorrowTrainingProgress(monotonic=lambda: clock[0], command_label=f"train·{profile}")
+    output = TrainingProgressPrinter(monotonic=lambda: clock[0], command_label=f"train·{profile}")
     sample = TrainingSampleProgress(0, 100, 0)
-    output.publish(TomorrowTrainingProgress("history_conversion", "started", 0, 100, sample_progress=sample))
+    output.publish(TrainingProgress("history_conversion", "started", 0, 100, sample_progress=sample))
     capsys.readouterr()
     clock[0] = 5
-    output.publish(TomorrowTrainingProgress(
+    output.publish(TrainingProgress(
         "input_read", "running", 30, 2000, input_progress=TrainingSampleProgress(30, 2000, 120000),
     ))
     text = "".join(line.strip() for line in capsys.readouterr().err.splitlines())
     assert "本档输入处理 0/100交易日 (0.0%)" in text
     assert "共享扫描 30/2000交易日 (1.5%)" in text and "等待本档窗口" in text
     clock[0] = 6
-    output.publish(TomorrowTrainingProgress("model_fit", "started", 0, 2))
+    output.publish(TrainingProgress("model_fit", "started", 0, 2))
     capsys.readouterr()
     clock[0] = 36
-    output.publish(TomorrowTrainingProgress(
+    output.publish(TrainingProgress(
         "input_read", "running", 40, 2000, input_progress=TrainingSampleProgress(40, 2000, 160000),
     ))
     assert capsys.readouterr().err == ""
@@ -188,9 +191,9 @@ def test_shared_progress_keeps_waiting_sample_visible_without_overwriting_fit(ca
 
 def test_same_day_rows_are_progress_and_unfinished_percentage_never_rounds_to_100(capsys):
     clock = [0.0]
-    output = StderrTomorrowTrainingProgress(monotonic=lambda: clock[0])
+    output = TrainingProgressPrinter(monotonic=lambda: clock[0])
     value = TrainingSampleProgress(1999, 2000, 1, phase="generation", pending_samples=4)
-    event = TomorrowTrainingProgress(
+    event = TrainingProgress(
         "history_conversion", "running", 1999, 2000, sample_progress=value,
         sample_diagnostics=TrainingSampleDiagnostics(2, 3, 4, 5, 6),
     )

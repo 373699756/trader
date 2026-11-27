@@ -29,7 +29,7 @@ class HistoryDownloadDisplay:
         self._started: float | None = None
         self._confirmed_at = 0.0
         self._last_wait = float("-inf")
-        self._active = False
+        self._show_progress = False
 
     def update(self, progress: HistorySyncProgress) -> ProgressMessage | None:
         now = self._monotonic()
@@ -37,7 +37,7 @@ class HistoryDownloadDisplay:
             self._started = self._confirmed_at = now
             self._completed = progress.completed_units
             self._samples.append((now, self._completed))
-        self._active = progress.tencent_summary is None and progress.state != "cancelled"
+        self._show_progress = progress.tencent_summary is None and progress.state != "cancelled"
         self._completed = max(self._completed, progress.completed_units)
         if progress.request is None:
             self._latest = progress
@@ -62,11 +62,11 @@ class HistoryDownloadDisplay:
         return None
 
     def finish(self) -> None:
-        self._active = False
+        self._show_progress = False
         self._requests.clear()
 
     def heartbeat_message(self) -> ProgressMessage | None:
-        if not self._active or self._latest is None:
+        if not self._show_progress or self._latest is None:
             return None
         now = self._monotonic()
         if now - self._last_wait < 5:

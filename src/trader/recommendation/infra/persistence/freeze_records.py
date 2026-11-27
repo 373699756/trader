@@ -5,6 +5,7 @@ from __future__ import annotations
 from trader.infra.sqlite_policy import SqliteIoPolicy
 
 import hashlib
+import logging
 import sqlite3
 import threading
 from calendar import monthrange
@@ -12,6 +13,7 @@ from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 
 from trader.infra.cache import BoundedLruCache
@@ -28,6 +30,8 @@ from trader.infra.sqlite_connection import (
 )
 from trader.recommendation.application.ports.freeze_records import (
     FreezeRecordConflictError,
+    FreezeRecordPort,
+    InvalidFreezeRecordError,
     FreezeRecordRecoverySummary,
     FreezeRecordUnavailableError,
 )
@@ -35,7 +39,7 @@ from trader.recommendation.domain.publication.freeze_identity import CommittedFr
 from trader.recommendation.domain.publication.historical_freeze import HistoricalFreezeRecord
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
-from trader.recommendation.infra.persistence.freeze_record_codec import CommittedRecordBytes, CommittedRecordFromBytes
+from trader.recommendation.infra.persistence.freeze_record_codec import CommittedRecordBytes, CommittedRecordFromBytes, FreezePayloadFieldsError
 from trader.recommendation.infra.persistence.historical_freeze_codec import HistoricalRecordFromBytes
 
 FaultInjector = Callable[[str], None]
@@ -96,7 +100,7 @@ class SQLiteFreezeRecords:
         self._cache_source = "freeze:" + hashlib.sha256(str(path.absolute()).encode()).hexdigest()[:24]
 
     def initialize(self) -> None:
-        self._require_current_archive()
+        self._require_writable_profile()
         self._database.parent.mkdir(parents=True, exist_ok=True)
         try:
             if self._database.exists():
@@ -112,7 +116,7 @@ class SQLiteFreezeRecords:
     def _connect(self, *, write: bool = False) -> Iterator[SqliteConnection]:
         try:
             if write:
-                self._require_current_archive()
+                self._require_writable_profile()
                 self._validate_current_structure()
             session = self._read_session(self._database) if not write and self._read_session is not None else SqliteSession(
                 self._database,
@@ -134,7 +138,7 @@ class SQLiteFreezeRecords:
         with SqliteSession(self._database, SqliteConnectionOptions(read_only=True), sqlite_policy=self._sqlite_policy) as connection:
             EnsureSqliteSchema(connection, self._schema, exact=True)
 
-    def _require_current_archive(self) -> None:
+    def _require_writable_profile(self) -> None:
         if self._schema is _GROUPED_SCHEMA:
             raise FreezeRecordUnavailableError("grouped Tomorrow history is read-only")
 
@@ -208,7 +212,13 @@ class SQLiteFreezeRecords:
                 "SELECT * FROM freeze_record WHERE trade_date=? AND status='committed' ORDER BY prediction_target",
                 (EncodeDate(trade_date),),
             ).fetchall()
-        return tuple(self._load_record(row) for row in rows)
+        records = []
+        for row in rows:
+            try:
+                records.append(self._load_record(row))
+            except InvalidFreezeRecordError as exc:
+                _report_settlement_skip(Strategy.TOMORROW, trade_date, exc.record_digest, str(exc))
+        return tuple(records)
 
     def list_tomorrow_profile_dates(
         self, profile: ScoringProfileId, *, limit: int, year: int | None, month: int | None,
@@ -381,10 +391,14 @@ class SQLiteFreezeRecords:
 
     @staticmethod
     def _load_record(row: sqlite3.Row) -> CommittedFreezeRecord:
-        if row["status"] != "committed":
-            raise FreezeRecordUnavailableError("freeze record quarantined")
-        record = _decode_payload(row)
-        _verify_row_identity(row, record)
+        try:
+            if row["status"] != "committed":
+                raise FreezeRecordUnavailableError("freeze record quarantined")
+            record = _decode_payload(row)
+            _verify_row_identity(row, record)
+        except FreezeRecordUnavailableError as exc:
+            digest = row["record_hash"]
+            raise InvalidFreezeRecordError(str(exc), digest.hex() if isinstance(digest, bytes) else "invalid") from exc
         return record
 
 
@@ -414,8 +428,29 @@ def _decode_payload(row: sqlite3.Row) -> CommittedFreezeRecord:
         raise FreezeRecordUnavailableError("freeze payload hash mismatch")
     try:
         return CommittedRecordFromBytes(raw)
+    except FreezePayloadFieldsError as exc:
+        raise FreezeRecordUnavailableError("freeze fields differ from the current settlement format") from exc
     except (ValueError, TypeError, UnicodeError) as exc:
         raise FreezeRecordUnavailableError("freeze payload invalid") from exc
 
 
-__all__ = ["SQLiteFreezeRecords"]
+def LoadSettlementRecord(
+    freezes: FreezeRecordPort, strategy: Strategy, trade_date: date,
+) -> CommittedFreezeRecord | None:
+    try:
+        return freezes.load(strategy, trade_date)
+    except InvalidFreezeRecordError as exc:
+        _report_settlement_skip(strategy, trade_date, exc.record_digest, str(exc))
+        return None
+
+
+@lru_cache(maxsize=512)
+def _report_settlement_skip(strategy: Strategy, trade_date: date, digest: str, reason: str) -> None:
+    # Periodic scans revisit immutable rows. Keep one warning per distinct failure within this window.
+    logging.getLogger(__name__).warning(
+        "Skipping invalid settlement record: strategy=%s date=%s record_sha256=%s reason=%s",
+        strategy.value, trade_date, digest, reason,
+    )
+
+
+__all__ = ["LoadSettlementRecord", "SQLiteFreezeRecords"]

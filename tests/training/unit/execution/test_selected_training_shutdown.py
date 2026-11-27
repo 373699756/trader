@@ -22,7 +22,7 @@ from trader.training.application.profile_training import HeadTrainingResult, Tra
 from trader.training.application.selected_training import RunSelectedTrainingTasks, SelectedTrainingOutcome, SelectedTrainingRun, SelectedTrainingTask, TrainingLocations
 from trader.training.entrypoints import selected_training
 from trader.training.entrypoints.report_output import TrainingReportOutput
-from trader.training.entrypoints.tomorrow_training_progress import TrainingProgressLayout
+from trader.training.entrypoints.training_progress import TrainingProgressLayout
 from trader.training.domain.training_date_coverage import TrainingDateCoverage
 from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.progress_format import DisplayWidth
@@ -42,7 +42,7 @@ def test_selected_profiles_share_one_layout_and_report_brief_date_gaps_with_comp
     resources = TrainingResourceSettingsFixture()
     width_reads = []
     layouts = []
-    reporter = selected_training.StderrTomorrowTrainingProgress
+    reporter = selected_training.TrainingProgressPrinter
 
     def layout():
         width_reads.append(True)
@@ -73,7 +73,7 @@ def test_selected_profiles_share_one_layout_and_report_brief_date_gaps_with_comp
         return SelectedTrainingRun(outcomes, 0, 0)
 
     monkeypatch.setattr(selected_training, "ReadTrainingProgressLayout", layout)
-    monkeypatch.setattr(selected_training, "StderrTomorrowTrainingProgress", output)
+    monkeypatch.setattr(selected_training, "TrainingProgressPrinter", output)
     monkeypatch.setattr(selected_training, "TrainSelectedProfiles", train)
     monkeypatch.setattr(selected_training, "EvaluateAllHistoryTrainingDue", lambda *_args, **_options: ())
     pool = BoundedExecutor(worker_count=2, queue_capacity=0, thread_name_prefix="selected-layout-fixture")
@@ -124,7 +124,7 @@ def test_final_result_follows_shutdown_and_preserves_training_outcome(tmp_path, 
     previous_controller = signal_cancellation.ShutdownSignalController
     previous_cancellation = signal_cancellation.ManualCancellation
     start_thread = threading.Thread.start
-    publish_result = selected_training.StderrTomorrowTrainingProgress.publish_result
+    publish_result = selected_training.TrainingProgressPrinter.publish_result
     before_shutdown = []
     stop_deadlines = []
     published = tmp_path / "committed-model.json"
@@ -191,7 +191,7 @@ def test_final_result_follows_shutdown_and_preserves_training_outcome(tmp_path, 
     monkeypatch.setattr(selected_training, "ManualCancellation", cancellation)
     monkeypatch.setattr(selected_training, "TrainSelectedProfiles", train)
     monkeypatch.setattr(threading.Thread, "start", start)
-    monkeypatch.setattr(selected_training.StderrTomorrowTrainingProgress, "publish_result", notify)
+    monkeypatch.setattr(selected_training.TrainingProgressPrinter, "publish_result", notify)
     monkeypatch.setattr(pool, "stop", stop)
     try:
         code = selected_training.RunSelectedTraining(

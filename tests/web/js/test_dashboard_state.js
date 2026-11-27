@@ -1170,6 +1170,10 @@ for (const label of ["当前运行异常 · 1", "所看快照的质量提示 · 
 }
 assert(!drawerSummary.includes("refresh:source_unavailable"));
 assert(!drawerSummary.includes("时间待确认"));
+const summarizeCompany = sandbox.window.TraderStatusHealth.observationSummary;
+assert(summarizeCompany([], [], { success_count: 4401, error_count: 4401 }).includes("已读取证券数 4401，其中带来源问题的证券数 4401"));
+assert(summarizeCompany([], [], { success_count: 0 }).includes("已读取证券数 0，其中带来源问题的证券数 未知"));
+assert(!summarizeCompany([], [], null).includes("已读取证券数"));
 assert.strictEqual(state.healthView({}, closeContext, "d25").issueCount, 0);
 const referenceFailure = state.healthView({
   recent_errors: [{ code: "refresh:static_reference_degraded", stage: "refresh", count: 4 }],

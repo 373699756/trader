@@ -36,7 +36,7 @@ from trader.download.infra.history_partition_repack_state import (
     HistoryPartitionRepackAction,
     HistoryPartitionRepackActivationJournal,
     HistoryPartitionRepackBuildState,
-    HistoryPartitionRepackPartitionEvidence,
+    HistoryRepackPartitionEvidence,
     HistoryPartitionRepackRequirements,
     HistoryPartitionRepackSourceFileIdentity,
     HistoryPartitionRepackStatus,
@@ -316,7 +316,7 @@ def RequireHistoryRepackIdle(history_root: Path) -> None:
     _require_no_activation_fence(history_root.resolve().with_name(_ACTIVATION_JOURNAL_NAME))
 
 
-def FinalizedHistoryRepackEvidence(history_root: Path) -> tuple[HistoryPartitionRepackPartitionEvidence, ...]:
+def FinalizedHistoryRepackEvidence(history_root: Path) -> tuple[HistoryRepackPartitionEvidence, ...]:
     """Recover the verified source and target fingerprints of an activated physical compaction."""
     root = history_root.resolve()
     journal = _optional_journal(root.with_name(_ACTIVATION_JOURNAL_NAME))
@@ -472,7 +472,7 @@ def _repack_partition(
     reference: HistorySnapshotPartition,
     snapshot_sequence: int,
     page_size: int, *, sqlite_policy: SqliteIoPolicy,
-) -> HistoryPartitionRepackPartitionEvidence:
+) -> HistoryRepackPartitionEvidence:
     source = source_root / reference.relative_path
     destination = target_root / reference.relative_path
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -510,7 +510,7 @@ def _repack_partition(
     os.replace(pending, destination)
     os.replace(Path(f"{pending}.sha256"), Path(f"{destination}.sha256"))
     _fsync_directory(destination.parent)
-    return HistoryPartitionRepackPartitionEvidence(
+    return HistoryRepackPartitionEvidence(
         reference.relative_path,
         source_sha,
         target_sha,

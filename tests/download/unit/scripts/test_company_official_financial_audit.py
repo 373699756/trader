@@ -35,15 +35,15 @@ def _baseline(tmp_path, *, period="2026-09-30", truncated=False):
 
 
 
-def test_official_audit_public_entry_requires_explicit_external_archive_and_keeps_selection(tmp_path):
+def test_official_audit_public_entry_requires_explicit_materials_directory_and_keeps_selection(tmp_path):
     baseline = _baseline(tmp_path)
-    archive = tmp_path / "official-materials"
+    materials_directory = tmp_path / "official-materials"
     options = ParseOptions(BuildParser("research-source-compare").parse_args([
-        "--official-financial-baseline", str(baseline), "--official-financial-directory", str(archive),
+        "--official-financial-baseline", str(baseline), "--official-financial-directory", str(materials_directory),
     ]))
     command, = BuildCommands(options)
-    assert command.argv[-4:] == ("--official-financial-baseline", str(baseline), "--official-financial-directory", str(archive))
-    assert not archive.exists()
+    assert command.argv[-4:] == ("--official-financial-baseline", str(baseline), "--official-financial-directory", str(materials_directory))
+    assert not materials_directory.exists()
     with pytest.raises(ValueError, match="requires --official-financial-directory"):
         ParseOptions(BuildParser("research-source-compare").parse_args(["--official-financial-baseline", str(baseline)]))
     with pytest.raises(ValueError, match="outside the repository"):

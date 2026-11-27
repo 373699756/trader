@@ -12,4 +12,4 @@ def test_retired_automation_commands_are_rejected(command):
 
 def test_manual_history_and_reminder_status_are_available():
     assert BuildParser().parse_args(["sync", "history"]).target == "history"
-    assert BuildParser().parse_args(["history-automation-status"]).command == "history-automation-status"
+    assert BuildParser().parse_args(["training-reminder-status"]).command == "training-reminder-status"

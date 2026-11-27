@@ -31,7 +31,7 @@ from trader.recommendation.domain.outcomes.prediction_target import PredictionTa
 
 from trader.training.application.profile_training import TrainingRunResult
 from trader.training.domain.d25_assessment import D25ProbabilityAssessment
-from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort
+from trader.training.application.training_progress import TrainingProgressPort
 from trader.training.infra.d25.artifact import (
     D25ProbabilityArtifact, D25ProbabilityBinding, HasD25Probability, StageD25Probability,
 )
@@ -66,7 +66,7 @@ def _run_v5_training(
     history: SimpleNamespace,
     models: Path,
     settings: ProfileTrainingSettings,
-    progress: TomorrowTrainingProgressPort | None = None,
+    progress: TrainingProgressPort | None = None,
 ) -> TrainingRunResult:
     return RunProfileTraining(
         ProfileTrainingRequest(

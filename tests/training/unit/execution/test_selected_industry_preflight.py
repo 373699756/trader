@@ -31,7 +31,7 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.settings.loading import LoadPredictionTargets
 from trader.training.application.learned_rank_training import V1TrainingResult
 from trader.training.application.selected_training import SelectedD25IndustryUnavailable, SelectedTrainingDrainError, SelectedTrainingRun, SelectedTrainingTask, TrainSelectedProfiles, TrainingLocations
-from trader.training.application.tomorrow_training import TomorrowTrainingProgress
+from trader.training.application.training_progress import TrainingProgress
 from trader.download.infra.history_control_index import HistoryMaintenanceAlreadyRunningError, HistoryMaintenanceLock
 from trader.training.domain.tomorrow_probability import TomorrowProbabilityProfileResult, TomorrowProbabilityTrainingResult
 from trader.infra.shutdown import ShutdownDeadline
@@ -56,9 +56,9 @@ class _Progress:
 
 class _RecordingProgress:
     def __init__(self) -> None:
-        self.events: list[TomorrowTrainingProgress] = []
+        self.events: list[TrainingProgress] = []
 
-    def publish(self, update: TomorrowTrainingProgress) -> None:
+    def publish(self, update: TrainingProgress) -> None:
         self.events.append(update)
 
 
@@ -254,8 +254,8 @@ def test_tomorrow_can_read_the_published_prices_before_d25_checks_industry(tmp_p
     request = replace(_request(tmp_path, industry=False), profiles=("v1", "v3"), progresses=progresses)
     stages = []
     open_history = selected_training.OpenTomorrowHistoryInput
-    started = TomorrowTrainingProgress("input_read", "started", 0, 1, strategy=Strategy.TOMORROW)
-    completed = TomorrowTrainingProgress("input_read", "completed", 1, 1, strategy=Strategy.TOMORROW)
+    started = TrainingProgress("input_read", "started", 0, 1, strategy=Strategy.TOMORROW)
+    completed = TrainingProgress("input_read", "completed", 1, 1, strategy=Strategy.TOMORROW)
 
     def open_observed_history(*args, **kwargs):
         assert all(item.events == [started] for item in progresses)
@@ -269,7 +269,7 @@ def test_tomorrow_can_read_the_published_prices_before_d25_checks_industry(tmp_p
         rows = tuple(history.iter_training_rows(history.open_dates[-1:]))
         assert len(rows) == 1 and rows[0].code == "000001" and rows[0].industry is None
         assert model_root == request.paths.models
-        progress("v3", TomorrowTrainingProgress("model_fit", "running", 0, 1, strategy=Strategy.TOMORROW))
+        progress("v3", TrainingProgress("model_fit", "running", 0, 1, strategy=Strategy.TOMORROW))
         return tuple(TomorrowProbabilityProfileResult(
             prediction_targets.for_profile(profile, Strategy.TOMORROW), profile,
             TomorrowProbabilityTrainingResult(history.snapshot_hash, "b" * 64, "lambdarank"),
@@ -292,7 +292,7 @@ def test_tomorrow_can_read_the_published_prices_before_d25_checks_industry(tmp_p
     assert all(head.result.ready for head in blocked.value.tomorrow_probability)
     assert progresses[0].events == [started, completed]
     assert progresses[1].events == [
-        started, completed, TomorrowTrainingProgress("model_fit", "running", 0, 1, strategy=Strategy.TOMORROW),
+        started, completed, TrainingProgress("model_fit", "running", 0, 1, strategy=Strategy.TOMORROW),
     ]
 
 
@@ -306,7 +306,7 @@ def test_selected_strategy_reads_only_its_own_inputs(tmp_path, strategy):
         assert strategy is Strategy.TOMORROW
         opened.append("tomorrow")
         assert len(tuple(history.iter_training_rows(history.open_dates[-1:]))) == 1
-        progress("v1", TomorrowTrainingProgress("model_fit", "running", 0, 1, strategy=Strategy.TOMORROW))
+        progress("v1", TrainingProgress("model_fit", "running", 0, 1, strategy=Strategy.TOMORROW))
         return tuple(TomorrowProbabilityProfileResult(
             prediction_targets.for_profile(profile, Strategy.TOMORROW), profile,
             TomorrowProbabilityTrainingResult(history.snapshot_hash, "b" * 64, "lambdarank"),

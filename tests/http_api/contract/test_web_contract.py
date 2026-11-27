@@ -77,10 +77,10 @@ def test_status_retains_the_finished_round_while_the_next_round_runs():
     assert finished["finished"] and finished["outcome"] == "cancelled"
     following = rounds.enter(profile, (task,))
     assert following is not None
-    active = client.get("/api/status").get_json()["scheduler"]
-    assert active["recommendation_round"]["sequence"] == first.sequence + 1
-    assert not active["recommendation_round"]["finished"]
-    assert active["last_finished_recommendation_round"] == finished
+    scheduler = client.get("/api/status").get_json()["scheduler"]
+    assert scheduler["recommendation_round"]["sequence"] == first.sequence + 1
+    assert not scheduler["recommendation_round"]["finished"]
+    assert scheduler["last_finished_recommendation_round"] == finished
     rounds.finish(profile, following.sequence)
 
 

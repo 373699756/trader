@@ -53,7 +53,7 @@ def CompanyFieldProofRulesHash() -> bytes:
 
 
 @dataclass(frozen=True, slots=True)
-class StoredCompanyFieldResults:
+class PublishedCompanyFieldResults:
     """Validated field rows and publication identities read in the caller's formal transaction."""
 
     code: str
@@ -84,7 +84,7 @@ def PrepareCompanyFieldResults(
     read_document: Callable[[bytes], str],
     revalidate: bool = False,
     field_rules_hash: bytes | None = None,
-    stored: StoredCompanyFieldResults | None = None,
+    published: PublishedCompanyFieldResults | None = None,
 ) -> CompanyFieldPublication:
     """Reuse current proofs; inspect an unchanged old input once per field rule.
 
@@ -93,7 +93,7 @@ def PrepareCompanyFieldResults(
     a failed attempt complete or force another download of a retained body.
     """
     rules_hash = CompanyFieldProofRulesHash() if field_rules_hash is None else field_rules_hash
-    if stored is None:
+    if published is None:
         saved_rules = formal.run("SELECT rules_hash FROM company_field_proof_rule WHERE singleton=1").fetchone()
         revalidate = revalidate or saved_rules is None or saved_rules[0] != rules_hash
         publication = None if revalidate else ReadCompanyPublicationIdentity(formal)
@@ -101,10 +101,10 @@ def PrepareCompanyFieldResults(
             publication is not None and publication.extraction_hash == extraction_hash
         ) else ()
     else:
-        if stored.code != facts.code:
+        if published.code != facts.code:
             raise ValueError("company_field_results_issuer_mismatch")
-        revalidate = revalidate or stored.rules_hash != rules_hash
-        previous = stored.results if not revalidate and stored.extraction_hash == extraction_hash else ()
+        revalidate = revalidate or published.rules_hash != rules_hash
+        previous = published.results if not revalidate and published.extraction_hash == extraction_hash else ()
     baseline = tuple(CompanyFieldConclusion(
         item.code, item.event_id, cast(CompanyFieldName, item.field), item.value,
         cast(CompanyFieldConclusionState, item.state), item.applicable, item.reason, (),
@@ -283,5 +283,5 @@ __all__ = [
     "CompanyFieldPublication",
     "CompanyFieldProofRulesHash",
     "PrepareCompanyFieldResults",
-    "StoredCompanyFieldResults",
+    "PublishedCompanyFieldResults",
 ]

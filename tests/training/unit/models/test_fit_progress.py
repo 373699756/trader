@@ -8,7 +8,7 @@ import pytest
 
 from tests.helpers.training.current_industry import CurrentIndustrySnapshotFixture
 from trader.training.application import learned_rank_training
-from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TrainingFitCounts, TrainingFitDetail
+from trader.training.application.training_progress import TrainingProgress, TrainingFitCounts, TrainingFitDetail
 from trader.training.domain.final_fit import FinalFitDatePlan
 from trader.training.domain.training_dates import BuildTrainingDateSplit
 from trader.training.infra import model_fitting
@@ -176,4 +176,4 @@ def test_fit_counts_reject_impossible_work_completion(values):
 
 def test_fit_counts_cannot_disagree_with_the_progress_units():
     with pytest.raises(ValueError, match="training progress counts"):
-        TomorrowTrainingProgress("model_fit", "running", 0, 2, fit_counts=TrainingFitCounts(1, 2, 1, 0))
+        TrainingProgress("model_fit", "running", 0, 2, fit_counts=TrainingFitCounts(1, 2, 1, 0))

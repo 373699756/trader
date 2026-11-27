@@ -14,10 +14,11 @@ from typing import TYPE_CHECKING, cast
 from zoneinfo import ZoneInfo
 
 from trader.download.application.sync_data import SyncResult
-from trader.download.domain.company_evidence import CompanyDownloadStore
+from trader.download.domain.company_evidence import CompanyDatabaseRole
+from trader.download.domain.company_sync import CompanySyncRoundRebuildBlocked
 from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage, ProgressTask
 from trader.download.entrypoints.sync_progress import SyncProgress
-from trader.recommendation.infra.settings.loading import LoadLongWatchlist, LoadStrategySettings
+from trader.recommendation.infra.settings.loading import LoadStrategySettings
 from trader.infra.settings import LoadRuntimeSettings, RuntimeSettings
 from trader.infra.signal_cancellation import ManualCancellation
 from trader.recommendation.domain.publication.models import Strategy
@@ -26,7 +27,7 @@ from trader.recommendation.domain.scoring.profile_selection import ParseProfileS
 from trader.training.entrypoints.research_evidence import COMMAND_SCHEMAS, AddResearchEvidenceParsers
 
 if TYPE_CHECKING:
-    from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
+    from trader.training.entrypoints.training_progress import TrainingProgressPrinter
     from trader.training.entrypoints.report_output import TrainingReportOutput
 
 
@@ -73,11 +74,11 @@ def BuildParser() -> argparse.ArgumentParser:
     training.add_argument("--json", action="store_true", help="Print complete result JSON to stdout.")
     training.add_argument("--diagnostics", type=Path, help="Write full diagnostics to a new file; never overwrite.")
     sync = subparsers.add_parser("sync", help="Prepare references, then synchronize history and company.")
-    sync.add_argument("target", nargs="?", default="all", choices=("all", "company", "history", "compnay"))
-    sync.add_argument("action", nargs="?", choices=("fill",), help="Use sync compnay fill to resume annual announcement collection.")
+    sync.add_argument("target", nargs="?", default="all", choices=("all", "company", "history"))
+    sync.add_argument("action", nargs="?", choices=("fill",), help="Use sync company fill to resume annual announcement collection.")
     subparsers.add_parser(
-        "history-automation-status",
-        help="Read the persisted history due and reminder state without recalculation.",
+        "training-reminder-status",
+        help="查看已保存的训练到期与提醒状态。",
     )
     subparsers.add_parser("research-status", help="Read immutable research coverage and capacity status.")
     subparsers.add_parser(
@@ -104,10 +105,8 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
     if args.command == "sync":
         if args.profile is not None:
             parser.error("sync does not accept --profile")
-        if (args.target == "compnay") != (args.action == "fill"):
-            parser.error("annual announcement collection requires sync compnay fill")
-        if args.target == "compnay":
-            args.target = "company"
+        if args.action == "fill" and args.target != "company":
+            parser.error("annual announcement collection requires sync company fill")
         from trader.bootstrap import CreateSyncProgress
 
         inherited = os.environ.pop("TRADER_COMMAND_STARTED_MONOTONIC", None)
@@ -127,18 +126,23 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
         if args.strategy_profiles is not None and not isinstance(args.profiles, Strategy):
             parser.error("train accepts a second argument only after tomorrow or d25")
         return _run_train(args)
+    profile_override = cast(ScoringProfileId | None, args.profile)
     try:
         config_path = _absolute_config_path(args.config)
         runtime = LoadRuntimeSettings(config_path)
-        if args.command != "validate-config":
-            from trader.bootstrap import PrepareRuntimeDisk
+        from trader.bootstrap import PrepareRuntimeDisk, ValidateConfiguration
 
-            runtime = PrepareRuntimeDisk(runtime, choose=args.command in ("sync", "train"))
+        if args.command == "validate-config":
+            from trader.entrypoints.configuration_report import ProjectValidatedConfiguration
+
+            configuration = ValidateConfiguration(runtime, profile_override)
+            print(json.dumps(ProjectValidatedConfiguration(configuration), ensure_ascii=False, sort_keys=True, indent=2))
+            return 0
+        runtime = PrepareRuntimeDisk(runtime, choose=False)
     except (OSError, RuntimeError, ValueError) as exc:
         print(json.dumps({"status": "failed", "failure": "configuration_invalid", "category": type(exc).__name__}, indent=2, ensure_ascii=False))
         return 2
-    profile_override = cast(ScoringProfileId | None, args.profile)
-    if args.command == "history-automation-status":
+    if args.command == "training-reminder-status":
         from trader.bootstrap import ExecuteTrainingReminderStatus
         from trader.training.entrypoints.training_reminder_projection import ProjectTrainingReminderStatus
 
@@ -167,11 +171,11 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
         from trader.bootstrap import BuildSqlitePolicy
 
         return _run_training_command(args, config_path, runtime, parser, sqlite_policy=BuildSqlitePolicy(runtime))
-    return _run_config_validation(runtime, profile_override)
+    parser.error("unsupported command")
 
 
 def _run_sync(args: argparse.Namespace, progress: SyncProgress) -> int:
-    from trader.bootstrap import ExecuteSync, PrepareRuntimeDisk
+    from trader.bootstrap import ExecuteSync, PrepareRuntimeDisk, ValidateConfiguration
     from trader.download.entrypoints.company_result_feedback import FormatCompanySyncSummary
     from trader.download.entrypoints.sync_projection import ProjectSyncResult, ProjectSyncTerminalState
 
@@ -182,7 +186,7 @@ def _run_sync(args: argparse.Namespace, progress: SyncProgress) -> int:
         config_path = _absolute_config_path(args.config)
         runtime = LoadRuntimeSettings(config_path)
         runtime = PrepareRuntimeDisk(runtime, choose=True, report_line=progress.report_disk)
-        _configuration_payload(runtime, None)
+        ValidateConfiguration(runtime, None)
     except (OSError, RuntimeError, ValueError) as exc:
         progress(ProgressMessage((ProgressField(f"原因 {type(exc).__name__}"),), task=task, state="失败", finished=True))
         if company_only:
@@ -244,14 +248,14 @@ def _report_sync_failure(result: SyncResult, progress: SyncProgress) -> None:
                 "其中包含 catalog.sqlite3、年度价格分区、封签及配套文件。然后重新运行 ./run.sh sync history。",
             )
         if task.task == "company" and task.reason == "CompanyDatabaseIncompatibleError":
-            store = task.incompatible_company_store
-            if store is CompanyDownloadStore.REQUEST_JOURNAL:
+            database_role = task.incompatible_company_database
+            if database_role is CompanyDatabaseRole.REQUEST_JOURNAL:
                 detail = "仅company/company_sync.sqlite3请求预算账本不兼容；保留已消费和未知请求记录，需核实处理，不作为资料删除重下范围。"
-            elif store is not None:
+            elif database_role is not None:
                 path = {
-                    CompanyDownloadStore.SOURCES: "company/company_sources.sqlite3",
-                    CompanyDownloadStore.FACTS: "company/company_published.sqlite3",
-                }[store]
+                    CompanyDatabaseRole.SOURCES: "company/company_sources.sqlite3",
+                    CompanyDatabaseRole.FACTS: "company/company_published.sqlite3",
+                }[database_role]
                 detail = f"已确认不兼容的下载资料为{path}。正式库和来源库需要配套备份核验，请保留原件、模型、冻结记录和请求预算。"
             else:
                 detail = "具体不兼容资料范围尚未核实，不执行删除或重建。"
@@ -259,7 +263,7 @@ def _report_sync_failure(result: SyncResult, progress: SyncProgress) -> None:
                 "sync company: 公司下载存储结构不兼容，本次未启动公司资料写入。"
                 + detail + "程序不会自动删除或迁移。",
             )
-        if task.task == "company" and task.reason == "CompanySyncRebuildActiveRound":
+        if task.task == "company" and task.reason == CompanySyncRoundRebuildBlocked.category:
             _sync_error(progress, "sync company: 原请求轮次还不能结束，空库重下载暂缓。请保留请求账本和原资料备份，待可恢复或进入允许的新日期范围后重试。")
         if task.task == "company" and task.reason == "ProcessLockError":
             _sync_error(progress,
@@ -302,14 +306,14 @@ def _run_training_command(
 def _run_train(args: argparse.Namespace) -> int:
     from trader.training.application.error_diagnostics import CaptureTrainingError
     from trader.training.entrypoints.report_output import ProjectTrainingError, TrainingErrorSummary, TrainingReportOutput
-    from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
+    from trader.training.entrypoints.training_progress import TrainingProgressPrinter
 
     try:
         with TrainingReportOutput(json_output=args.json, diagnostics=args.diagnostics) as reports:
             return _execute_train(args, reports)
     except (OSError, ValueError) as exc:
         diagnostic = CaptureTrainingError(exc)
-        output = StderrTomorrowTrainingProgress(command_label="train")
+        output = TrainingProgressPrinter(command_label="train")
         output.report_notice("诊断输出", TrainingErrorSummary(diagnostic), state="失败")
         if args.json:
             print(json.dumps({"status": "failed", "failure": "training_report_output_failed",
@@ -321,10 +325,10 @@ def _execute_train(args: argparse.Namespace, reports: TrainingReportOutput) -> i
     from trader.training.application.error_diagnostics import CaptureTrainingError
     from trader.training.entrypoints.report_output import ProjectTrainingError, TrainingErrorSummary
     from trader.bootstrap import PrepareRuntimeDisk
-    from trader.training.entrypoints.tomorrow_training_progress import ReadTrainingProgressLayout, StderrTomorrowTrainingProgress
+    from trader.training.entrypoints.training_progress import ReadTrainingProgressLayout, TrainingProgressPrinter
 
     inherited = os.environ.pop("TRADER_COMMAND_STARTED_MONOTONIC", None)
-    output = StderrTomorrowTrainingProgress(
+    output = TrainingProgressPrinter(
         command_label="train", started_at=float(inherited) if inherited is not None else None,
         layout=ReadTrainingProgressLayout(),
     )
@@ -366,7 +370,7 @@ def _run_selected_training(
     profiles: tuple[ScoringProfileId, ...],
     *,
     strategy: Strategy | None,
-    output: StderrTomorrowTrainingProgress,
+    output: TrainingProgressPrinter,
     reports: TrainingReportOutput,
 ) -> int:
     from trader.bootstrap import ExecuteSelectedTraining
@@ -393,87 +397,6 @@ def _run_selected_training(
 
 def _shanghai_now() -> datetime:
     return datetime.now(ZoneInfo("Asia/Shanghai"))
-
-
-def _run_config_validation(runtime: RuntimeSettings, profile_override: ScoringProfileId | None) -> int:
-    print(json.dumps(_configuration_payload(runtime, profile_override), ensure_ascii=False, sort_keys=True, indent=2))
-    return 0
-
-
-def _configuration_payload(runtime: RuntimeSettings, profile_override: ScoringProfileId | None) -> dict[str, object]:
-    strategy = LoadStrategySettings(
-        runtime.strategy_config_path,
-        scoring_profile=profile_override,
-    )
-    watchlist = LoadLongWatchlist(runtime.long_watchlist_path)
-    from trader.download.infra.download_settings import LoadDownloadFailureConfiguration, LoadHistorySyncConfiguration
-    from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
-    from trader.training.infra.research_settings import LoadEvaluationCostScenarios
-    from trader.training.infra.learned_rank_settings import LoadV1TrainingSettings
-    from trader.training.infra.research_settings import LoadResearchSettings
-    from trader.training.infra.tcn.configuration import TcnConfigurationDocument
-    from trader.training.infra.tcn.settings import TcnFittingParameters
-    from trader.training.infra.training_settings import LoadProfileTrainingSettings
-
-    config_dir = runtime.config_path.parent
-    download = LoadHistorySyncConfiguration(runtime.project_root, runtime.data_paths)
-    failure = LoadDownloadFailureConfiguration(runtime.project_root)
-    training_v2 = LoadProfileTrainingSettings(runtime.project_root, "v2")
-    training_v3 = LoadProfileTrainingSettings(runtime.project_root, "v3")
-    training_v1 = LoadV1TrainingSettings(runtime.project_root)
-    research = LoadResearchSettings(config_dir)
-    cost = LoadExecutionCostPolicy(config_dir)
-    cost_scenarios = LoadEvaluationCostScenarios(config_dir)
-    fit_dates = {"v1": training_v1.fit_dates, "v2": training_v2.fit_dates, "v3": training_v3.fit_dates}
-    training_v5 = LoadProfileTrainingSettings(runtime.project_root, "v5")
-    if not isinstance(training_v5.fitting, TcnFittingParameters):
-        raise ValueError("V5 training requires TCN parameters")
-    fit_dates["v5"] = training_v5.fit_dates
-    return {
-        "status": "ok",
-        "runtime_version": runtime.config_version,
-        "strategy_version": strategy.strategy_version,
-        "scoring_profile": strategy.scoring_profile,
-        "prediction_targets": {
-            profile: {
-                "tomorrow_bps": strategy.prediction_targets.for_profile(profile, Strategy.TOMORROW).threshold_bps,
-                "d25_bps": strategy.prediction_targets.for_profile(profile, Strategy.D25).threshold_bps,
-            }
-            for profile in SCORING_PROFILE_IDS
-        },
-        "watchlist_version": watchlist.watchlist_version,
-        "runtime_dir": str(runtime.runtime_dir),
-        "data_dir": str(runtime.data_paths.root),
-        "shutdown_timeout_seconds": runtime.pipeline.shutdown_timeout_seconds,
-        "history_sessions": download.sessions,
-        "history_write_batches": {
-            "maximum_codes": download.write_batches.maximum_codes,
-            "maximum_cells": download.write_batches.maximum_cells,
-        },
-        "history_tencent_timeout_seconds": download.tencent_timeout_seconds,
-        "history_tencent_retries": download.tencent_retries,
-        "download_failure_diagnostics": {"retention_limit": failure.retention_limit, "query_limit": failure.query_limit},
-        "sqlite_policy": {
-            "hdd": {
-                "connection_timeout_seconds": runtime.sqlite_policy.hdd.connection_timeout_seconds,
-                "read_window_rows": runtime.sqlite_policy.hdd.read_window_rows,
-                "transaction_batch_rows": runtime.sqlite_policy.hdd.transaction_batch_rows,
-                "checkpoint_mode": runtime.sqlite_policy.hdd.checkpoint_mode,
-            },
-            "ssd": {
-                "connection_timeout_seconds": runtime.sqlite_policy.ssd.connection_timeout_seconds,
-                "read_window_rows": runtime.sqlite_policy.ssd.read_window_rows,
-                "transaction_batch_rows": runtime.sqlite_policy.ssd.transaction_batch_rows,
-                "checkpoint_mode": runtime.sqlite_policy.ssd.checkpoint_mode,
-            },
-        },
-        "training_fit_dates": fit_dates,
-        "v5_training_configuration": TcnConfigurationDocument(training_v5.fit_dates, training_v5.fitting),
-        "research_arms": len(research.ablation_arms),
-        "terminal_holdout_sessions": research.terminal_holdout_sessions,
-        "online_round_trip_base_rate": cost.round_trip_base_rate,
-        "evaluation_round_trip_bps": [round(item.round_trip_return * 10_000) for item in cost_scenarios],
-    }
 
 
 def _run_eligibility_list(runtime: RuntimeSettings, *, as_of: str | None, sqlite_policy: SqliteIoPolicy) -> int:

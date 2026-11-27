@@ -81,6 +81,7 @@ from trader.recommendation.infra.settings.loading import (
     LoadLongWatchlist, LoadPredictionTargets, LoadProfileStrategySettings, LoadStrategySettings,
 )
 from trader.recommendation.infra.settings.models import LongWatchlist, StrategySettings
+from trader.entrypoints.configuration_report import ValidatedConfiguration
 from trader.infra.settings import LoadRuntimeSettings, RuntimeSettings
 from trader.infra.disk_probe import DiskProbe
 from trader.infra.disk_runtime import ConfigureDisk
@@ -380,6 +381,38 @@ def ExecuteSelectedTraining(
             industry_reader, partial(LoadProfileTrainingSettings, runtime.project_root), lambda: cpu_budget.profile_threads,
         ).read,
         memory_capacity_bytes=memory_budget.capacity_bytes, started_at=started_at, terminal_columns=terminal_columns, report_output=report_output,
+    )
+
+
+def ValidateConfiguration(runtime: RuntimeSettings, profile: ScoringProfileId | None) -> ValidatedConfiguration:
+    from trader.download.infra.download_settings import LoadDownloadFailureConfiguration
+    from trader.training.infra.learned_rank_settings import LoadV1TrainingSettings
+    from trader.training.infra.research_settings import LoadEvaluationCostScenarios, LoadResearchSettings
+    from trader.training.infra.tcn.settings import TcnFittingParameters
+
+    root = runtime.project_root
+    config_dir = runtime.config_path.parent
+    v5 = LoadProfileTrainingSettings(root, "v5")
+    if not isinstance(v5.fitting, TcnFittingParameters):
+        raise ValueError("V5 training requires TCN parameters")
+    research = LoadResearchSettings(config_dir)
+    return ValidatedConfiguration(
+        runtime=runtime,
+        strategy=LoadStrategySettings(runtime.strategy_config_path, scoring_profile=profile),
+        watchlist_version=LoadLongWatchlist(runtime.long_watchlist_path).watchlist_version,
+        download=LoadHistorySyncConfiguration(root, runtime.data_paths),
+        download_failure=LoadDownloadFailureConfiguration(root),
+        fit_dates=(
+            ("v1", LoadV1TrainingSettings(root).fit_dates),
+            ("v2", LoadProfileTrainingSettings(root, "v2").fit_dates),
+            ("v3", LoadProfileTrainingSettings(root, "v3").fit_dates),
+            ("v5", v5.fit_dates),
+        ),
+        tcn=v5.fitting,
+        research_arm_count=len(research.ablation_arms),
+        terminal_holdout_sessions=research.terminal_holdout_sessions,
+        round_trip_base_rate=LoadExecutionCostPolicy(config_dir).round_trip_base_rate,
+        evaluation_round_trip_bps=tuple(round(item.round_trip_return * 10_000) for item in LoadEvaluationCostScenarios(config_dir)),
     )
 
 
@@ -1328,7 +1361,7 @@ def ExecuteCompanySync(
     from trader.download.infra.company_normalized_index import SQLiteCompanyNormalizedIndex
     from trader.download.infra.company_raw_files import CompanyRawFiles
     from trader.download.infra.company_structured_source import EastmoneyCompanySource
-    from trader.download.infra.company_sync_inputs import SQLiteCompanySyncInputStore
+    from trader.download.infra.company_sync_inputs import SQLiteCompanySyncInputs
     from trader.download.infra.company_sync_io import CompanySyncIoBudget
     from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
     from trader.download.infra.company_sync_runtime import CompanySyncRuntime
@@ -1388,14 +1421,14 @@ def ExecuteCompanySync(
             cancel_requested=stopped, io_budget=io_budget)
 
         def clean_material() -> None:
-            active = journal.active()
-            if active is None:
+            unfinished_round = journal.unfinished_round()
+            if unfinished_round is None:
                 raise ValueError("company_sync_cleanup_scope_missing")
-            material.clean_material(active.scope.cutoff)
+            material.clean_material(unfinished_round.scope.cutoff)
 
         normalized = SQLiteCompanyNormalizedIndex(paths.company_sources, facts, event_policy=event_policy,
             sqlite_policy=sqlite_policy, clean_material=clean_material, cancel_requested=stopped, io_budget=io_budget)
-        inputs = SQLiteCompanySyncInputStore(paths.company_sources, sqlite_policy=sqlite_policy, io_budget=io_budget)
+        inputs = SQLiteCompanySyncInputs(paths.company_sources, sqlite_policy=sqlite_policy, io_budget=io_budget)
         transport = resources.enter_context(OpenExternalHttp(authorize=journal.authorize_request,
             observe=journal.observe_attempt, inspect_response=journal.retain_directory_response, deadline_limit=source_deadline))
         structured = EastmoneyCompanySource(transport, monotonic=time.monotonic,

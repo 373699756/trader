@@ -33,7 +33,7 @@ from trader.download.infra.company_field_publication import CompanyFieldProofRul
 from trader.download.infra.company_field_recovery import ReadCompanyFieldRecovery, ReadRequiredCompanyMaterialDependencies
 from trader.download.infra.company_material_index import SQLiteCompanyMaterialIndex
 from trader.download.infra.company_raw_files import CompanyRawCapacityError
-from trader.download.infra.company_sync_inputs import CompanyRecoveredInput, SQLiteCompanySyncInputStore
+from trader.download.infra.company_sync_inputs import CompanyRecoveredInput, SQLiteCompanySyncInputs
 from trader.download.infra.company_sync_io import CompanySyncIoBudget
 from trader.infra.http_contracts import HttpResponse
 from trader.infra.serialization.canonical_codec import CanonicalDigest
@@ -45,7 +45,7 @@ from trader.infra.sqlite_policy import SqliteIoPolicy
 class CompanyRatioProducer:
     def __init__(
         self,
-        inputs: SQLiteCompanySyncInputStore,
+        inputs: SQLiteCompanySyncInputs,
         source: CompanyRatioSource,
         query: StructuredCompanyQuery,
         *,
@@ -121,7 +121,7 @@ class _NewDocument:
 
 
 class CompanyAnnouncementProducer:
-    def __init__(self, inputs: SQLiteCompanySyncInputStore, material: SQLiteCompanyMaterialIndex,
+    def __init__(self, inputs: SQLiteCompanySyncInputs, material: SQLiteCompanyMaterialIndex,
         source: CompanyOfficialDocumentSource, scope: CompanySyncRoundScope, *, sqlite_policy: SqliteIoPolicy, extraction_hash: bytes,
         io_budget: CompanySyncIoBudget | None = None, current_codes: tuple[str, ...] | None = None,
         configuration: CompanySyncConfiguration | None = None, policies: CompanyDocumentPolicies | None = None,

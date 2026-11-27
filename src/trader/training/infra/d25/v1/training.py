@@ -26,9 +26,8 @@ from trader.training.application import learned_rank_training
 from trader.training.application.resources import (
     TrainingCpuAdmission, TrainingExecutionObserver, TrainingMemoryAdmission, TrainingSampleSettings,
 )
-from trader.training.application.tomorrow_training import (
-    TOMORROW_TRAINING_COMPUTE_THREADS, TomorrowTrainingProgressPort,
-)
+from trader.training.application.tomorrow_training import TOMORROW_TRAINING_COMPUTE_THREADS
+from trader.training.application.training_progress import TrainingProgressPort
 from trader.training.domain.final_fit import FINAL_FIT_CONTRACT, FinalFitDatePlan
 from trader.training.domain.v1.learned_rank import (
     LEARNED_RANK_CONTRACT, LearnedRankDateSplit, LearnedRankFinalHead, LearnedRankFinalPair,
@@ -166,7 +165,7 @@ class LearnedRankTrainingAdapter:
     sample_settings: TrainingSampleSettings
     history_root: Path
     settings: V1TrainingSettings
-    progress: TomorrowTrainingProgressPort | None
+    progress: TrainingProgressPort | None
     cancel_requested: Callable[[], bool] | None
     aligned_rows: Iterator[HistoryTrainingRow] | None
     memory_admission: TrainingMemoryAdmission | None
@@ -208,7 +207,7 @@ class _PinnedLearnedRankSession(_LearnedRankInspection):
     fitted_models: _LearnedRankFittedModels = field(default_factory=_LearnedRankFittedModels, init=False)
 
     @property
-    def progress(self) -> TomorrowTrainingProgressPort | None:
+    def progress(self) -> TrainingProgressPort | None:
         return self.adapter.progress
 
     def date_upper_bounds(self, plan: LearnedRankTrainingPlan) -> tuple[TrainingDateCoverage, ...]:
@@ -391,7 +390,7 @@ def RunV1Training(
     sample_settings: TrainingSampleSettings,
     history_root: Path,
     settings: V1TrainingSettings,
-    progress: TomorrowTrainingProgressPort | None = None,
+    progress: TrainingProgressPort | None = None,
     cancel_requested: Callable[[], bool] | None = None,
     aligned_rows: Iterator[HistoryTrainingRow] | None = None,
     memory_admission: TrainingMemoryAdmission | None = None,

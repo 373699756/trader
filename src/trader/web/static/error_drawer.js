@@ -6,6 +6,7 @@
   function createErrorDrawer(els, beforeOpen, onVisibilityChange) {
     let issues = [];
     let context = [];
+    let companySource = null;
     let returnFocus = null;
     const notify = () => {
       if (typeof onVisibilityChange === "function") onVisibilityChange();
@@ -23,7 +24,7 @@
       if (els.errorDetailsButton.disabled) return;
       if (typeof beforeOpen === "function") beforeOpen();
       returnFocus = document.activeElement;
-      els.observationErrorContent.innerHTML = observationSummary(issues, context);
+      els.observationErrorContent.innerHTML = observationSummary(issues, context, companySource);
       els.observationDrawer.classList.add("is-open");
       els.observationDrawer.setAttribute("aria-hidden", "false");
       els.errorDetailsButton.setAttribute("aria-expanded", "true");
@@ -36,11 +37,12 @@
     return {
       close,
       isOpen: () => els.observationDrawer.classList.contains("is-open"),
-      setIssues: (nextIssues, nextContext) => {
+      setIssues: (nextIssues, nextContext, nextCompanySource) => {
+        companySource = nextCompanySource;
         issues = nextIssues;
         context = nextContext;
         if (!els.observationDrawer.classList.contains("is-open")) return;
-        els.observationErrorContent.innerHTML = observationSummary(issues, context);
+        els.observationErrorContent.innerHTML = observationSummary(issues, context, companySource);
       },
     };
   }

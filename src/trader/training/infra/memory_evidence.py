@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass
 
 from trader.infra.serialization.fields import IsSha256Text
-from trader.training.application.tomorrow_training import TomorrowTrainingStage
+from trader.training.application.training_progress import TrainingStage
 
 _TRAINING_STAGES: frozenset[str] = frozenset(
     (
@@ -30,7 +30,7 @@ _TRAINING_STAGES: frozenset[str] = frozenset(
 
 @dataclass(frozen=True)
 class TomorrowTrainingStageDuration:
-    stage: TomorrowTrainingStage
+    stage: TrainingStage
     duration_ms: float
 
     def __post_init__(self) -> None:

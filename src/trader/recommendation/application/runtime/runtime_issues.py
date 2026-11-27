@@ -84,18 +84,18 @@ class RuntimeIssueIndex:
         for key, issue in tuple(self._recent_errors.items()):
             if issue.recovery_status != "active":
                 continue
-            if code is not None and (issue.code != code or issue.strategy is not strategy):
+            if code is not None and issue.code != code:
                 continue
-            if strategy is not None and issue.strategy is not strategy:
+            if issue.strategy is not strategy:
                 continue
             if stages is not None and issue.stage not in stages:
                 continue
             if task is not None and issue.task is not task:
                 continue
             self._recent_errors[key] = replace(issue, recovery_status="recovered", resolved_at=resolved_at)
-        if strategy is None and stages is not None:
+        if strategy is None:
             self._system_error_code = self._latest_unresolved_code(None)
-        elif strategy is not None:
+        else:
             unresolved_code = self._latest_unresolved_code(strategy)
             if unresolved_code:
                 self._strategy_error_codes[strategy] = unresolved_code

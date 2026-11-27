@@ -12,7 +12,7 @@ from tests.helpers.shared.reference_fixtures import PreparedFixture
 from trader.download.application.prepare_reference import ReferenceDatabaseIncompatibleError
 from trader.download.application.sync_data import SyncData, SyncDatabaseError, SyncResult, SyncTaskResult
 from trader.download.entrypoints.sync_progress import SyncProgress
-from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDownloadStore
+from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDatabaseRole
 from trader.download.domain.company_sync import COMPANY_SYNC_FAMILIES, CompanyLatestSnapshot, CompanySyncFamily
 from trader.download.entrypoints.company_result_feedback import FormatCompanySyncSummary
 from tests.helpers.download.company_round import CompanySyncFamilyFixture, CompanySyncRoundFixture
@@ -38,7 +38,7 @@ def test_latest_fields_completion_reports_source_nulls_separately_from_history()
     assert projected["latest"]["ready"] and not projected["business_complete"]
 
 
-@pytest.mark.parametrize(("arguments", "expected_backfill"), [(("company",), False), (("compnay", "fill"), True)])
+@pytest.mark.parametrize(("arguments", "expected_backfill"), [(("company",), False), (("company", "fill"), True)])
 def test_company_command_selects_annual_backfill_only_on_request(tmp_path, monkeypatch, arguments, expected_backfill):
     from tests.helpers.shared.configuration import RuntimeSettingsFixture
     from trader.entrypoints import cli
@@ -50,7 +50,7 @@ def test_company_command_selects_annual_backfill_only_on_request(tmp_path, monke
         return SyncResult((SyncTaskResult("company", "completed"),))
 
     monkeypatch.setattr(cli, "LoadRuntimeSettings", lambda _path: RuntimeSettingsFixture())
-    monkeypatch.setattr(cli, "_configuration_payload", lambda *_args: {})
+    monkeypatch.setattr("trader.bootstrap.ValidateConfiguration", lambda *_args: {})
     monkeypatch.setattr("trader.bootstrap.PrepareRuntimeDisk", lambda settings, **_kwargs: settings)
     monkeypatch.setattr("trader.bootstrap.ExecuteSync", execute)
     assert cli.Main(["--config", str(tmp_path / "runtime.json"), "sync", *arguments]) == 0
@@ -284,7 +284,7 @@ def test_company_terminal_reason_reaches_projection_and_cli(
 
     runtime = RuntimeSettingsFixture()
     monkeypatch.setattr(cli, "LoadRuntimeSettings", lambda _: runtime)
-    monkeypatch.setattr(cli, "_configuration_payload", lambda *_: {})
+    monkeypatch.setattr("trader.bootstrap.ValidateConfiguration", lambda *_: {})
     monkeypatch.setattr("trader.bootstrap.PrepareRuntimeDisk", lambda settings, **_: settings)
     monkeypatch.setattr("trader.bootstrap.ExecuteSync", lambda *_, **__: result)
     messages = []
@@ -304,21 +304,21 @@ def test_company_terminal_reason_reaches_projection_and_cli(
     assert payload["tasks"][0]["paused"] is (cancelled or paused)
 
 
-@pytest.mark.parametrize("store,path", (
-    (CompanyDownloadStore.SOURCES, "company/company_sources.sqlite3"),
-    (CompanyDownloadStore.FACTS, "company/company_published.sqlite3"),
-    (CompanyDownloadStore.REQUEST_JOURNAL, "company/company_sync.sqlite3"),
+@pytest.mark.parametrize("database_role,path", (
+    (CompanyDatabaseRole.SOURCES, "company/company_sources.sqlite3"),
+    (CompanyDatabaseRole.FACTS, "company/company_published.sqlite3"),
+    (CompanyDatabaseRole.REQUEST_JOURNAL, "company/company_sync.sqlite3"),
 ))
-def test_company_incompatible_database_is_a_failure_with_explicit_material_scope(tmp_path, monkeypatch, capsys, store, path):
+def test_company_incompatible_database_is_a_failure_with_explicit_material_scope(tmp_path, monkeypatch, capsys, database_role, path):
     def company(_):
-        raise CompanyDatabaseIncompatibleError(store)
+        raise CompanyDatabaseIncompatibleError(database_role)
 
     result = SyncData(
         lambda: PreparedFixture(_NOW), lambda _: _history(),
         company, lambda: False,
     ).execute("company")
     assert result.tasks[0].reason == "CompanyDatabaseIncompatibleError"
-    assert ProjectSyncResult(result)["tasks"][0]["incompatible_company_store"] == store.value
+    assert ProjectSyncResult(result)["tasks"][0]["incompatible_company_store"] == database_role.value
     _assert_cli_summary(tmp_path, monkeypatch, capsys, result, "failed", "失败", 1,
                         diagnostic=path)
 
@@ -339,7 +339,7 @@ def _assert_cli_summary(tmp_path, monkeypatch, capsys, result, status, state, ex
 
     runtime = RuntimeSettingsFixture()
     monkeypatch.setattr(cli, "LoadRuntimeSettings", lambda _path: runtime)
-    monkeypatch.setattr(cli, "_configuration_payload", lambda *_args: {})
+    monkeypatch.setattr("trader.bootstrap.ValidateConfiguration", lambda *_args: {})
     monkeypatch.setattr("trader.bootstrap.PrepareRuntimeDisk", lambda settings, **_kwargs: settings)
     monkeypatch.setattr("trader.bootstrap.ExecuteSync", lambda *_args, **_kwargs: result)
     messages = []
@@ -362,8 +362,8 @@ def _assert_cli_summary(tmp_path, monkeypatch, capsys, result, status, state, ex
         if task.history is not None:
             history = projected.pop("history")
             assert history["state"] == task.history.state and history["reason"] == task.history.reason
-        if task.incompatible_company_store is not None:
-            assert projected.pop("incompatible_company_store") == task.incompatible_company_store.value
+        if task.incompatible_company_database is not None:
+            assert projected.pop("incompatible_company_store") == task.incompatible_company_database.value
     assert payload == {
          "status": status, "failure": result.failure,
         "tasks": [{"task": task.task, "status": task.status, "reason": task.reason} for task in result.tasks],

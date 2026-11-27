@@ -177,8 +177,8 @@ def test_unlock_admits_exact_issuer_event_without_completing_the_window(tmp_path
     assert any((review.scope, review.reason_code, review.evidence_id) == ("unlock", "window_incomplete", "unlock") for review in fact.review_reasons)
     link, = reader.read_document_links(_SCOPE.codes).links
     assert link.link.evidence_id == "unlock" and link.link.body_checked
-    with SqliteSession(runtime.material.path) as storage:
-        assert storage.run("SELECT scope,reason_code FROM company_material_dependencies").require_one()[:] == ("unlock", "window_incomplete")
+    with SqliteSession(runtime.material.path) as connection:
+        assert connection.run("SELECT scope,reason_code FROM company_material_dependencies").require_one()[:] == ("unlock", "window_incomplete")
     head = reader.publication_identity()
     runtime._read_document = lambda digest: pytest.fail("proved_unlock_original_must_not_be_read_again")
     _run(runtime, transport)

@@ -44,7 +44,7 @@ def test_patience_ignores_tiny_improvements_but_keeps_best_weights_and_accumulat
 
 @pytest.mark.skipif(find_spec("torch") is None, reason="V5 optional CPU dependency")
 def test_training_restores_smallest_loss_weights_not_significant_anchor_or_last_epoch(monkeypatch):
-    from trader.training.application.tomorrow_training import TrainingFitDetail
+    from trader.training.application.training_progress import TrainingFitDetail
     from trader.training.infra.d25.v5.batch_cache import TcnBatchCache
     from trader.training.infra.d25.v5.utility_fitting import _TcnFitState, _TcnProgress
     from trader.training.infra.tcn.network import ConfigureTcnRuntime, TcnNetwork

@@ -6,7 +6,7 @@ from trader.training.application.resources import TrainingSampleSettings
 
 from pathlib import Path
 
-from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort
+from trader.training.application.training_progress import TrainingProgressPort
 from trader.training.infra.engine import ProfileTrainingRequest, RunRepackProfileTraining
 from trader.training.application.profile_training import TrainingRunResult
 from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
@@ -22,7 +22,7 @@ def RunRepackV3Training(
     sample_settings: TrainingSampleSettings,
     industry_snapshot: CurrentIndustrySnapshot,
     expected_history_snapshot_hash: str,
-    progress: TomorrowTrainingProgressPort | None = None, sqlite_policy: SqliteIoPolicy,
+    progress: TrainingProgressPort | None = None, sqlite_policy: SqliteIoPolicy,
 ) -> TrainingRunResult:
     return RunRepackProfileTraining(
         ProfileTrainingRequest(

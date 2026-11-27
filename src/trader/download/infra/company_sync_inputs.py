@@ -29,7 +29,7 @@ class CompanyRecoveredInput:
     body_hash: bytes
 
 
-class SQLiteCompanySyncInputStore:
+class SQLiteCompanySyncInputs:
     def __init__(self, path: Path, *, sqlite_policy: SqliteIoPolicy, io_budget: CompanySyncIoBudget | None = None) -> None:
         self.path, self._sqlite_policy = path, sqlite_policy
         self._io_budget = io_budget
@@ -309,4 +309,4 @@ def _annual_request(task: str) -> CompanyAnnualIncomeRequest:
     return CompanyAnnualIncomeRequest(code, tuple(date.fromisoformat(day) for day in days.split(",")))
 
 
-__all__ = ["CompanyRecoveredInput", "SQLiteCompanySyncInputStore"]
+__all__ = ["CompanyRecoveredInput", "SQLiteCompanySyncInputs"]

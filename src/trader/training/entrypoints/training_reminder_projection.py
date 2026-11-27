@@ -1,4 +1,4 @@
-"""Explicit JSON projections for history automation observability boundaries."""
+"""Public CLI fields for training due dates and reminders."""
 
 from __future__ import annotations
 

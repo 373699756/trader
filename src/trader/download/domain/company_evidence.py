@@ -23,7 +23,7 @@ DocumentRoute = Literal["standard", "ocr", "limits"]
 COMPANY_DOCUMENT_OCR_REQUIRED = "disclosure_document_ocr_required"
 
 
-class CompanyDownloadStore(str, Enum):
+class CompanyDatabaseRole(str, Enum):
     SOURCES = "sources"
     FACTS = "facts"
     REQUEST_JOURNAL = "request_journal"
@@ -32,11 +32,11 @@ class CompanyDownloadStore(str, Enum):
 class CompanyDatabaseIncompatibleError(ValueError):
     """The rejected store is explicit; request allowances are never a re-download target."""
 
-    def __init__(self, store: CompanyDownloadStore) -> None:
-        if not isinstance(store, CompanyDownloadStore):
+    def __init__(self, database_role: CompanyDatabaseRole) -> None:
+        if not isinstance(database_role, CompanyDatabaseRole):
             raise ValueError("company_download_store_invalid")
-        self.store = store
-        super().__init__(f"company_download_structure_incompatible:{store.value}")
+        self.database_role = database_role
+        super().__init__(f"company_download_structure_incompatible:{database_role.value}")
 
 
 @dataclass(frozen=True)
@@ -936,7 +936,7 @@ __all__ = [
     "DocumentRoute",
     "CompanyEvidenceInput",
     "CompanyDatabaseIncompatibleError",
-    "CompanyDownloadStore",
+    "CompanyDatabaseRole",
     "CompanyFinancial",
     "CompanyRatio",
     "Disclosure",

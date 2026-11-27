@@ -47,8 +47,8 @@ def _read_group(connection: SqliteConnection, scope: str) -> _Group:
         if (page != number or pages != declared or expected != total or task is None
             or pages != max(1, (total + 499) // 500) or raw != min(500, total - count)):
             raise CompanyInputValidationFailure("company_financial_group_count_mismatch")
-        stored_page, day, security = json.loads(task)
-        if stored_page != page or ((day is None) != (security is None)):
+        cursor_page, day, security = json.loads(task)
+        if cursor_page != page or ((day is None) != (security is None)):
             raise CompanyInputValidationFailure("company_financial_group_order_missing")
         last_key = (date.fromisoformat(day), security) if day is not None else None
         count += raw

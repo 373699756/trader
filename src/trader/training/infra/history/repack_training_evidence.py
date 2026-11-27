@@ -9,7 +9,7 @@ from typing import cast
 from trader.download.domain.history_control import HistoryRepackTrainingProof
 from trader.infra.serialization.canonical import ContentHash
 from trader.infra.serialization.fields import AsSequence
-from trader.training.application.tomorrow_training import TomorrowTrainingStage
+from trader.training.application.training_progress import TrainingStage
 from trader.training.infra.memory_evidence import TomorrowTrainingMemoryEvidence, TomorrowTrainingStageDuration
 from trader.training.infra.model_bundles.profile_publication import InspectPublishedProfileBundles
 from trader.training.infra.research.close_return.v3_contracts import V3_TRAINING_PROFILE
@@ -126,7 +126,7 @@ def _stage_durations(payload: dict[str, object]) -> tuple[TomorrowTrainingStageD
     for stage, value in durations.items():
         if not isinstance(value, (int, float)) or isinstance(value, bool):
             raise TypeError("history repack stage duration must be numeric")
-        decoded.append(TomorrowTrainingStageDuration(cast(TomorrowTrainingStage, stage), float(value)))
+        decoded.append(TomorrowTrainingStageDuration(cast(TrainingStage, stage), float(value)))
     return tuple(sorted(decoded, key=lambda item: item.stage))
 
 

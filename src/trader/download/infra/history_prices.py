@@ -21,7 +21,7 @@ from trader.download.domain.baostock_daily import BaoStockBoard, BaoStockCellSta
 from trader.download.domain.history_control import HistorySnapshotPartition
 from trader.download.domain.history_revision import HistoryRevision, HistoryTrainingPoint, HistoryTrainingRow
 from trader.download.domain.published_history import PublishedHistoryCell, ValidatePublishedHistoryCodes
-from trader.download.infra.history_partition_repack_state import HistoryPartitionRepackPartitionEvidence
+from trader.download.infra.history_partition_repack_state import HistoryRepackPartitionEvidence
 from trader.download.infra.history_revision_codec import (
     PublishedCellFromPriceColumns,
     RevisionColumnValues,
@@ -383,7 +383,7 @@ class HistoryPricePartition:
 
     def verify_published_year(
         self, references: tuple[HistorySnapshotPartition, ...], pending_sequence: int | None,
-        repack: HistoryPartitionRepackPartitionEvidence | None = None,
+        repack: HistoryRepackPartitionEvidence | None = None,
     ) -> None:
         """Bind the current annual seal to its latest published months before resuming writes."""
         try:

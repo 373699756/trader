@@ -16,7 +16,7 @@ from trader.recommendation.domain.publication.freeze_identity import CommittedFr
 from trader.recommendation.domain.publication.historical_freeze import HistoricalFreezeRecord
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
-from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords
+from trader.recommendation.infra.persistence.freeze_records import LoadSettlementRecord, SQLiteFreezeRecords
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,11 +94,11 @@ class StrategyFreezeRecords:
         return tuple(sorted({*profile, *grouped, *shared}))[:limit]
 
     def tomorrow_settlement_records(self, trade_date: date) -> tuple[CommittedFreezeRecord, ...]:
-        record = self.profile_records.load(Strategy.TOMORROW, trade_date)
+        record = LoadSettlementRecord(self.profile_records, Strategy.TOMORROW, trade_date)
         records = () if record is None else (record,)
         if not self.owns_legacy_settlement:
             return records
-        shared = self.shared_history.load(Strategy.TOMORROW, trade_date)
+        shared = LoadSettlementRecord(self.shared_history, Strategy.TOMORROW, trade_date)
         return records + (() if shared is None else (shared,)) + self.grouped_tomorrow.tomorrow_records(trade_date)
 
     def recover(self) -> FreezeRecordRecoverySummary:

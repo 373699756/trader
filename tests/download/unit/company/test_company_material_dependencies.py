@@ -341,24 +341,24 @@ def test_material_read_and_number_extraction_happen_after_read_connection_closes
     _stage(index, raw, item, "证券代码：600001\n公告编号：2026-19\n" + _DETAIL)
     with SqliteSession(index.path) as collected, SqliteTransaction(collected):
         collected.run("DELETE FROM document_announcement_numbers")
-    active = 0
+    running_workers = 0
 
     @contextmanager
     def connect():
-        nonlocal active
+        nonlocal running_workers
         with index._connect() as connection:
-            active += 1
+            running_workers += 1
             try:
                 yield connection
             finally:
-                active -= 1
+                running_workers -= 1
 
     original_read = index._documents.read
     original_extract = recovery.ExtractCompanyAnnouncementNumbers
     observed = []
 
     def read(digest, *, check=None):
-        assert active == 0
+        assert running_workers == 0
         with SqliteSession(index.path, SqliteConnectionOptions(timeout_seconds=0)) as writer:
             with SqliteTransaction(writer, immediate=True):
                 writer.run("SELECT 1")
@@ -366,7 +366,7 @@ def test_material_read_and_number_extraction_happen_after_read_connection_closes
         return original_read(digest, check=check)
 
     def extract(text):
-        assert active == 0
+        assert running_workers == 0
         observed.append("extract")
         return original_extract(text)
 

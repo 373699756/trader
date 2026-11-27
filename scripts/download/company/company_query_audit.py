@@ -267,10 +267,10 @@ def _audit_company_database(
     event_policy: CompanyEventPolicy | None,
 ) -> dict[str, object]:
     incompatible: list[str] = []
-    stores: tuple[tuple[Path, str, SqliteSchema], ...] = ((path, "sources", COMPANY_SOURCE_SCHEMA),)
+    databases: tuple[tuple[Path, str, SqliteSchema], ...] = ((path, "sources", COMPANY_SOURCE_SCHEMA),)
     if facts_path is not None:
-        stores += ((facts_path, "facts", COMPANY_FACTS_SCHEMA),)
-    for database_path, store, schema in stores:
+        databases += ((facts_path, "facts", COMPANY_FACTS_SCHEMA),)
+    for database_path, database_role, schema in databases:
         if cancel_requested():
             raise _CompanyDatabaseAuditBudgetExceeded("company_database_audit_budget_exhausted")
         with SqliteSession(database_path, SqliteConnectionOptions(read_only=True, timeout_seconds=5),
@@ -280,7 +280,7 @@ def _audit_company_database(
             except sqlite3.DatabaseError as exc:
                 if str(exc) != "sqlite_schema_unsupported":
                     raise
-                incompatible.append(store)
+                incompatible.append(database_role)
         if cancel_requested():
             raise _CompanyDatabaseAuditBudgetExceeded("company_database_audit_budget_exhausted")
     if incompatible:

@@ -330,8 +330,10 @@ class CompanySyncUnresolvedDirectoryRequest(RuntimeError):
     """An earlier frozen round already reserved this unconfirmed directory request."""
 
 
-class CompanySyncRebuildActiveRound(RuntimeError):
+class CompanySyncRoundRebuildBlocked(RuntimeError):
     """The earlier source scope is still needed to reconcile the request ledger."""
+
+    category = "CompanySyncRebuildActiveRound"
 
 
 class CompanySyncInterrupted(InterruptedError):

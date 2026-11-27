@@ -272,13 +272,17 @@
     return (STAGE_ALIASES[key] || [key]).includes(issue && issue.stage);
   }
 
-  function observationSummary(issues, context) {
+  function observationSummary(issues, context, companySource) {
     const runtime = issues.filter((issue) => !issue.fromSnapshot);
     const snapshot = issues.filter((issue) => issue.fromSnapshot);
     const sections = [];
     if (runtime.length) sections.push(`<h3>当前运行异常 · ${runtime.length}</h3>${runtimeErrorRows(runtime)}`);
     if (snapshot.length) sections.push(`<h3>所看快照的质量提示 · ${snapshot.length}</h3>${runtimeErrorRows(snapshot)}`);
     if (!issues.length) sections.push(runtimeErrorRows([]));
+    if (companySource) {
+      const count = (value) => Number.isSafeInteger(value) && value >= 0 ? String(value) : "未知";
+      sections.push(`<p>当前公司资料 · 已读取证券数 ${count(companySource.success_count)}，其中带来源问题的证券数 ${count(companySource.error_count)}</p>`);
+    }
     if (context.length) {
       const labels = context.map((code) => `<span title="${escapeHtml(code)}">${escapeHtml(SNAPSHOT_CONTEXT.get(code))}</span>`);
       sections.push(`<p>快照生成方式 · ${labels.join(" · ")}</p>`);

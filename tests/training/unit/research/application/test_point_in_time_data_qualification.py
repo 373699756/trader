@@ -84,7 +84,7 @@ def test_daily_evidence_count_mismatch_is_reported_instead_of_becoming_an_invali
     assert report.daily_archive.failed_codes == 0
 
 
-def test_complete_current_archive_does_not_prove_the_historical_daily_universe() -> None:
+def test_complete_current_snapshot_does_not_prove_the_historical_daily_universe() -> None:
     evidence = HistorySnapshotStatus(
         state="published",
         snapshot_hash="a" * 64,

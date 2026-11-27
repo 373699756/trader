@@ -1202,7 +1202,8 @@
       state.strategy,
       (code) => window.TraderRender.rememberDiagnostic(diagnostics.runtimeDiagnostics, code),
     );
-    errorDrawer.setIssues(health.visibleIssues, health.snapshotContext);
+    const company = state.date || state.payload?.historical ? null : statusPayload.market_data?.sources?.company_evidence;
+    errorDrawer.setIssues(health.visibleIssues, health.snapshotContext, company);
     return health;
   }
 

@@ -29,10 +29,10 @@ from trader.training.entrypoints.profile_training import (
     TrainingDateCoverageSummary,
     TrainingDateRangeSummary,
 )
-from trader.training.application.tomorrow_training import CancellableTrainingProgress
-from trader.training.entrypoints.tomorrow_training_progress import (
+from trader.training.application.training_progress import CancellableTrainingProgress
+from trader.training.entrypoints.training_progress import (
     ReadTrainingProgressLayout,
-    StderrTomorrowTrainingProgress,
+    TrainingProgressPrinter,
     TrainingProgressLayout,
 )
 from trader.training.entrypoints.training_timing_projection import ProjectTrainingExecutionTiming
@@ -120,11 +120,11 @@ def _run_selected_training(
     outcome_lock = Lock()
     reported_profiles: set[ScoringProfileId] = set()
     complete_outcome_summary = False
-    outputs: tuple[StderrTomorrowTrainingProgress, ...] = ()
+    outputs: tuple[TrainingProgressPrinter, ...] = ()
     shutdown_failure: str | None = None
     shutdown_diagnostic: TrainingErrorDiagnostic | None = None
     layout = ReadTrainingProgressLayout() if terminal_columns is None else TrainingProgressLayout(terminal_columns)
-    command_output = StderrTomorrowTrainingProgress(
+    command_output = TrainingProgressPrinter(
         command_label="train", started_at=started_at, start_heartbeat=False, layout=layout,
     )
     command_output.report_notice("资源预检", (
@@ -139,7 +139,7 @@ def _run_selected_training(
             executor.start()
         with ExitStack() as scope:
             outputs = tuple(
-                scope.enter_context(StderrTomorrowTrainingProgress(
+                scope.enter_context(TrainingProgressPrinter(
                     command_label=f"train·{profile.upper()}", started_at=command_output.started_at,
                     start_heartbeat=True, cancellation=cancelled,
                     layout=layout,
@@ -475,7 +475,7 @@ def _project_outcome(outcome: SelectedTrainingOutcome[SelectedProfileResult]) ->
     return payload
 
 
-def _report_issues(outcome: SelectedTrainingOutcome[SelectedProfileResult], output: StderrTomorrowTrainingProgress) -> None:
+def _report_issues(outcome: SelectedTrainingOutcome[SelectedProfileResult], output: TrainingProgressPrinter) -> None:
     issues = (*outcome.delivery_issues, *(outcome.result.post_commit_issues if outcome.result is not None else ()))
     for issue in issues:
         details = TrainingErrorSummary(issue.diagnostic) if issue.diagnostic is not None else issue.error_type

@@ -8,7 +8,7 @@ from tests.helpers.shared.configuration import SqlitePolicyFixture
 from trader.infra.sqlite_connection import SqliteSession
 
 
-def test_incompatible_stores_are_projected_without_scanning_or_modifying_them(tmp_path, monkeypatch):
+def test_incompatible_databases_are_projected_without_scanning_or_modifying_them(tmp_path, monkeypatch):
     from scripts.download.company import company_query_audit
 
     collection, formal = tmp_path / "collection.sqlite3", tmp_path / "facts.sqlite3"

@@ -266,7 +266,7 @@ def test_worker_reported_cancellation_stops_remaining_selected_commands(return_c
         return DiagnosticResult(command.name, return_code, 1.0, {"status": "cancelled"}, None)
 
     report = RunDiagnostics(
-        "snapshot", (DiagnosticCommand("configuration", (), 1), DiagnosticCommand("history_maintenance", (), 1, requires_success=("configuration",))),
+        "snapshot", (DiagnosticCommand("configuration", (), 1), DiagnosticCommand("training_reminder", (), 1, requires_success=("configuration",))),
         runner=runner,
     )
     assert calls == ["configuration"]
@@ -358,7 +358,7 @@ def test_invalid_configuration_skips_the_dependent_snapshot_checks(status: str) 
         return DiagnosticResult(command.name, 0, 1, {"status": status}, None)
 
     report = RunDiagnostics(
-        "snapshot", (DiagnosticCommand("configuration", (), 1), DiagnosticCommand("history_maintenance", (), 1, requires_success=("configuration",))),
+        "snapshot", (DiagnosticCommand("configuration", (), 1), DiagnosticCommand("training_reminder", (), 1, requires_success=("configuration",))),
         runner=runner,
     )
     assert [check["status"] for check in report["checks"]] == [status, "skipped"]

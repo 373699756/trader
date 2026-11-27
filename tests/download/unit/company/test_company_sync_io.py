@@ -12,8 +12,8 @@ from trader.infra.sqlite_connection import SqliteConnectionOptions
 
 def test_expired_budget_does_not_create_database_and_remaining_timeout_is_bounded(tmp_path):
     policy = SqlitePolicyFixture()
-    active = CompanySyncIoBudget(deadline=1, monotonic=lambda: 0.75, cancel_requested=lambda: False)
-    assert active.remaining_policy(policy).connection_timeout_seconds == 0.25
+    budget = CompanySyncIoBudget(deadline=1, monotonic=lambda: 0.75, cancel_requested=lambda: False)
+    assert budget.remaining_policy(policy).connection_timeout_seconds == 0.25
     expired = CompanySyncIoBudget(deadline=1, monotonic=lambda: 1, cancel_requested=lambda: False)
     target = tmp_path / "never-opened.sqlite3"
     with pytest.raises(CompanySyncInterrupted), expired.session(target, SqliteConnectionOptions(), sqlite_policy=policy):

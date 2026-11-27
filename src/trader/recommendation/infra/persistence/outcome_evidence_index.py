@@ -26,6 +26,7 @@ from trader.infra.sqlite_connection import (
 )
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import OutcomeTierSummary, TargetOutcomeView
 from trader.recommendation.application.ports.freeze_records import FreezeRecordPort
+from trader.recommendation.infra.persistence.freeze_records import LoadSettlementRecord
 from trader.recommendation.application.ports.outcomes import OutcomeEvidenceConflictError
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.recommendation.domain.outcomes.models import (
@@ -179,7 +180,7 @@ class SQLiteOutcomeEvidenceIndex:
         targets: list[OutcomeTarget] = []
         for strategy in (Strategy.TOMORROW, Strategy.D25):
             for trade_date in reversed(self._freezes.list_dates(strategy, limit=31)):
-                record = self._freezes.load(strategy, trade_date)
+                record = LoadSettlementRecord(self._freezes, strategy, trade_date)
                 if record is None:
                     continue
                 if ParsePredictionTargetIdentity(dict(record.freeze.input_versions).get("prediction_target")) is not None:
@@ -242,7 +243,7 @@ class SQLiteOutcomeEvidenceIndex:
         return self._profile_records(Strategy.TOMORROW, trade_date)
 
     def _profile_records(self, strategy: Strategy, trade_date: date) -> tuple[CommittedFreezeRecord, ...]:
-        record = self._freezes.load(strategy, trade_date)
+        record = LoadSettlementRecord(self._freezes, strategy, trade_date)
         return () if record is None else (record,)
 
     def _unsettled_prediction_targets(self, record: CommittedFreezeRecord) -> tuple[OutcomeTarget, ...]:

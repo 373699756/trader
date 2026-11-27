@@ -9,10 +9,10 @@ from tests.download.component.company.test_company_sync_round import _SCOPE
 from tests.helpers.download.configuration import CompanyEventPolicyFixture
 from tests.helpers.shared.configuration import SqlitePolicyFixture
 from trader.download.application.company_financial_producer import BuildCompanyFinancialRoundQuery
-from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDownloadStore, CompanyInputValidationFailure, Disclosure, DisclosurePage, DisclosurePartition, DisclosureQuery, StructuredCompanyPage, StructuredCompanyQuery
+from trader.download.domain.company_evidence import CompanyDatabaseIncompatibleError, CompanyDatabaseRole, CompanyInputValidationFailure, Disclosure, DisclosurePage, DisclosurePartition, DisclosureQuery, StructuredCompanyPage, StructuredCompanyQuery
 from trader.download.domain.company_financial_admission import CompanyFinancialRevisionProof
 from trader.download.domain.company_source_records import CompanyFinancialSourcePage
-from trader.download.domain.company_sync import CompanySyncBudget, CompanySyncFamily, CompanySyncPhasePlan, CompanySyncPhaseState, CompanySyncRebuildActiveRound, CompanySyncStepResult
+from trader.download.domain.company_sync import CompanySyncBudget, CompanySyncFamily, CompanySyncPhasePlan, CompanySyncPhaseState, CompanySyncRoundRebuildBlocked, CompanySyncStepResult
 from trader.download.infra.company_disclosure_source import CNINFO_DIRECTORY_URL
 from trader.download.infra.company_document_files import CompanyDocumentFiles
 from trader.download.infra.company_fact_rows import CompanyFactRowCache, ReadCompanyFactRows
@@ -22,7 +22,7 @@ from trader.download.infra.company_field_publication import CompanyFieldProofRul
 from trader.download.infra.company_financial_observations import ReadCompanyFinancialObservations
 from trader.download.infra.company_material_index import SQLiteCompanyMaterialIndex
 from trader.download.infra.company_normalized_index import SQLiteCompanyNormalizedIndex
-from trader.download.infra.company_sync_inputs import CompanyRecoveredInput, SQLiteCompanySyncInputStore
+from trader.download.infra.company_sync_inputs import CompanyRecoveredInput, SQLiteCompanySyncInputs
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
 from trader.download.infra import company_sync_runtime
 from trader.download.infra.company_sync_runtime import CompanySyncRuntime, _FieldProducer
@@ -72,7 +72,7 @@ def _runtime(tmp_path, *, observe_scope=None, financial_revision_proofs=()):
     normalized = SQLiteCompanyNormalizedIndex(sources_path, facts, event_policy=event_policy,
         sqlite_policy=policy, clean_material=lambda: None)
     journal = SQLiteCompanySyncRoundJournal(tmp_path / "journal.sqlite3", sqlite_policy=policy, publication_identity=reader.publication_identity)
-    inputs = SQLiteCompanySyncInputStore(sources_path, sqlite_policy=policy)
+    inputs = SQLiteCompanySyncInputs(sources_path, sqlite_policy=policy)
     physical = []
     def execute(request):
         physical.append(request.url)
@@ -190,7 +190,7 @@ def test_field_row_reuse_observes_current_scalars_and_children_without_a_new_hea
         assert read()[0] == first and ReadCompanyPublicationIdentity(formal) == head
 
 
-def test_clean_download_reuses_the_ledger_but_not_the_old_active_cursor(tmp_path):
+def test_clean_download_reuses_the_ledger_but_not_the_previous_round_cursor(tmp_path):
     runtime, reader, transport, physical = _runtime(tmp_path)
     runtime.journal.initialize()
     plans = tuple(CompanySyncPhasePlan(family, CanonicalDigest(family)) for family in _SCOPE.families)
@@ -204,13 +204,13 @@ def test_clean_download_reuses_the_ledger_but_not_the_old_active_cursor(tmp_path
             failure="source_attempt_unconfirmed" if announcement else None))
 
     with transport:
-        with pytest.raises(CompanySyncRebuildActiveRound):
+        with pytest.raises(CompanySyncRoundRebuildBlocked):
             runtime.initialize(_SCOPE.codes, _SCOPE.cutoff + timedelta(hours=1))
         assert not runtime.facts.path.exists() and not runtime.material.path.exists()
-        assert runtime.journal.active().round_id == previous
+        assert runtime.journal.unfinished_round().round_id == previous
         tomorrow = _SCOPE.cutoff + timedelta(days=1)
         runtime.initialize(_SCOPE.codes, tomorrow)
-        assert runtime.journal.active() is None
+        assert runtime.journal.unfinished_round() is None
         assert reader.read(_SCOPE.codes)[0].financial is None
         result = runtime.run(_SCOPE.codes, tomorrow, CompanySyncBudget(100, 0, 20, 10),
             cancel_requested=lambda: False, monotonic=lambda: 0)
@@ -384,7 +384,7 @@ def test_new_same_day_cutoff_cannot_refill_an_exhausted_source_budget(tmp_path):
     assert first.budget_exhausted and first.processing_complete
     assert second.round_id == first.round_id and second.scope == first.scope
     assert tuple(physical) == before and runtime.journal.source_calls(first.round_id) == 1
-    assert runtime.journal.active().max_source_calls == 1 and reader.publication_identity() == publication
+    assert runtime.journal.unfinished_round().max_source_calls == 1 and reader.publication_identity() == publication
 
 
 def test_next_day_refresh_keeps_the_old_exhausted_ledger_and_starts_a_dated_round(tmp_path):
@@ -410,15 +410,15 @@ def test_new_runtime_scope_excludes_news_and_resumes_same_request_budget(tmp_pat
         resumed = runtime.run(_SCOPE.codes, _SCOPE.cutoff, CompanySyncBudget(100, 200, 20, 10),
             cancel_requested=lambda: False, monotonic=lambda: 0)
     assert resumed.round_id == first.round_id and resumed.processing_complete
-    assert runtime.journal.active().max_source_calls == 20
+    assert runtime.journal.unfinished_round().max_source_calls == 20
     assert all(family.value != "news" for family in resumed.scope.families)
     assert "https://example.test/news" not in physical
     with SqliteSession(runtime.inputs.path) as connection:
         assert connection.run("SELECT COUNT(*) FROM company_source_task WHERE family IN ('news','news_scope')").require_one()[0] == 0
 
 
-@pytest.mark.parametrize("active", (True, False))
-def test_unsupported_plan_admission_preserves_charged_requests(tmp_path, active):
+@pytest.mark.parametrize("round_open", (True, False))
+def test_unsupported_plan_admission_preserves_charged_requests(tmp_path, round_open):
     runtime, _, transport, physical = _runtime(tmp_path)
     runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
     plans = tuple(CompanySyncPhasePlan(family, CanonicalDigest(family)) for family in _SCOPE.families)
@@ -432,19 +432,19 @@ def test_unsupported_plan_admission_preserves_charged_requests(tmp_path, active)
             VALUES(?,'news',1,?,1)""", (round_id, CanonicalDigest("planned_request")))
         connection.run("""INSERT INTO company_sync_request(round_id,family,step,request_hash,host,method)
             VALUES(?,'news',1,?,'example.test','GET')""", (round_id, request_hash))
-        if not active:
+        if not round_open:
             connection.run("UPDATE company_sync_round SET active=0 WHERE round_id=?", (round_id,))
     assert runtime.journal.source_calls(round_id) == 1
 
     next_cutoff = _SCOPE.cutoff + timedelta(days=1)
     with transport:
-        if active:
+        if round_open:
             with pytest.raises(CompanyDatabaseIncompatibleError) as initialize:
                 runtime.initialize(_SCOPE.codes, next_cutoff)
             with pytest.raises(CompanyDatabaseIncompatibleError) as run:
                 runtime.run(_SCOPE.codes, next_cutoff, CompanySyncBudget(1, 20, 20, 10),
                     cancel_requested=lambda: False, monotonic=lambda: 0)
-            assert initialize.value.store is run.value.store is CompanyDownloadStore.REQUEST_JOURNAL
+            assert initialize.value.database_role is run.value.database_role is CompanyDatabaseRole.REQUEST_JOURNAL
         else:
             runtime.initialize(_SCOPE.codes, next_cutoff)
             result = runtime.run(_SCOPE.codes, next_cutoff, CompanySyncBudget(1, 20, 20, 10),
@@ -452,7 +452,7 @@ def test_unsupported_plan_admission_preserves_charged_requests(tmp_path, active)
             assert result.round_id != round_id and result.scope.cutoff == next_cutoff
     with SqliteSession(runtime.journal.path) as connection:
         original = connection.run("SELECT active,max_source_calls FROM company_sync_round WHERE round_id=?", (round_id,))
-        assert tuple(original.require_one()) == (int(active), 20)
+        assert tuple(original.require_one()) == (int(round_open), 20)
         assert tuple(connection.run("SELECT family,request_hash,observed FROM company_sync_request").require_one()) == (
             "news", request_hash, 0,
         )
@@ -468,16 +468,16 @@ def test_unfinished_round_resumes_original_time_and_does_not_refill_request_allo
         result = runtime.run(_SCOPE.codes, _SCOPE.cutoff + timedelta(days=1), CompanySyncBudget(100, 200, 20, 10),
             cancel_requested=lambda: False, monotonic=lambda: 0)
     assert result.processing_complete and result.scope == _SCOPE
-    assert runtime.journal.active().max_source_calls == 20
+    assert runtime.journal.unfinished_round().max_source_calls == 20
 
 
-def test_old_formal_schema_rejected_before_other_stores_or_requests_are_created(tmp_path):
+def test_old_formal_schema_rejected_before_other_databases_or_requests_are_created(tmp_path):
     runtime, reader, transport, physical = _runtime(tmp_path)
     with SqliteSession(runtime.facts.path) as connection:
         connection.run("CREATE TABLE obsolete(value TEXT)")
     with pytest.raises(CompanyDatabaseIncompatibleError) as error:
         runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
-    assert error.value.store is CompanyDownloadStore.FACTS
+    assert error.value.database_role is CompanyDatabaseRole.FACTS
     assert not runtime.material.path.exists() and not runtime.inputs.path.exists() and not runtime.journal.path.exists()
     assert not physical
     transport.close()
@@ -545,7 +545,7 @@ def test_actual_local_rule_change_reproves_without_resetting_source_round_or_all
         final = runtime.run(_SCOPE.codes, _SCOPE.cutoff, CompanySyncBudget(100, 200, 20, 10),
             cancel_requested=lambda: False, monotonic=lambda: 0)
     assert final.round_id == first.round_id and final.scope == first.scope and not physical
-    assert runtime.journal.active().max_source_calls == 20
+    assert runtime.journal.unfinished_round().max_source_calls == 20
     assert sum(item.source_calls for item in final.families) == consumed
     with SqliteSession(runtime.facts.path) as formal:
         assert formal.run("SELECT rules_hash FROM company_field_proof_rule").require_one()[0] == company_field_publication.CompanyFieldProofRulesHash()
@@ -570,7 +570,7 @@ def test_preflight_ack_before_marker_failure_resumes_local_work_without_blocking
     assert result.processing_complete and physical
 
 
-def test_corrupt_formal_payload_is_rejected_before_new_store_or_budget_writes(tmp_path):
+def test_corrupt_formal_payload_is_rejected_before_new_database_or_budget_writes(tmp_path):
     from trader.infra.sqlite_publication import SqlitePublicationError
     runtime, reader, transport, physical = _runtime(tmp_path)
     runtime.initialize(_SCOPE.codes, _SCOPE.cutoff)
@@ -597,7 +597,7 @@ def test_resume_filters_newly_ineligible_members_without_losing_fixed_scope_or_f
         result = runtime.run(("600001",), _SCOPE.cutoff + timedelta(days=1), CompanySyncBudget(100, 200, 20, 10),
             cancel_requested=lambda: False, monotonic=lambda: 0)
     assert result.scope.codes == codes and result.scope.cutoff == _SCOPE.cutoff
-    assert runtime.journal.active().max_source_calls == 20
+    assert runtime.journal.unfinished_round().max_source_calls == 20
     current, ineligible = reader.read(codes)
     _assert_only_directory_coverage_advanced(before[0], current)
     assert ineligible == before[1] and result.processing_complete

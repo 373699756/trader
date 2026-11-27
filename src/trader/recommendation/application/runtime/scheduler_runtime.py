@@ -987,7 +987,7 @@ class SchedulerRuntime:
         with self._lock:
             if stage == "seal":
                 self._freeze_completed_count += 1
-            elif stage == "settlement":
+            elif stage == "settlement" and strategy is None:
                 self._settlement_completed_count += 1
             self._resolve_issues_locked(strategy=strategy, stages=frozenset({stage}))
 

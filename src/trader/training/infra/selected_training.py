@@ -37,7 +37,7 @@ from trader.training.application.selected_training import (
     SelectedTrainingDrainError,
     TrainingLocations,
 )
-from trader.training.application.tomorrow_training import CancellableTrainingProgress, TomorrowTrainingProgress, TomorrowTrainingProgressPort
+from trader.training.application.training_progress import CancellableTrainingProgress, TrainingProgress, TrainingProgressPort
 from trader.infra.future_cleanup import CloseAfterFutures
 from trader.infra.shutdown import ShutdownDeadline
 from trader.training.domain.v1.training_plan import BuildLearnedRankReadDates
@@ -94,7 +94,7 @@ def _run_with_native_limits(
 class SelectedTrainingRequest:
     runtime: RuntimeSettings
     profiles: tuple[ScoringProfileId, ...]
-    progresses: tuple[TomorrowTrainingProgressPort, ...]
+    progresses: tuple[TrainingProgressPort, ...]
     cancelled: Callable[[], bool]
     memory_admission: TrainingMemoryAdmission
     paths: TrainingLocations
@@ -142,7 +142,7 @@ class SelectedTrainingAdapter:
         return self.request.strategy
 
     @property
-    def progresses(self) -> tuple[TomorrowTrainingProgressPort, ...]:
+    def progresses(self) -> tuple[TrainingProgressPort, ...]:
         return self.request.progresses
 
     @property
@@ -180,14 +180,14 @@ class SelectedTrainingAdapter:
             for profile, progress in zip(request.profiles, request.progresses, strict=True)
         }
 
-        def report(profile: ScoringProfileId, event: TomorrowTrainingProgress) -> None:
+        def report(profile: ScoringProfileId, event: TrainingProgress) -> None:
             progresses[profile].publish(event)
 
-        opening = TomorrowTrainingProgress("input_read", "started", 0, 1, strategy=Strategy.TOMORROW)
+        opening = TrainingProgress("input_read", "started", 0, 1, strategy=Strategy.TOMORROW)
         for progress in progresses.values():
             progress.publish(opening)
         history = OpenTomorrowHistoryInput(request.paths.history, sqlite_policy=self.sqlite_policy)
-        opened = TomorrowTrainingProgress("input_read", "completed", 1, 1, strategy=Strategy.TOMORROW)
+        opened = TrainingProgress("input_read", "completed", 1, 1, strategy=Strategy.TOMORROW)
         for progress in progresses.values():
             progress.publish(opened)
         result = train(
@@ -262,7 +262,7 @@ class _SelectedTrainingSession:
         )
 
     def prepare_task(
-        self, profile: ScoringProfileId, progress: TomorrowTrainingProgressPort,
+        self, profile: ScoringProfileId, progress: TrainingProgressPort,
     ) -> SelectedTrainingTask[SelectedProfileResult]:
         return self.factory.prepare(profile, CancellableTrainingProgress(progress, self.request.cancelled))
 
@@ -282,7 +282,7 @@ class _SelectedTrainingSession:
 
         def report(*, finished: bool = False) -> None:
             value = tracker.snapshot(finished=finished)
-            event = TomorrowTrainingProgress(
+            event = TrainingProgress(
                 "input_read", "running", value.completed_days, value.total_days, input_progress=value,
             )
             for progress in self.request.progresses:
@@ -345,7 +345,7 @@ class _TrainingTaskFactory:
     prediction_targets: PredictionTargets | CloseReturnResearchMode = field(kw_only=True)
 
     def prepare(
-        self, profile: ScoringProfileId, progress: TomorrowTrainingProgressPort
+        self, profile: ScoringProfileId, progress: TrainingProgressPort
     ) -> SelectedTrainingTask[SelectedProfileResult]:
         try:
             return self._v1(progress) if profile == "v1" else self._standard(profile, progress)
@@ -355,7 +355,7 @@ class _TrainingTaskFactory:
             reason = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
             raise SelectedTrainingPreparationError(reason or type(exc).__name__) from exc
 
-    def _v1(self, progress: TomorrowTrainingProgressPort) -> SelectedTrainingTask[SelectedProfileResult]:
+    def _v1(self, progress: TrainingProgressPort) -> SelectedTrainingTask[SelectedProfileResult]:
         selection = self.selection
         paths = selection.paths
         calendar = self.history.snapshot.calendar.open_dates
@@ -403,7 +403,7 @@ class _TrainingTaskFactory:
         return SelectedTrainingTask("v1", dates, partial(_run_v1, execute))
 
     def _standard(
-        self, profile: ScoringProfileId, progress: TomorrowTrainingProgressPort
+        self, profile: ScoringProfileId, progress: TrainingProgressPort
     ) -> SelectedTrainingTask[SelectedProfileResult]:
         selection = self.selection
         paths = selection.paths

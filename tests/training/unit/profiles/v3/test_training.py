@@ -22,7 +22,8 @@ from trader.download.infra.history_partition_repack import HistoryPartitionRepac
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT, ResidualizeExposure
 from trader.infra.sqlite_codec import EncodeDate
-from trader.training.application.tomorrow_training import ProductionTrainingWindow, TomorrowTrainingProgress, TomorrowTrainingWindow
+from trader.training.application.tomorrow_training import ProductionTrainingWindow, TomorrowTrainingWindow
+from trader.training.application.training_progress import TrainingProgress
 from trader.training.domain.final_fit import BuildFinalFitDatePlan
 from trader.training.domain.profile_training import BuildProfileTrainingPlan, ProfileTrainingHead, ProfileTrainingSource
 from trader.training.domain.tomorrow_training_input import REQUIRED_DAILY_FIELDS, FrozenDailyInputDescriptor
@@ -748,7 +749,7 @@ def test_training_exposure_features_do_not_change_when_peer_future_label_is_miss
 def test_model_progress_keeps_real_industry_count_for_each_head(monkeypatch, calibration_failure) -> None:
     dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_600))
     split = BuildTrainingDateSplit(dates, parent_manifest_hash="a" * 64)
-    updates: list[TomorrowTrainingProgress] = []
+    updates: list[TrainingProgress] = []
 
     class Samples:
         execution_options = TrainingExecutionOptions()
@@ -818,10 +819,10 @@ def test_model_progress_keeps_real_industry_count_for_each_head(monkeypatch, cal
 
 
 def test_training_progress_rejects_impossible_counts() -> None:
-    progress = TomorrowTrainingProgress("history_conversion", "running", 50, 100, produced_units=40)
+    progress = TrainingProgress("history_conversion", "running", 50, 100, produced_units=40)
     assert progress.produced_units == 40
     with pytest.raises(ValueError, match="counts"):
-        TomorrowTrainingProgress("history_conversion", "running", 101, 100)
+        TrainingProgress("history_conversion", "running", 101, 100)
 
 
 def _fitted_result(width: int, parameters) -> IndustryFitResult:

@@ -471,6 +471,10 @@ def _freeze_quote_from_json(raw: object) -> FreezeQuote | None:
     )
 
 
+class FreezePayloadFieldsError(ValueError):
+    """The field set differs from the current freeze contract."""
+
+
 def _object(
     raw: object,
     label: str,
@@ -485,9 +489,9 @@ def _object(
     missing = required - keys
     unknown = keys - required - optional
     if missing:
-        raise ValueError(f"{label} is missing fields: {', '.join(sorted(missing))}")
+        raise FreezePayloadFieldsError(f"{label} is missing fields: {', '.join(sorted(missing))}")
     if unknown:
-        raise ValueError(f"{label} has unknown fields: {', '.join(sorted(unknown))}")
+        raise FreezePayloadFieldsError(f"{label} has unknown fields: {', '.join(sorted(unknown))}")
     return value
 
 
@@ -610,4 +614,4 @@ def _shanghai_datetime(value: str) -> datetime:
     return parsed.astimezone(_SHANGHAI)
 
 
-__all__ = ["CommittedRecordBytes", "CommittedRecordFromBytes"]
+__all__ = ["CommittedRecordBytes", "CommittedRecordFromBytes", "FreezePayloadFieldsError"]

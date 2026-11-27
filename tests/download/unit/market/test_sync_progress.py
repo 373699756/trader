@@ -28,8 +28,8 @@ from trader.download.infra.download_failure_diagnostics import DownloadFailureDi
 
 def test_commands_share_compact_prefixes_elapsed_time_and_cleaning(monkeypatch):
     from trader.recommendation.domain.publication.models import Strategy
-    from trader.training.application.tomorrow_training import TomorrowTrainingProgress
-    from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
+    from trader.training.application.training_progress import TrainingProgress
+    from trader.training.entrypoints.training_progress import TrainingProgressPrinter
 
     source = Path(__file__).resolve().parents[4] / "src/trader/infra/progress_format.py"
     prepared = subprocess.run(
@@ -46,9 +46,9 @@ def test_commands_share_compact_prefixes_elapsed_time_and_cleaning(monkeypatch):
     stream.seek(0)
     stream.truncate()
     monkeypatch.setattr(sys, "stderr", stream)
-    output = StderrTomorrowTrainingProgress(monotonic=lambda: 0.0, command_label="train·V5")
-    output.publish(TomorrowTrainingProgress("history_conversion", "started", 0, 1, strategy=Strategy.TOMORROW))
-    output.publish(TomorrowTrainingProgress("cross_section_conversion", "completed", 99999, 99999, 99999))
+    output = TrainingProgressPrinter(monotonic=lambda: 0.0, command_label="train·V5")
+    output.publish(TrainingProgress("history_conversion", "started", 0, 1, strategy=Strategy.TOMORROW))
+    output.publish(TrainingProgress("cross_section_conversion", "completed", 99999, 99999, 99999))
     training_lines = stream.getvalue().splitlines()
     for lines in (prepared.stderr.splitlines(), history_lines, training_lines):
         assert len(lines) == 2

@@ -25,7 +25,7 @@ import numpy as np
 from trader.infra.atomic_files.json import AtomicReadJson, AtomicWriteJson
 from trader.infra.settings.parser import Integer, ProfileMapping, ReadJsonObject, RequireExactKeys, RequireMapping
 from trader.infra.sqlite_connection import SqliteConnectionOptions, SqliteSession, SqliteTransaction
-from trader.training.application.tomorrow_training import TrainingFitDetail
+from trader.training.application.training_progress import TrainingFitDetail
 from trader.training.application.resources import TrainingSampleSettings
 from trader.training.infra.model_bundles.bundle_codec import TrainedTcnModelSnapshot
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract

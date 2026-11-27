@@ -438,7 +438,7 @@ def AuditCompanySourceQualification(
         )
         for connection in (journal, sources, formal):
             stack.enter_context(SqliteTransaction(connection))
-        round_id, cutoff_text, active = journal.run(
+        round_id, cutoff_text, round_open = journal.run(
             "SELECT round_id,cutoff,active FROM company_sync_round ORDER BY active DESC,cutoff DESC,round_id LIMIT 1"
         ).require_one()
         plans = {row[0]: row[1] for row in journal.run(
@@ -519,7 +519,7 @@ def AuditCompanySourceQualification(
             "source_admission_verified": False,
             "stable_source_read": True,
             "round_id": round_id,
-            "round_active": bool(active),
+            "round_active": bool(round_open),
             "source_cutoff": scope.cutoff.isoformat(),
             "population": len(scope.codes),
             **({"stock_field_rows": len(scope.codes)} if stock_fields is not None else {}),

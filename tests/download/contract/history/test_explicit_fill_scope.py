@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[4]
 
 
 @pytest.mark.parametrize("arguments", (
-    ("history", "fill"), ("market", "fill"), ("company", "fill"),
+    ("history", "fill"), ("market", "fill"), ("compnay", "fill"),
     ("history", "--repair-codes", "300118"),
     ("company", "fill", "--repair-codes", "300118"),
 ))
@@ -28,7 +28,7 @@ def test_retired_price_repair_is_rejected_before_composition(monkeypatch, argume
     assert caught.value.code == 2
 
 
-@pytest.mark.parametrize("target", ("history", "market", "company"))
+@pytest.mark.parametrize("target", ("history", "market", "compnay"))
 def test_shell_launcher_rejects_retired_fill_before_environment_setup(tmp_path, target):
     missing_venv = tmp_path / "missing-venv"
     completed = subprocess.run(
@@ -38,5 +38,5 @@ def test_shell_launcher_rejects_retired_fill_before_environment_setup(tmp_path, 
     )
     assert completed.returncode == 2
     assert completed.stdout == ""
-    assert completed.stderr == "用法：./run.sh sync [history|company|compnay fill]。\n"
+    assert completed.stderr == "用法：./run.sh sync [history|company|company fill]。\n"
     assert not missing_venv.exists()

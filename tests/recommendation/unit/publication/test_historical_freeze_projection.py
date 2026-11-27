@@ -28,6 +28,8 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.publication.historical_pipeline import HistoricalPipelineAudit, HistoricalStageStatus
 from trader.recommendation.infra.persistence.freeze_record_codec import CommittedRecordBytes, CommittedRecordFromBytes
 from trader.recommendation.infra.persistence.freeze_records import SQLiteFreezeRecords
+from trader.recommendation.infra.persistence.outcome_evidence_index import SQLiteOutcomeEvidenceIndex
+from trader.recommendation.domain.outcomes.prediction_target import PredictionTarget
 from trader.recommendation.infra.persistence.freeze_trace_index import SQLiteFreezeTraceIndex, _observation_from_bytes
 from trader.recommendation.infra.persistence.historical_freeze_codec import HistoricalRecordFromBytes
 from trader.training.application.research_audit import CommittedResearchAudit, HistoricalResearchAudit, HasCompleteResearchEvidence
@@ -56,6 +58,42 @@ def test_original_writer_bytes_hashes_and_missing_fields_are_not_rebuilt():
         CommittedRecordFromBytes(original)
     with pytest.raises(ValueError, match="historical"):
         CommittedFreezeRecord(projection.freeze, projection.committed_at, projection.commit_kind)
+
+
+def test_settlement_scans_past_original_writer_bytes_on_every_pass(tmp_path, caplog):
+    policy = SqlitePolicyFixture()
+    path = tmp_path / "freeze.sqlite3"
+    freezes = SQLiteFreezeRecords(path, sqlite_policy=policy)
+    freezes.initialize()
+    saved = _saved()
+    original = base64.b64decode(saved["record_base64"])
+    historical = HistoricalRecordFromBytes(original)
+    with SqliteSession(path, sqlite_policy=policy) as connection:
+        connection.run(next(line for line in saved["freeze_sql_dump"].splitlines()
+                            if line.startswith('INSERT INTO "freeze_record"')))
+    template = record()
+    day = template.committed_at + timedelta(days=1)
+    target = PredictionTarget(Strategy.TOMORROW, 500)
+    item = template.freeze.items[0]
+    current = CommittedFreezeRecord(replace(
+        template.freeze, trade_date=day.date(), observed_at=day, input_versions=(("prediction_target", target.identity),),
+        items=(replace(item, quote=replace(item.quote, source_time=day)),),
+    ), day, "scheduled")
+    freezes.commit(current)
+    index = SQLiteOutcomeEvidenceIndex(tmp_path / "outcomes", freezes, sqlite_policy=policy)
+    for _ in range(2):
+        assert [item.snapshot_id for item in index.pending_tomorrow_targets(limit=10)] == [current.version]
+        assert not index.pending_outcome_targets(limit=10)
+    assert caplog.text.count(historical.trade_date.isoformat()) == 1
+    assert "freeze fields differ from the current settlement format" in caplog.text
+    with pytest.raises(FreezeRecordUnavailableError):
+        freezes.load(Strategy.TOMORROW, historical.trade_date)
+    assert freezes.load_history(Strategy.TOMORROW, historical.trade_date).record_bytes == original
+
+    with SqliteSession(path, sqlite_policy=policy) as connection:
+        connection.run("DROP TABLE freeze_record")
+    with pytest.raises(FreezeRecordUnavailableError):
+        index.pending_tomorrow_targets(limit=10)
 
 
 def test_old_file_is_read_only_and_current_writer_refuses_before_mutation(tmp_path):

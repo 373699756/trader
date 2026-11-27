@@ -16,7 +16,7 @@ from trader.download.domain.company_sync import (
 )
 from trader.download.entrypoints.company_result_feedback import FormatCompanySyncSummary
 from trader.download.infra.company_disclosure_source import CNINFO_DIRECTORY_URL
-from trader.download.infra.company_sync_inputs import SQLiteCompanySyncInputStore
+from trader.download.infra.company_sync_inputs import SQLiteCompanySyncInputs
 from trader.download.infra.company_sync_io import CompanySyncIoBudget
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
 from trader.infra.http_contracts import HttpAttempt, HttpRequest, HttpResponse
@@ -62,7 +62,7 @@ def _resources(tmp_path, *, maximum=8, crash=False, cancel=None):
     policy = SqlitePolicyFixture()
     journal = SQLiteCompanySyncRoundJournal(tmp_path / "journal.sqlite3", sqlite_policy=policy, publication_identity=lambda: "a" * 64)
     journal.initialize()
-    inputs = SQLiteCompanySyncInputStore(tmp_path / "inputs.sqlite3", sqlite_policy=policy)
+    inputs = SQLiteCompanySyncInputs(tmp_path / "inputs.sqlite3", sqlite_policy=policy)
     inputs.initialize()
     physical, calls = [], []
     def execute(request):
@@ -85,7 +85,7 @@ def test_real_journal_counts_multiple_pages_and_restart_reuses_fixed_scope_witho
     assert len(physical) == result.families[0].source_calls == 2
     assert result.families[0].unknown_attempts == 0
     restarted, producers, budget, physical, calls, transport = _resources(tmp_path)
-    assert restarted.active().scope == _SCOPE
+    assert restarted.unfinished_round().scope == _SCOPE
     with transport:
         again = RunCompanySyncRound(restarted, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: False)
     assert again == result and physical == [] and calls == []
@@ -131,8 +131,8 @@ def test_progress_observes_only_durable_step_results_without_extra_requests(tmp_
     observations = []
 
     def observe(family):
-        assert journal.outstanding(journal.active().round_id, family.family) is None
-        assert journal.family(journal.active().round_id, family.family) == family
+        assert journal.outstanding(journal.unfinished_round().round_id, family.family) is None
+        assert journal.family(journal.unfinished_round().round_id, family.family) == family
         observations.append(family)
 
     with transport:
@@ -152,7 +152,7 @@ def test_progress_failure_keeps_acknowledged_page_and_restarts_without_refetch(t
     with transport, pytest.raises(RuntimeError, match="fixture_progress_unavailable"):
         RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0,
             cancel_requested=lambda: False, observe=fail)
-    assert len(physical) == 1 and journal.outstanding_family(journal.active().round_id) is None
+    assert len(physical) == 1 and journal.outstanding_family(journal.unfinished_round().round_id) is None
     journal, producers, budget, physical, _, transport = _resources(tmp_path)
     with transport:
         result = RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0,
@@ -191,8 +191,8 @@ def test_unlimited_resume_finishes_old_budget_paused_page_without_reissuing_requ
     with transport:
         completed = RunCompanySyncRound(journal, producers, _SCOPE, unlimited,
             monotonic=lambda: 86400, cancel_requested=lambda: False)
-    stored = journal.active()
-    assert stored is not None and stored.max_source_calls is None and stored.source_calls == 2
+    resumed_round = journal.unfinished_round()
+    assert resumed_round is not None and resumed_round.max_source_calls is None and resumed_round.source_calls == 2
     assert completed.round_id == limited.round_id and completed.business_complete
     assert physical == ["https://example.test/2"] and completed.pause_reason is None
 
@@ -371,7 +371,7 @@ def test_later_round_preserves_old_unknown_and_blocks_exact_request_or_cursor(tm
 
     following = replace(_SCOPE, cutoff=_SCOPE.cutoff + timedelta(days=1))
     assert journal.defer_unconfirmed_directory(old, following.cutoff)
-    assert journal.active() is None
+    assert journal.unfinished_round() is None
     blocked = journal.family(old, CompanySyncFamily.ANNOUNCEMENTS)
     assert blocked is not None and blocked.unknown_attempts == journal.source_calls(old) == 1
 
@@ -396,7 +396,7 @@ def test_later_round_preserves_recoverable_old_directory_round(tmp_path):
     old, _ = _blocked_directory_round(journal, producers, budget, request, directory, retain_response=True)
     assert journal.directory_response(old) is not None
     assert not journal.defer_unconfirmed_directory(old, _SCOPE.cutoff + timedelta(days=1))
-    assert journal.active().round_id == old
+    assert journal.unfinished_round().round_id == old
     transport.close()
 
 
@@ -622,7 +622,7 @@ def test_observed_old_transport_rejection_reopens_but_remains_distinct_from_an_u
     assert physical == ["https://example.test/prior"] and current_calls == ["https://example.test/1", "https://example.test/2"]
 
 
-def test_capacity_block_resumes_in_same_round_after_storage_recovers(tmp_path):
+def test_capacity_block_resumes_in_same_round_after_disk_space_recovers(tmp_path):
     journal, producers, budget, physical, _, transport = _resources(tmp_path)
     announcement = next(p for p in producers if p.plan.family is CompanySyncFamily.ANNOUNCEMENTS)
     attempts = []
@@ -677,7 +677,7 @@ def test_new_local_rules_and_input_watermark_reopen_only_fields_and_clear_resolv
     assert final.round_id == first.round_id and len(physical) == 2 and final.business_complete
     assert final.families[-1].result.changed_codes == ("600001",)
     assert final.families[-1].result.pending_count == 0 and not final.families[-1].result.gaps
-    assert journal.active().max_source_calls == budget.max_source_calls
+    assert journal.unfinished_round().max_source_calls == budget.max_source_calls
 
 
 @pytest.mark.parametrize("error_type", (OSError, PermissionError, FileNotFoundError))
@@ -692,7 +692,7 @@ def test_local_acceptance_failure_stops_every_later_family_and_keeps_request_int
     with transport, pytest.raises(error_type) as caught:
         RunCompanySyncRound(journal, producers, _SCOPE, budget, monotonic=lambda: 0, cancel_requested=lambda: False)
     assert caught.value is error and len(physical) == 1 and not calls
-    assert journal.outstanding_family(journal.active().round_id) is CompanySyncFamily.FINANCIAL
+    assert journal.outstanding_family(journal.unfinished_round().round_id) is CompanySyncFamily.FINANCIAL
 
 
 def test_request_progress_tracks_durable_retries_and_resumes_without_reset(tmp_path):

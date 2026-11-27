@@ -11,9 +11,9 @@ import lightgbm as lgb
 import numpy as np
 
 from trader.download.domain.current_industry import CurrentIndustrySnapshot
-from trader.training.application.tomorrow_training import (
-    TomorrowTrainingProgress,
-    TomorrowTrainingProgressPort,
+from trader.training.application.training_progress import (
+    TrainingProgress,
+    TrainingProgressPort,
     TrainingFitCounts,
     TrainingFitDetail,
     TrainingValidationProgress,
@@ -68,7 +68,7 @@ class _FitProgress:
 
 @dataclass
 class _IndustryProgress:
-    port: TomorrowTrainingProgressPort | None
+    port: TrainingProgressPort | None
     contract: TrainedHeadContract
     update: _FitProgress
 
@@ -84,9 +84,9 @@ class _IndustryProgress:
 
 @dataclass(frozen=True)
 class _FinalRefitProgress:
-    target: TomorrowTrainingProgressPort
+    target: TrainingProgressPort
 
-    def publish(self, event: TomorrowTrainingProgress) -> None:
+    def publish(self, event: TrainingProgress) -> None:
         self.target.publish(replace(event, stage="final_model_refit"))
 
 
@@ -98,7 +98,7 @@ def FitIndustryModels(
     *,
     industry_snapshot: CurrentIndustrySnapshot,
     compute_threads: int,
-    progress: TomorrowTrainingProgressPort | None = None,
+    progress: TrainingProgressPort | None = None,
 ) -> tuple[IndustryFitResult, ...]:
     if type(compute_threads) is not int or compute_threads < 1:
         raise ValueError("training_compute_threads_invalid")
@@ -109,11 +109,11 @@ def FitIndustryModels(
     samples.require_split(split)
     for contract in contracts:
         if progress is not None:
-            progress.publish(TomorrowTrainingProgress("industry_statistics", "started", 0, 1, strategy=contract.strategy))
+            progress.publish(TrainingProgress("industry_statistics", "started", 0, 1, strategy=contract.strategy))
     states = tuple(_HeadFitState(contract, samples.industry_counts(contract), [], []) for contract in contracts)
     for state in states:
         if progress is not None:
-            progress.publish(TomorrowTrainingProgress("industry_statistics", "completed", 1, 1, strategy=state.contract.strategy))
+            progress.publish(TrainingProgress("industry_statistics", "completed", 1, 1, strategy=state.contract.strategy))
         _publish(progress, state.contract, _FitProgress("started", state.progress_counts()))
     industries = tuple(dict.fromkeys(counts.industry for state in states for counts in state.workloads))
     for industry in industries:
@@ -153,7 +153,7 @@ def RefitIndustryModels(
     *,
     industry_snapshot: CurrentIndustrySnapshot,
     compute_threads: int,
-    progress: TomorrowTrainingProgressPort | None = None,
+    progress: TrainingProgressPort | None = None,
 ) -> tuple[FittedIndustryModel, ...]:
     """Refit on mature recent labels; never evaluate the resulting model on its training rows."""
     if type(compute_threads) is not int or compute_threads < 1:
@@ -246,7 +246,7 @@ def _fit_head_industry(
     state: _HeadFitState,
     counts: TrainingIndustryCounts,
     parameters: ModelFittingParameters,
-    progress: TomorrowTrainingProgressPort | None,
+    progress: TrainingProgressPort | None,
     compute_threads: int,
     industry_snapshot: CurrentIndustrySnapshot,
 ) -> None:
@@ -266,7 +266,7 @@ def _fit_head_industry(
 
 
 def _finish_head_fit(
-    samples: SQLiteTrainingSampleIndex, state: _HeadFitState, progress: TomorrowTrainingProgressPort | None, compute_threads: int,
+    samples: SQLiteTrainingSampleIndex, state: _HeadFitState, progress: TrainingProgressPort | None, compute_threads: int,
     *, evaluation: tuple[PredictionMetrics, tuple[tuple[str, PredictionMetrics], ...]] | None = None,
 ) -> IndustryFitResult:
     contract, workloads, models, failures = state.contract, state.workloads, state.models, state.failures
@@ -339,13 +339,13 @@ def IndustryCoverageFailure(counts: TrainingIndustryCounts, parameters: ModelFit
 
 
 def _publish(
-    progress: TomorrowTrainingProgressPort | None,
+    progress: TrainingProgressPort | None,
     contract: TrainedHeadContract,
     update: _FitProgress,
 ) -> None:
     if progress is not None:
         progress.publish(
-            TomorrowTrainingProgress(
+            TrainingProgress(
                 "model_fit",
                 update.state,
                 update.counts.processed,
@@ -497,7 +497,7 @@ class _ValidationEvaluation:
 def _evaluate_validation_pairs(
     samples: SQLiteTrainingSampleIndex,
     states: tuple[_HeadFitState, ...],
-    progress: TomorrowTrainingProgressPort | None,
+    progress: TrainingProgressPort | None,
     compute_threads: int,
 ) -> tuple[tuple[PredictionMetrics, tuple[tuple[str, PredictionMetrics], ...]] | None, ...]:
     selected = tuple((position, state) for position, state in enumerate(states) if state.models)

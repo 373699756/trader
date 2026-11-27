@@ -34,7 +34,7 @@ from trader.download.infra.company_facts_index import SQLiteCompanyFactsIndex
 from trader.download.infra.company_facts_protocol import EncodeCompanyDate
 from trader.download.infra.company_material_index import SQLiteCompanyMaterialIndex
 from trader.download.infra.company_normalized_index import SQLiteCompanyNormalizedIndex
-from trader.download.infra.company_sync_inputs import SQLiteCompanySyncInputStore
+from trader.download.infra.company_sync_inputs import SQLiteCompanySyncInputs
 from trader.download.infra.company_sync_journal import SQLiteCompanySyncRoundJournal
 from trader.download.infra.company_sync_runtime import CompanySyncRuntime
 from trader.infra.serialization.canonical_codec import CanonicalDigest
@@ -76,7 +76,7 @@ def _inputs(tmp_path: Path, *, latest: bool = False):
     journal = SQLiteCompanySyncRoundJournal(
         paths.company_sync, sqlite_policy=sqlite_policy, publication_identity=lambda: "",
     )
-    inputs = SQLiteCompanySyncInputStore(paths.company_sources, sqlite_policy=sqlite_policy)
+    inputs = SQLiteCompanySyncInputs(paths.company_sources, sqlite_policy=sqlite_policy)
     source = _UnusedSource()
     runtime = CompanySyncRuntime(
         normalized,
