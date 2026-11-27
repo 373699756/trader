@@ -50,6 +50,40 @@ def test_status_exposes_actual_fetch_inflight_count_without_private_source_field
     assert "must-not-leak" not in response.get_data(as_text=True)
 
 
+def test_status_retains_the_finished_round_while_the_next_round_runs():
+    from unittest.mock import Mock
+
+    from tests.helpers.recommendation.runtime.scheduler import _round_cleanup_runtime
+    from trader.recommendation.application.runtime.cadence import PipelineTask, ScheduledPipelineTask
+    from trader.recommendation.application.runtime.schedule import MarketPhase
+    from trader.recommendation.infra.status_projection import RuntimeStatus
+
+    runtime = _round_cleanup_runtime()
+    rounds = runtime._dependencies.rounds
+    profile = runtime._dependencies.round_profile
+    _, queries, stream = _app()
+    reviewer = Mock()
+    reviewer.status.return_value = {}
+    services = UnifiedWebServices(queries, stream, lambda: RuntimeStatus(runtime, reviewer, lambda: {}))
+    client = CreateApp(services=services).test_client()
+    assert client.get("/api/status").get_json()["scheduler"]["last_finished_recommendation_round"] is None
+    task = ScheduledPipelineTask(PipelineTask.SCORE, NOW, MarketPhase.BEFORE_CLOSE)
+    first = rounds.enter(profile, (task,))
+    assert first is not None
+    rounds.finish(profile, first.sequence)
+    idle = client.get("/api/status").get_json()["scheduler"]
+    finished = idle["last_finished_recommendation_round"]
+    assert finished == idle["recommendation_round"]
+    assert finished["finished"] and finished["outcome"] == "cancelled"
+    following = rounds.enter(profile, (task,))
+    assert following is not None
+    active = client.get("/api/status").get_json()["scheduler"]
+    assert active["recommendation_round"]["sequence"] == first.sequence + 1
+    assert not active["recommendation_round"]["finished"]
+    assert active["last_finished_recommendation_round"] == finished
+    rounds.finish(profile, following.sequence)
+
+
 def test_market_source_status_rejects_arbitrary_supplier_error_text() -> None:
     _, queries, stream = _app()
     app = CreateApp(services=UnifiedWebServices(queries, stream, lambda: {

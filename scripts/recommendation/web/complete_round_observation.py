@@ -165,11 +165,18 @@ def _head_identity(
 
 
 def _batch_heads(payload: Mapping[str, object], *, event: bool) -> tuple[tuple[_HeadIdentity, Mapping[str, object]], ...]:
-    expected = {"round_sequence", "profiles"} if event else {"profiles"}
+    expected = {"round_sequence", "profiles", "published_strategies"} if event else {"profiles"}
     if set(payload) != expected:
         raise ValueError("batch_fields_invalid")
     if event:
         _integer(payload.get("round_sequence"), "published_round_sequence_missing")
+        published = _mapping(payload["published_strategies"], "published_strategies_missing")
+        if set(published) != set(SCORING_PROFILE_IDS) or any(
+            not isinstance(pair, list) or len(pair) != len(_STRATEGIES)
+            or not all(strategy in pair for strategy in _STRATEGIES)
+            for pair in published.values()
+        ):
+            raise ValueError("batch_strategies_incomplete")
     profiles = _mapping(payload.get("profiles"), "batch_profiles_missing")
     if set(profiles) != set(SCORING_PROFILE_IDS):
         raise ValueError("batch_profiles_incomplete")
@@ -285,6 +292,21 @@ class _Observation:
             self.stop("observation_deadline")
         return self.fetch_mapping(self.base_url + path, min(self.timeout, remaining))
 
+    def _record_finished_round(self, payload: object) -> None:
+        if payload is None:
+            return
+        finished = _mapping(payload, "finished_round_status_invalid")
+        if finished.get("finished") is not True or finished.get("outcome") != "published":
+            return
+        sequence = _integer(finished.get("sequence"), "finished_round_sequence_invalid")
+        for index in range(len(self.rounds) - 1, -1, -1):
+            row = self.rounds[index]
+            if row.sequence == sequence:
+                self.rounds[index] = replace(row, scheduler_elapsed_ms=_number(finished.get("elapsed_ms")))
+                return
+            if row.sequence < sequence:
+                return
+
     def status(self) -> Mapping[str, object]:
         payload = self.read("/api/status?" + urlencode({"profile": self.profile}))
         runtime = _text(payload.get("runtime_version"), "runtime_identity_missing")
@@ -312,7 +334,11 @@ class _Observation:
         if self.sessions is not None and self.sessions != sessions:
             self.stop("runtime_market_sessions_changed")
         self.sessions = sessions
-        current = _mapping(scheduler.get("recommendation_round"), "round_status_missing")
+        self._record_finished_round(scheduler.get("last_finished_recommendation_round"))
+        if "recommendation_round" not in scheduler:
+            raise ValueError("round_status_missing")
+        current_payload = scheduler.get("recommendation_round")
+        current = _mapping(current_payload, "round_status_missing") if current_payload is not None else {}
         current_sequence = current.get("sequence")
         current_outcome = current.get("outcome")
         self.latest_round = (
@@ -414,7 +440,7 @@ class _Observation:
         try:
             atomic = self.read("/api/freezes/current")
             received_at = self.wall_clock()
-            status = self.status()
+            self.status()
         except ObservationFetchError as exc:
             self.reasons[exc.code] += 1
             return
@@ -472,15 +498,10 @@ class _Observation:
             self.maximum_qualified_streak = max(self.maximum_qualified_streak, self.current_qualified_streak)
         else:
             self.break_streak()
-        current = _mapping(_mapping(status.get("scheduler"), "scheduler_status_missing").get("recommendation_round"), "round_status_missing")
-        elapsed = _number(current.get("elapsed_ms")) if (
-            current.get("sequence") == pending.sequence and current.get("outcome") == "published"
-        ) else None
         self.rounds[index] = replace(
             pending, outcome="matched" if qualified else "source_age_unqualified",
             reason="accepted" if qualified else "source_age_exceeded_or_missing", heads=evidence,
             atomic_heads=identities,
-            scheduler_elapsed_ms=elapsed,
         )
         self.pending = None
         if not qualified:

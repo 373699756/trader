@@ -337,10 +337,12 @@ def test_status_keeps_timeout_and_cleanup_separate_and_read_does_not_expire_work
     rounds = RecommendationRounds(monotonic=lambda: now[0])
     rounds.register("v1")
     rounds.register("v5")
+    assert rounds.status_with_last_finished() == (None, None)
     admission = rounds.enter("v1", _tasks())
     rounds.enter("v5", _tasks())
     now[0] = 120.0
     assert rounds.status().outcome == "running"
+    assert rounds.status_with_last_finished()[1] is None
     assert rounds.cancelled(admission.sequence)
     rounds.finish("v1", admission.sequence)
     assert rounds.status().running_profiles == ("v5",)
@@ -356,6 +358,10 @@ def test_status_keeps_timeout_and_cleanup_separate_and_read_does_not_expire_work
     assert following.sequence == admission.sequence + 1
     assert rounds.status().outcome == "running"
     assert rounds.status().cleanup_ms == 0
+    assert rounds.status_with_last_finished() == (rounds.status(), status)
+    rounds.finish("v5", following.sequence)
+    latest, finished = rounds.status_with_last_finished()
+    assert latest is finished and finished.sequence == following.sequence
 
 
 def test_cancelled_round_waits_for_descendant_worker_and_counts_its_late_sql():

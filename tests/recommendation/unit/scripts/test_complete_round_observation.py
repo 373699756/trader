@@ -46,7 +46,8 @@ def _pipeline():
 def _batch(sequence, *, elapsed=15, source_age=2, generation=1, mutation=None):
     observed = _START + timedelta(seconds=elapsed)
     sources = observed - timedelta(seconds=source_age)
-    event = { "round_sequence": sequence, "profiles": {}}
+    event = {"round_sequence": sequence, "profiles": {},
+             "published_strategies": {profile: ["tomorrow", "d25"] for profile in _PROFILES}}
     atomic = { "profiles": {}}
     for profile in _PROFILES:
         event["profiles"][profile] = {}
@@ -102,13 +103,13 @@ class _Fixture:
                 raise ObservationFetchError(self.fetch_error)
             return self.atomic
         self.polls += 1
+        finished = {"sequence": self.current_sequence, "outcome": "published", "finished": True, "elapsed_ms": 1200}
         return {
             "runtime_version": "changed-runtime" if self.runtime_changed and self.polls > 1 else "fixture-runtime",
             "available_profiles": list(_PROFILES), "phase": "before_close",
             "events": {"sequence": self.initial_cursor + self.current_sequence},
-            "scheduler": {"cadence": {"market_sessions": self.sessions}, "recommendation_round": {
-                "sequence": self.current_sequence, "outcome": "published", "elapsed_ms": 1200,
-            }},
+            "scheduler": {"cadence": {"market_sessions": self.sessions}, "recommendation_round": finished,
+                          "last_finished_recommendation_round": finished},
         }
 
     def execute(self, request):
@@ -157,6 +158,53 @@ def test_complete_round_mode_counts_five_new_atomic_eight_head_rounds_and_keeps_
     assert fixture.stream_request.max_response_bytes == 64 * 1024 * 1024
 
 
+@pytest.mark.parametrize(("finished_sequence", "outcome", "expected"), (
+    (1, "published", 1200), (3, "published", None), (1, "timeout", None),
+))
+def test_elapsed_belongs_to_the_finished_publication_when_next_round_runs(finished_sequence, outcome, expected):
+    event, atomic = _batch(1)
+    fixture = _Fixture([(15, event, atomic, 11, "batch")])
+    fetch = fixture.fetch
+
+    def advancing_status(url, timeout):
+        payload = fetch(url, timeout)
+        if "scheduler" in payload:
+            scheduler = payload["scheduler"]
+            scheduler["recommendation_round"] = None
+            scheduler["last_finished_recommendation_round"] = None
+            if fixture.current_sequence:
+                scheduler["recommendation_round"] = {"sequence": finished_sequence + 1, "outcome": "running"}
+                scheduler["last_finished_recommendation_round"] = {
+                    "sequence": finished_sequence, "finished": True, "outcome": outcome, "elapsed_ms": 1200,
+                }
+        return payload
+
+    fixture.fetch = advancing_status
+    report = fixture.run()
+    assert report["status"] == "passed"
+    assert report["rounds"][0]["scheduler_elapsed_ms"] == expected
+
+
+def test_next_status_sample_completes_timing_for_an_already_audited_batch():
+    fixture = _Fixture([(i * 15, *_batch(i, elapsed=i * 15), 10 + i, "batch") for i in (1, 2)])
+    fetch = fixture.fetch
+
+    def before_cleanup(url, timeout):
+        payload = fetch(url, timeout)
+        if "scheduler" in payload:
+            scheduler = payload["scheduler"]
+            scheduler["recommendation_round"]["finished"] = False
+            scheduler["last_finished_recommendation_round"] = {
+                "sequence": fixture.current_sequence - 1, "outcome": "published", "finished": True, "elapsed_ms": 1250,
+            } if fixture.current_sequence == 2 else None
+        return payload
+
+    fixture.fetch = before_cleanup
+    report = fixture.run(required=2)
+    assert report["status"] == "passed"
+    assert [row["scheduler_elapsed_ms"] for row in report["rounds"]] == [1250, None]
+
+
 def test_retained_ready_snapshot_and_replayed_initial_events_never_count():
     event, atomic = _batch(7, elapsed=0)
     fixture = _Fixture([(15, event, atomic, 10, "batch")])
@@ -177,7 +225,7 @@ def test_duplicate_round_id_under_a_new_sse_id_is_not_another_success():
     assert report["summary"]["duplicate_rounds"] == 1
 
 
-@pytest.mark.parametrize("defect", ("profile", "strategy", "preview", "frozen", "five_seats", "generation", "source_time"))
+@pytest.mark.parametrize("defect", ("profile", "strategy", "declaration", "preview", "frozen", "five_seats", "generation", "source_time"))
 def test_incomplete_or_ineligible_event_is_not_a_complete_published_round(defect):
     def mutate(event, _atomic):
         head = event["profiles"]["v1"]["tomorrow"]
@@ -185,6 +233,8 @@ def test_incomplete_or_ineligible_event_is_not_a_complete_published_round(defect
             event["profiles"].pop("v5")
         elif defect == "strategy":
             event["profiles"]["v1"].pop("d25")
+        elif defect == "declaration":
+            event["published_strategies"]["v1"] = ["tomorrow", "tomorrow"]
         elif defect == "five_seats":
             head["upserts"].pop()
         elif defect == "generation":
@@ -298,7 +348,7 @@ def test_runtime_or_session_change_does_not_mix_acceptance_across_identities(cha
 @pytest.mark.parametrize("defect", ("retired_tag", "extra_field", "boolean_sequence", "missing_sequence"))
 def test_current_batch_uses_exact_coordinates_and_round_sequence_instead_of_format_tags(defect):
     event, atomic = _batch(1)
-    assert set(event) == {"profiles", "round_sequence"} and set(atomic) == {"profiles"}
+    assert set(event) == {"profiles", "round_sequence", "published_strategies"} and set(atomic) == {"profiles"}
     if defect == "retired_tag":
         event["schema_version"] = "freeze_event"
     elif defect == "extra_field":
@@ -550,7 +600,10 @@ def test_real_requests_batch_poll_and_exit_keep_bound_evidence(outcome, record_p
                     "runtime_version": "fixture-runtime", "available_profiles": list(_PROFILES),
                     "phase": "before_close", "events": {"sequence": 11 if offset[0] else 10},
                     "scheduler": {"cadence": {"market_sessions": _SESSIONS},
-                                  "recommendation_round": {"sequence": 1, "outcome": "published", "elapsed_ms": 1250}},
+                                  "recommendation_round": {"sequence": 2, "outcome": "running"},
+                                  "last_finished_recommendation_round": {
+                                      "sequence": 1, "outcome": "published", "finished": True, "elapsed_ms": 1250,
+                                  }},
                 }
             body = json.dumps(payload).encode()
             self.send_response(200)
@@ -594,6 +647,7 @@ def test_real_requests_batch_poll_and_exit_keep_bound_evidence(outcome, record_p
         if outcome in {"accepted", "gzip_large"}:
             assert report["status"] == "passed"
             assert report["summary"]["stop_reason"] == "target_reached"
+            assert report["rounds"][0]["scheduler_elapsed_ms"] == 1250
             assert len(report["rounds"][0]["heads"]) == 8
             assert all(len(head["stages"]) == 11 for head in report["rounds"][0]["heads"])
         else:

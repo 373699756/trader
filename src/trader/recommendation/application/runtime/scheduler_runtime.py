@@ -788,7 +788,7 @@ class SchedulerRuntime:
         task_lanes = (*tuple(lane.status() for lane in self._task_lanes.values()), self._score_lane.status())
         preview = self._preview.status()
         preview_context = self._dependencies.run_scope.preview if self._dependencies.run_scope else None
-        recommendation_round = self._dependencies.rounds.status()
+        recommendation_round, last_finished_round = self._dependencies.rounds.status_with_last_finished()
         cadence = self._dependencies.cadence.status()
         observer = self._dependencies.observer.status()
         deepseek = self._dependencies.reviews.runtime_contract
@@ -811,6 +811,7 @@ class SchedulerRuntime:
             return SchedulerRuntimeStatus(
                 running=self._running,
                 recommendation_round=recommendation_round,
+                last_finished_recommendation_round=last_finished_round,
                 phase=self._phase,
                 config_version=self._config_version,
                 lanes=lanes,

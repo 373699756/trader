@@ -178,9 +178,15 @@ class RecommendationRounds:
             return self._observation.bind()
 
     def status(self) -> RecommendationRoundStatus | None:
+        latest, _ = self.status_with_last_finished()
+        return latest
+
+    def status_with_last_finished(self) -> tuple[RecommendationRoundStatus | None, RecommendationRoundStatus | None]:
+        """Read the active-or-latest round and the last fully drained round atomically."""
         with self._condition:
             # Observing status must not expire work or mutate scheduler state.
-            return self._snapshot_locked() if self._current_admission is not None else self._last_status
+            latest = self._snapshot_locked() if self._current_admission is not None else self._last_status
+            return latest, self._last_status
 
     def _snapshot_locked(self, *, finished: bool = False) -> RecommendationRoundStatus:
         admission = self._current_admission

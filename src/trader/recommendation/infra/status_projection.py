@@ -99,6 +99,7 @@ def RuntimeStatus(
         "scheduler": {
             "config_version": status.config_version,
             "recommendation_round": _round_payload(status.recommendation_round),
+            "last_finished_recommendation_round": _round_payload(status.last_finished_recommendation_round),
             "lanes": [asdict(lane) for lane in status.lanes],
             "hybrid_lanes": [asdict(lane) for lane in status.hybrid_lanes],
             "task_lanes": [asdict(lane) for lane in status.task_lanes],

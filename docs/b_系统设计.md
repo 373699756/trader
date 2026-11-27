@@ -611,6 +611,8 @@ Long报价按第3章的时段合同判断有效年龄：午休扣除休市交集
 
 日期目录的`year`与`month`必须成对且取值有效；月查询只返回该评分档位、策略和自然月下已提交的冻结日期。普通无年月调用保留最近31条结果供现有调用方使用，Web日历使用月查询遍历更早历史；日期缺席表示当前冻结库没有对应记录，不会触发补算或写入。
 
+`/api/status` 的 `scheduler.recommendation_round` 展示进行中的荐股轮，空闲时展示最近结束轮。`scheduler.last_finished_recommendation_round` 单独保留本次服务启动以来最近一个完成清理的轮次，第一轮结束前为 `null`。两者在同一轮次锁下读取，字段相同。监控可按 `sequence` 去重，从结束轮读取最终 `outcome`、总耗时 `elapsed_ms` 和撤销后的清理耗时 `cleanup_ms`。
+
 `/api/status`的`market_data.sources.company_evidence.last_error_code`只公开有限的预载状态和已知读取异常类别；未知原因归`company_snapshot_unavailable`，无错误为null，不公开原始错误文本。planned_count/error_count统计已采用资料，预载完全失败时也可能同时为0，须结合错误码、loaded_identity及覆盖判断，不能仅据0错误签加载成功。
 
 公司资料仍由用户手动运行 `./run.sh sync company` 下载，服务在启动时采用已发布资料。状态接口复用按采用资料、上海日期及所需覆盖交易日计算的覆盖摘要。后台发布观察时会刷新摘要，跨日首次查询也可从内存计算。磁盘身份变化和观察失败直接反映在状态里。

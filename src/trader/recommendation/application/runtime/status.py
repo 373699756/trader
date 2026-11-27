@@ -73,6 +73,7 @@ class SchedulerRuntimeStatus:
         consecutive_failure_count=0,
         next_retry_at=None,
     )
+    last_finished_recommendation_round: RecommendationRoundStatus | None = None
 
 
 __all__ = ["SchedulerRuntimeStatus", "TradingCalendarRuntimeStatus"]
