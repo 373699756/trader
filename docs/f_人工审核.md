@@ -2,6 +2,38 @@
 
 本文记录问题、反例和待确认事项，沿用原问题编号。修复安排、状态与回执统一见[施工进度](g_施工进度.md)。评分、运行、供数与工件的合同分别见 c、b、d、e。
 
+## 20. 全仓业务边界与命名可读性（2026-11-27）
+
+审查基线 `14f48830`。下载、训练、荐股已有独立目录和用例，Web 工厂及 HTTP 交付也有独立边界。定向检查通过了包的导入方向、导入时循环、领域层外部 I/O 与时钟、执行资源构造、交付层供应商依赖、训练应用边界、四档策略目录和源码 1,500 行上限。业务运行仍有下面可以复现的问题。
+
+### 20.1 优先修复的业务与模块边界
+
+| 优先级 | 问题与实际影响 | 证据和验收条件 |
+| --- | --- | --- |
+| P1 | 一条旧冻结记录能阻断后续交易日的结算。日期查询按升序返回全部已提交记录，逐日扫描调用严格的当前记录读取器。异常发生时整次扫描退出，游标也到不了下一天。 | 在临时目录用 SQLite 备份复制本机 V1 冻结库，分别调用 Tomorrow、D25 的待结算入口各两次，四次均因旧记录中的 `schema_version` 引发 `FreezeRecordUnavailableError`。11 月 27 日两条当前记录本身均可严格解码。需在历史身份与当前结算输入的边界处理：旧记录继续可追溯，其失败原因可见，合法的新日记录仍可进入结算。回归应混放两种日期，保护原冻结字节。[日期枚举](../src/trader/recommendation/infra/persistence/freeze_records.py#L323) [逐日扫描](../src/trader/recommendation/infra/persistence/outcome_evidence_index.py#L217) |
+| P2 | 总结算成功可以把 D25 单独的失败标成“已恢复”，同时状态里仍留着 D25 错误码。单策略结算成功本身又缺少对应的恢复通知。页面可能同时给出相反的判断。 | 内存反例只登记 D25 错误，再按总结算成功路径调用 `resolve(strategy=None, stages={"settlement"})`，同一快照的最近错误为 `recovered`，策略错误码仍在。应区分“系统这一项”和“所有策略”，分别验证系统成功、同策略成功和其他策略成功。[结算回调](../src/trader/recommendation/application/runtime/close_control.py#L247) [恢复匹配](../src/trader/recommendation/application/runtime/runtime_issues.py#L75) |
+| P2 | `validate-config` 的配置检查分散在入口和三个业务的具体加载器。入口只包住第一段配置读取，后续配置无效时会抛异常，命令调用方拿不到结构化失败结果。 | 配置隔离副本只缺 `training.json` 时，从公开 CLI 的 `Main` 进入，抛出未捕获的 `ConfigurationError`，标准输出为空。应经组合根调用统一校验用例，并让各业务配置失败都返回可解析的失败结果。需要同时验证无效运行配置、无效训练配置和有效配置。[入口异常范围](../src/trader/entrypoints/cli.py#L130) [跨业务加载](../src/trader/entrypoints/cli.py#L403) |
+
+### 20.2 名称是否专业、简洁、易懂
+
+判断顺序为业务含义准确、第一次看到能辨认职责、在当前上下文中消除多余词。项目的禁用词属于明确规则，表中的其余改名是审查建议。公开命令、HTTP 字段及已发布内容身份须按各自合同处理。
+
+| 现名 | 读者会遇到什么问题 | 建议 |
+| --- | --- | --- |
+| `sync compnay fill` | 日常命令用 `company`，同一业务的年度补采却必须拼成 `compnay`。按正常英语输入 `sync company fill` 会被拒绝。Bash、PowerShell、CLI、文档和测试均采用了这一拼法。 | 从使用者角度推荐 `sync company fill`。现拼法是已发布的命令合同，更名需明确授权并一次切换全部入口和文档。[Bash](../run.sh#L58) [PowerShell](../run.ps1#L56) [CLI](../src/trader/entrypoints/cli.py#L107) |
+| `StderrTomorrowTrainingProgress`、`TomorrowTrainingProgress` | 前者同样输出 `train d25` 进度，后者也携带 D25 策略。名称会让维护者误以为 D25 还有另一套实现。 | 共享终端输出器可称 `TrainingProgressPrinter`，共享事件可称 `TrainingProgress`。仅 Tomorrow 使用的模型和算法保留策略名。[入口](../src/trader/entrypoints/cli.py#L327) [进度对象](../src/trader/training/application/tomorrow_training.py#L135) |
+| `history-automation-status` | 名称暗示历史下载自动化，实际调用 `ExecuteTrainingReminderStatus`，读取已保存的训练到期与提醒状态。用户难以按“训练提醒”找到它。 | 公开命令可考虑 `training-reminder-status`，帮助文字直说“查看训练到期与提醒状态”。[命令分派](../src/trader/entrypoints/cli.py#L141) [业务用例](../src/trader/training/domain/training_reminder.py#L140) |
+| 公司源 `success_count`、`error_count` | 前者统计已读取证券行，后者统计这些行里带来源问题的证券，两者会重叠。本机曾同时报告 4,401 和 4,401。用户容易把它读成互斥的下载成功数和失败数。 | 首先在诊断展示中写“已读取证券数”和“其中带来源问题的证券数”，明确分母。若改变公共字段，再核对所有数据源和 API 消费者。[计数定义](../src/trader/recommendation/infra/market_data/published_company_research.py#L549) [HTTP 投影](../src/trader/http_api/handlers/product_handler.py#L566) |
+| `CompanyDownloadStore`、`SQLiteCompanySyncInputStore`、`StoredCompanyFieldResults` | 均命中仓库禁用词，且三个“存储”含义不同，分别是库角色、SQLite 读写对象、正式事务读出的结果。 | 可分别命名为 `CompanyDatabaseRole`、`SQLiteCompanySyncInputs`、`PublishedCompanyFieldResults`。需同步更新 CLI、同步编排和字段准备消费者，并核对源码摘要参与字段重证的影响。[库角色](../src/trader/download/domain/company_evidence.py#L26) [同步输入](../src/trader/download/infra/company_sync_inputs.py#L32) [正式结果与规则摘要](../src/trader/download/infra/company_field_publication.py#L40) |
+| `HistoryPartitionRepackPartitionEvidence` | 同一个类名写了两次 `Partition`。字段描述单个历史分区重整前后的行数与摘要。 | `HistoryRepackPartitionEvidence` 可保留“历史重整、分区、证据”三个必要含义。此项属于可读性建议。[类型定义](../src/trader/download/infra/history_partition_repack_state.py#L35) |
+
+值得保留的名称包括 `SelectFixedScoredSeats`（固定评分席位）、`DeriveTrainingReminderStatus`（推导训练提醒状态）。它们直接表达动作与业务对象。`D25`、`V1/V2/V3/V5`、`SQLite`、`qfq` 各有确定身份或行业含义，适合保留在代码中，面向用户时可配中文释义。[选席实现](../src/trader/recommendation/domain/risk/scored_fusion.py#L631) [训练提醒](../src/trader/training/domain/training_reminder.py#L140)
+
+### 20.3 范围与验证
+
+- 逐文件核对了 827 个产品 Python 文件、192 个脚本和 817 个测试 Python 文件的禁用词，按仓库分词规则排除了既有固定内容字段。共 60 处符号命中，分布在产品 14 个文件的 24 处、脚本 5 个文件的 10 处、测试 15 个文件的 26 处。计数单位是定义位置，同一名字可有多个位置。产品源码中经绝对 `from` 导入跨模块使用的顶层函数，未发现小写或私有前缀；该项未覆盖动态注册和经模块属性访问的调用。
+- 15 项定向合同验证中 14 项通过，1 项失败，为仓库的职责命名测试，报告上述 60 处。通过项包括 Web 工厂、公司增量／年度命令路由、当前格式 D25 结算、公共类名唯一性及本节所列架构检查。隔离副本的历史混合结算和配置缺失反例单独核实。此次未执行全量功能回归、真实训练或发布验收。
+
 ## 19. 荐股模型、公司资料与看板链路复核（2026-11-26）
 
 11月26日15:12只读核对本机正式公司库。4,401股有供应商财务观测，4,401条正式公司记录中，完整财务、质押、解禁窗口、公告覆盖四项各为0股。东财观测可按采用时点和字段条件进入D25价值、成长、质量子分；最新亏损和公司风险资格另看正式事实。该时点七组模型目录同时有模型和元数据，缺V1 D25。文件计数无法确认运行进程采用或本轮训练终态。服务按启动时的工件评分，后续发布由观察器提示重启。[财务采用](../src/trader/recommendation/domain/market/research.py#L350) [启动加载](../src/trader/bootstrap.py#L605) [发布观察](../src/trader/training/infra/history/history_training_due.py#L626)
