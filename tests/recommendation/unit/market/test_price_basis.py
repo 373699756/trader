@@ -88,6 +88,72 @@ def test_missing_pair_or_conflicting_history_never_defaults_to_unit_scale():
         assert feature.optional_value("qfq_return_1d") is None
 
 
+def test_corrected_anchor_bar_precedes_the_published_summary():
+    bars = _bars()
+    context = BuildHistoryContext(bars)
+    quote = replace(_quote(), previous_close=20)
+    basis = {quote.code: _history_price_basis(20, 10)}
+    corrected = replace(bars[-1], close=9.5)
+    builder = _builder()
+
+    def build(raw):
+        return builder.build((quote,), {quote.code: raw}, AFTERNOON, history_summaries={quote.code: context},
+                             history_price_bases=basis)[0]
+
+    assert build((*bars, corrected)).missing_reasons["history_price_basis"] == "history_price_basis_unavailable"
+    assert build((*bars, corrected, bars[-1])) == build(bars)
+    assert build(bars[:-1]) == build(bars)
+
+
+def test_same_trade_dates_keep_each_stocks_own_close():
+    first = replace(_quote("600001"), previous_close=10)
+    second = replace(_quote("600002"), previous_close=20)
+    bars = _bars()
+    histories = {first.code: bars, second.code: (*bars[:-1], replace(bars[-1], close=20))}
+    bases = {first.code: _history_price_basis(10, 10), second.code: _history_price_basis(20, 20)}
+    snapshots = _builder().build((first, second), histories, AFTERNOON, history_price_bases=bases)
+    assert [feature.optional_value("qfq_return_1d") for feature in snapshots] == pytest.approx([0.2, -0.4])
+
+
+def test_invalid_older_bar_is_rejected_even_when_latest_bar_matches():
+    bars = _bars()
+    quote = _quote()
+    invalid = replace(bars[0], trade_date="bad-date")
+    with pytest.raises(ValueError, match="bad-date"):
+        _builder().build(
+            (quote,), {quote.code: (invalid, *bars[1:])}, AFTERNOON,
+            history_price_bases={quote.code: _history_price_basis(10, 10)},
+        )
+
+
+def test_summary_date_is_checked_only_when_it_supplies_a_closing_price():
+    quote = _quote()
+    context = replace(BuildHistoryContext(_bars()), latest_trade_date="bad-date")
+    builder = _builder()
+    with pytest.raises(ValueError, match="bad-date"):
+        builder.build((quote,), {}, AFTERNOON, history_summaries={quote.code: context})
+    no_close = replace(context, return_anchors=())
+    feature, = builder.build((quote,), {}, AFTERNOON, history_summaries={quote.code: no_close})
+    assert feature.missing_reasons["history_price_basis"] == "history_price_basis_unavailable"
+
+
+def test_incomplete_same_day_summary_keeps_rebased_bars_for_previous_session_metrics():
+    bars = _bars()
+    today = replace(bars[-1], trade_date=AFTERNOON.date().isoformat(), close=50)
+    history = (*bars, today)
+    context = replace(BuildHistoryContext(history), previous_profile=None)
+    scaled_bars, scaled_context = RebaseHistoryPrices(history, context, 2.0)
+    quote = replace(_quote(), previous_close=20)
+
+    def build(raw, summary, qfq_close):
+        return _builder().build((quote,), {quote.code: raw}, AFTERNOON, history_summaries={quote.code: summary},
+                                history_price_bases={quote.code: _history_price_basis(20, qfq_close)})[0]
+
+    actual = build(history, context, 10)
+    assert actual == build(scaled_bars, scaled_context, 20)
+    assert actual.optional_value("ma20") == 20
+
+
 def test_same_day_anchor_requires_a_real_close_quote_and_preview_keeps_its_market_day():
     previous, day = date(2026, 7, 15), date(2026, 7, 16)
     basis = HistoryPriceBasis(day, previous, (

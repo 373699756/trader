@@ -263,18 +263,16 @@ class FeatureBuilder:
         check_budget = options.get("check_budget")
         raw: dict[str, dict[str, float | None]] = {}
         basis_failures: set[str] = set()
+        parsed_dates: dict[str, date] = {}
         for quote in quotes:
             if check_budget is not None:
                 check_budget()
             original_bars = histories.get(quote.code, ())
             original_context = (history_summaries or {}).get(quote.code)
-            historical_closes = {date.fromisoformat(bar.trade_date): bar.close for bar in original_bars}
-            if original_context is not None and original_context.latest_trade_date:
-                latest_close = dict(original_context.return_anchors).get(0)
-                if latest_close is not None:
-                    historical_closes.setdefault(date.fromisoformat(original_context.latest_trade_date), latest_close)
+            basis = history_price_bases.get(quote.code)
+            historical_closes = _basis_closes(basis, original_bars, original_context, parsed_dates)
             scale = ResolveHistoryPriceScale(
-                quote, history_price_bases.get(quote.code), observed_at=observed_at,
+                quote, basis, observed_at=observed_at,
                 historical_closes=historical_closes,
                 preview_context=options.get("preview_context"),
             )
@@ -628,6 +626,28 @@ class FeatureBuilder:
             "low_crowding_score": None if limit_proximity is None else 100.0 * (1.0 - limit_proximity),
             "limit_proximity": limit_proximity,
         }
+
+
+def _basis_closes(
+    basis: HistoryPriceBasis | None, bars: tuple[DailyBar, ...], context: HistoryContext | None,
+    parsed_dates: dict[str, date],
+) -> dict[date, float]:
+    needed = {anchor.trade_date for anchor in basis.anchors} if basis is not None else set()
+    closes: dict[date, float] = {}
+    for bar in bars:
+        day = parsed_dates.get(bar.trade_date)
+        if day is None:
+            day = date.fromisoformat(bar.trade_date)
+            parsed_dates[bar.trade_date] = day
+        if day in needed:
+            closes[day] = bar.close
+    if context is not None and context.latest_trade_date:
+        price = dict(context.return_anchors).get(0)
+        if price is not None:
+            latest = date.fromisoformat(context.latest_trade_date)
+            if latest in needed:
+                closes.setdefault(latest, price)
+    return closes
 
 
 _DEFERRED_FEATURES = (
