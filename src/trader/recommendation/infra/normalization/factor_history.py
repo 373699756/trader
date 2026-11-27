@@ -42,13 +42,12 @@ def BuildFactorHistory(
     bars: tuple[DailyBar, ...], context: HistoryContext | None, observation_date: str
 ) -> FactorHistory:
     """Project only consumed scalars; published contexts avoid historical scans."""
-    completed = tuple(bar for bar in bars if bar.trade_date < observation_date)
     if context is not None and context.latest_trade_date < observation_date:
         history = context.profile
     elif context is not None and context.latest_trade_date == observation_date and context.previous_profile is not None:
         history = context.previous_profile
     else:
-        history = SummarizeHistoryMetrics(completed)
+        history = SummarizeHistoryMetrics(tuple(bar for bar in bars if bar.trade_date < observation_date))
     return FactorHistory(
         ma5=history.moving_average_5d,
         ma10=history.moving_average_10d,
@@ -66,14 +65,9 @@ def BuildFactorHistory(
         amihud_20d=history.amihud_20d,
         median_turnover_20d=history.median_turnover_20d,
         upward_consistency_20d=history.upward_consistency_20d,
-        return_anchors=tuple(
-            (
-                days,
-                context.anchor_price(days, observation_date)
-                if context is not None
-                else CompletedHistoryClose(bars, days, observation_date),
-            )
-            for days in (3, 5, 10, 20, 60)
+        return_anchors=(
+            context.anchor_prices((3, 5, 10, 20, 60), observation_date) if context is not None else
+            tuple((days, CompletedHistoryClose(bars, days, observation_date)) for days in (3, 5, 10, 20, 60))
         ),
         require_finite_price=context is None,
     )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
@@ -11,7 +12,7 @@ from typing import cast
 from zoneinfo import ZoneInfo
 
 from trader.infra.cache_contracts import BoundedCache, CacheIdentity, RequestKey
-from trader.infra.serialization.canonical import ContentHash
+from trader.infra.serialization.canonical_codec import CanonicalJsonText, CanonicalValue
 from trader.recommendation.domain.market.factors import PercentileScoresWithMetadata
 from trader.recommendation.domain.market.models import CrossSectionStats, MarketQuote
 
@@ -104,20 +105,23 @@ def _population_features(
         return _calculate_population(quotes, raw, data_version)
     # Preserve input order: industry averages use the original floating-point
     # reduction order. Ignore model-only factors and quote delivery metadata.
-    inputs = (
-        tuple(
-            (
-                quote.code, quote.industry, _finite(quote.speed), _finite(quote.pct_change),
-                quote.source_time.astimezone(_SHANGHAI).date().isoformat(),
-            )
-            for quote in quotes
-        ),
-        tuple((code, tuple(_finite(values.get(name)) for name in _RAW_FIELDS)) for code, values in raw.items()),
-    )
+    quote_inputs: list[CanonicalValue] = [
+        [
+            quote.code, quote.industry, _finite(quote.speed), _finite(quote.pct_change),
+            quote.source_time.astimezone(_SHANGHAI).date().isoformat(),
+        ]
+        for quote in quotes
+    ]
+    factor_inputs: list[CanonicalValue] = [
+        [code, [_finite(values.get(name)) for name in _RAW_FIELDS]] for code, values in raw.items()
+    ]
+    # Both lists already contain only JSON primitives. Encode directly instead
+    # of walking the entire population a second time for typed-object projection.
+    digest = hashlib.sha256(CanonicalJsonText([quote_inputs, factor_inputs]).encode("ascii")).hexdigest()
     latest = max(quotes, key=lambda quote: quote.source_time)
     identity = CacheIdentity(
         "market_cross_section", "local_factors", "population",
-        RequestKey({"inputs": ContentHash(inputs), "data_version": data_version, "adjust": "qfq"}),
+        RequestKey({"inputs": digest, "data_version": data_version, "adjust": "qfq"}),
         latest.source_time.astimezone(_SHANGHAI).date().isoformat(),
         "market_factors", None, "percentile_025_975",
     )

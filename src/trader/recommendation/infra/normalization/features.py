@@ -80,6 +80,7 @@ from trader.recommendation.domain.market.price_basis import HistoryPriceBasis, R
 from trader.recommendation.infra.normalization.history_price_basis import RebaseHistoryPrices
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
+_LATEST_FACTOR_INPUTS = RequestKey({"inputs": "latest"})
 
 
 
@@ -204,6 +205,7 @@ class FeatureBuilder:
         self._long_research_policy = long_research_policy
         self._feature_component_weights = feature_component_weights
         self._model_momentum_horizons = tuple(model_momentum_horizons)
+        self._anchor_horizons = tuple(dict.fromkeys((1, 3, 5, *model_momentum_horizons)))
         self._cache = cache
         self._base_policy_identity = ContentHash(feature_component_weights)
 
@@ -478,7 +480,7 @@ class FeatureBuilder:
                 "quote_factor_inputs",
                 "local_history",
                 quote.code,
-                RequestKey({"inputs": "latest"}),
+                _LATEST_FACTOR_INPUTS,
                 observation_date,
                 "quote_factors",
                 "qfq",
@@ -511,26 +513,18 @@ class FeatureBuilder:
             cached = cast(_CachedQuoteFactors, found.value) if found is not None and found.value is not None else None
             if cached is None or not cached.matches(inputs, prepared_history(cached)):
                 cached = cast(_CachedQuoteFactors, cache.coalesce(identity, build))
-            # A concurrent owner may have different facts under the same latest
-            # slot. Recheck the arithmetic inputs before consuming its result.
-            if not cached.matches(inputs, prepared_history(cached)):
-                cached = build()
+                # A concurrent owner may have different facts under the same
+                # latest slot. Recheck its result before consuming it.
+                if not cached.matches(inputs, prepared_history(cached)):
+                    cached = build()
             values = dict(cached.values)
-        anchor_horizons = tuple(dict.fromkeys((1, 3, 5, *self._model_momentum_horizons)))
         qfq_alpha = {
             item.feature_id.value: item.value
             for item in CalculateProfileQfqAlpha(
                 QfqPriceAnchors(
                     quote.price,
-                    tuple(
-                        (
-                            days,
-                            context.anchor_price(days, observation_date)
-                            if context is not None
-                            else CompletedHistoryClose(bars, days, observation_date),
-                        )
-                        for days in anchor_horizons
-                    ),
+                    context.anchor_prices(self._anchor_horizons, observation_date) if context is not None
+                    else tuple((days, CompletedHistoryClose(bars, days, observation_date)) for days in self._anchor_horizons),
                 ),
                 self._model_momentum_horizons,
             )

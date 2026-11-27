@@ -203,6 +203,13 @@ class _DefaultFilterRules:
         self.max_age_seconds = max_age_seconds
         self.policy = policy
         self.quote_freshness_basis = quote_freshness_basis
+        thresholds = policy.structured_risk_thresholds.items()
+        self._permanent_thresholds = tuple(
+            (name, limit) for name, limit in thresholds if name in _PERMANENT_STRUCTURED_RISK_FIELDS
+        )
+        self._dynamic_thresholds = tuple(
+            (name, limit) for name, limit in thresholds if name not in _PERMANENT_STRUCTURED_RISK_FIELDS
+        )
 
     def unsupported_code(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         if BoardForCode(snapshot.quote.code) is Board.UNSUPPORTED:
@@ -406,28 +413,12 @@ class _DefaultFilterRules:
     def _structured_negative_risk(
         self,
         snapshot: FeatureSnapshot,
-        field_names: frozenset[str],
+        thresholds: tuple[tuple[str, float], ...],
     ) -> FilterAudit | None:
-        code_by_field = {
-            "major_shareholder_reduction": "major_shareholder_reduction",
-            "financial_fraud_history": "financial_fraud_history",
-            "official_investigation_history": "official_investigation_history",
-            "major_illegal_history": "major_illegal_history",
-            "fund_occupation_history": "fund_occupation_history",
-            "illegal_guarantee_history": "illegal_guarantee_history",
-            "forced_delisting_risk": "forced_delisting_risk",
-            "unlock_risk": "unlock_risk",
-            "reduction_or_unlock": "reduction_or_unlock",
-            "pledge_risk": "pledge_risk",
-            "latest_disclosed_report_loss": "latest_disclosed_report_loss",
-            "financial_deterioration": "financial_deterioration",
-        }
-        for field_name, threshold in self.policy.structured_risk_thresholds.items():
-            if field_name not in field_names:
-                continue
+        for field_name, threshold in thresholds:
             value = snapshot.values.get(field_name)
             if value is not None and math.isfinite(value) and value > threshold:
-                return _make_audit(snapshot, code_by_field.get(field_name, field_name), f"<= {threshold:g}", value)
+                return _make_audit(snapshot, field_name, f"<= {threshold:g}", value)
         return None
 
     def permanent_structured_negative_risk(
@@ -435,15 +426,14 @@ class _DefaultFilterRules:
         snapshot: FeatureSnapshot,
         _now: datetime,
     ) -> FilterAudit | None:
-        return self._structured_negative_risk(snapshot, _PERMANENT_STRUCTURED_RISK_FIELDS)
+        return self._structured_negative_risk(snapshot, self._permanent_thresholds)
 
     def dynamic_structured_negative_risk(
         self,
         snapshot: FeatureSnapshot,
         _now: datetime,
     ) -> FilterAudit | None:
-        dynamic_fields = frozenset(self.policy.structured_risk_thresholds) - _PERMANENT_STRUCTURED_RISK_FIELDS
-        return self._structured_negative_risk(snapshot, dynamic_fields)
+        return self._structured_negative_risk(snapshot, self._dynamic_thresholds)
 
     def structured_risk_unavailable(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         missing = tuple(

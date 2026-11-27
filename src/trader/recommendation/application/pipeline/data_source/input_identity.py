@@ -4,12 +4,62 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TypeAlias
 
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
 
 InputValue: TypeAlias = str | int | FeatureSnapshot | tuple["InputValue", ...]
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _FeatureBatch:
+    features: tuple[FeatureSnapshot, ...]
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, _FeatureBatch):
+            return self.features is other.features or (
+                len(self.features) == len(other.features)
+                and all(_same_feature(left, right) for left, right in zip(self.features, other.features, strict=True))
+            )
+        # accept() may also receive an explicit material tuple for this kind.
+        if isinstance(other, tuple):
+            return len(other) == len(self.features) and all(
+                isinstance(item, FeatureSnapshot)
+                and item.observed_at == item.quote.received_time == item.quote.source_time
+                and all(
+                    evidence.published_at == evidence.received_at == item.quote.source_time
+                    for evidence in item.evidence
+                    if evidence.evidence_type == "structured_point_in_time"
+                )
+                and _same_feature(feature, item)
+                for feature, item in zip(self.features, other, strict=True)
+            )
+        return NotImplemented
+
+
+def _same_feature(left: FeatureSnapshot, right: FeatureSnapshot) -> bool:
+    if left is right:
+        return True
+    if left.quote.source_time != right.quote.source_time or left.quote.data_version != right.quote.data_version:
+        return False
+    if left == right:
+        return True
+    if len(left.evidence) != len(right.evidence):
+        return False
+    # Compare every field, masking only observation times assigned by this
+    # consumer. Real publications and corrected facts keep their own identity.
+    evidence = tuple(
+        replace(new, published_at=old.published_at, received_at=old.received_at)
+        if old.evidence_type == new.evidence_type == "structured_point_in_time" else new
+        for old, new in zip(left.evidence, right.evidence, strict=True)
+    )
+    return left == replace(
+        right,
+        observed_at=left.observed_at,
+        quote=replace(right.quote, received_time=left.quote.received_time),
+        evidence=evidence,
+    )
 
 
 class InputVersionClock:
@@ -18,9 +68,12 @@ class InputVersionClock:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._revision = 0
-        self._latest: dict[str, tuple[InputValue, str]] = {}
+        self._latest: dict[str, tuple[InputValue | _FeatureBatch, str]] = {}
 
     def accept(self, kind: str, value: InputValue) -> str:
+        return self._accept(kind, value)
+
+    def _accept(self, kind: str, value: InputValue | _FeatureBatch) -> str:
         with self._lock:
             previous = self._latest.get(kind)
             if previous is not None and previous[0] == value:
@@ -36,24 +89,7 @@ class InputVersionClock:
             return f"{kind}:{self._revision}"
 
     def features(self, kind: str, features: tuple[FeatureSnapshot, ...]) -> str:
-        # Delivery timestamps alone do not mean the supplier facts changed.
-        material = tuple(
-            replace(
-                feature,
-                observed_at=feature.quote.source_time,
-                quote=replace(feature.quote, received_time=feature.quote.source_time),
-                # Generated summaries describe the quote, not a newly published
-                # external event. Keep all real evidence dates and source age.
-                evidence=tuple(
-                    replace(item, published_at=feature.quote.source_time, received_at=feature.quote.source_time)
-                    if item.evidence_type == "structured_point_in_time"
-                    else item
-                    for item in feature.evidence
-                ),
-            )
-            for feature in features
-        )
-        return self.accept(kind, material)
+        return self._accept(kind, _FeatureBatch(features))
 
 
 def QuoteVersions(features: tuple[FeatureSnapshot, ...]) -> dict[str, MarketQuote]:

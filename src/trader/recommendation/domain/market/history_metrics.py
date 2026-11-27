@@ -101,12 +101,19 @@ class HistoryContext:
         return (current_price / start - 1.0) * 100.0
 
     def anchor_price(self, days: int, observation_date: str) -> float | None:
+        return self._anchor_price(days, observation_date, dict(self.return_anchors))
+
+    def anchor_prices(self, horizons: tuple[int, ...], observation_date: str) -> tuple[tuple[int, float | None], ...]:
+        prices = dict(self.return_anchors)
+        return tuple((days, self._anchor_price(days, observation_date, prices)) for days in horizons)
+
+    def _anchor_price(self, days: int, observation_date: str, prices: Mapping[int, float]) -> float | None:
         # The live quote is today's bar. Published history normally ends yesterday;
         # a same-day published bar must instead be skipped before counting lags.
         if days < 1 or self.latest_trade_date > observation_date:
             return None
         offset = days if self.latest_trade_date == observation_date else days - 1
-        price = dict(self.return_anchors).get(offset)
+        price = prices.get(offset)
         return price if price is not None and price > 0.0 else None
 
 

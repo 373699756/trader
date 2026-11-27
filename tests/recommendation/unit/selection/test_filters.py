@@ -172,6 +172,19 @@ def test_missing_structured_risk_is_audited_without_blocking_local_fallback(feat
     assert "corporate_risk_window_unavailable" in {item.filter_code for item in result.optional_flags}
 
 
+def test_structured_risk_audits_keep_first_hit_in_each_policy_group(feature_factory, observed_at) -> None:
+    thresholds = {
+        "custom_warning": 0.5,
+        "financial_fraud_history": 1.0,
+        "official_investigation_history": 0.0,
+        "fund_occupation_history": 0.0,
+    }
+    policy = HardFilterPolicyFixture(structured_risk_thresholds=thresholds)
+    snapshot = feature_factory(values={field: 2.0 for field in thresholds})
+    result = ApplyFilters(snapshot, LevelTwoFilterRules(max_age_seconds=20, policy=policy), now=observed_at)
+    assert tuple(reason.code for reason in result.reasons) == ("financial_fraud_history", "custom_warning")
+
+
 def test_configured_blacklist_is_a_hard_filter(feature_factory, observed_at) -> None:
     snapshot = feature_factory(code="600001")
 

@@ -674,7 +674,10 @@ def _qualified(
     # Keep verified facts and disclosed financial reports; missing coverage cannot erase a known risk.
     return replace(
         item,
-        company_context=replace(item.company_context, coverage_current=False) if item.company_context else None,
+        company_context=(
+            replace(item.company_context, coverage_current=False)
+            if item.company_context is not None and item.company_context.coverage_current else item.company_context
+        ),
         corporate_risk_window_complete=False,
         news_queried=False,
         source_errors=tuple(sorted(set((*item.source_errors, "risk_coverage:stale")))),
@@ -708,12 +711,11 @@ def _qualified_unlock(item: ResearchObservation, now: datetime, days: int) -> Re
         if complete and context is not None
         else None
     )
-    return replace(
-        item,
-        unlock_ratio_pct=ratio,
-        company_context=replace(context, coverage_current=context.coverage_current and complete) if context else None,
-        source_errors=errors,
-    )
+    if context is not None and context.coverage_current and not complete:
+        context = replace(context, coverage_current=False)
+    if context is item.company_context and ratio == item.unlock_ratio_pct and errors == item.source_errors:
+        return item
+    return replace(item, unlock_ratio_pct=ratio, company_context=context, source_errors=errors)
 
 
 def _observation(

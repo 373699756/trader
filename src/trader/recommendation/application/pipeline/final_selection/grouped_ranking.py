@@ -71,7 +71,7 @@ class RankingSelectionService(RankingSelectionPort):
             population_qualifications=population_qualifications,
         )
         qualified = self.monotonic()
-        references = BuildScoredCandidateReferences(filtered)
+        references = BuildScoredCandidateReferences(filtered, for_ranking_only=True)
         referenced = self.monotonic()
         plan = RankFilteredCandidates(references)
         ranked = self.monotonic()

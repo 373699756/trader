@@ -99,3 +99,32 @@ def test_source_time_and_time_dependent_derived_values_still_invalidate(applicat
     baseline = clock.features("market", (feature,))
     aged = replace(feature, values={**feature.values, "evidence_freshness": 0.0})
     assert clock.features("market", (aged,)) != baseline
+
+
+def test_delivery_only_prefix_does_not_mask_later_corrections_or_reordering(application_feature_factory):
+    at = datetime(2026, 8, 12, 14, 0, tzinfo=SHANGHAI)
+    first = application_feature_factory("600001", at)
+    last = application_feature_factory("600002", at)
+    clock = InputVersionClock()
+    original = clock.features("market", (first, last))
+    later = at + timedelta(seconds=2)
+    repeated = replace(first, observed_at=later, quote=replace(first.quote, received_time=later))
+    assert clock.features("market", (repeated, last)) == original
+    corrected = replace(last, missing_reasons={"financial": "unavailable"})
+    revision = clock.features("market", (repeated, corrected))
+    assert revision != original
+    assert clock.features("market", (corrected, repeated)) != revision
+
+
+def test_explicit_material_and_feature_observations_share_the_kind_revision(application_feature_factory):
+    at = datetime(2026, 8, 12, 14, 0, tzinfo=SHANGHAI)
+    feature = application_feature_factory("600001", at)
+    material = (replace(feature, observed_at=feature.quote.source_time,
+                        quote=replace(feature.quote, received_time=feature.quote.source_time)),)
+    later = replace(feature, observed_at=at + timedelta(seconds=1))
+    clock = InputVersionClock()
+    revision = clock.accept("market", material)
+    assert clock.features("market", (later,)) == revision
+    revision = clock.features("candidate", (later,))
+    assert clock.accept("candidate", material) == revision
+    assert clock.accept("candidate", (later,)) != revision

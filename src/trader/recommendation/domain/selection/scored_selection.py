@@ -496,19 +496,18 @@ def FilterCandidateInputs(
 
 
 def PlanScoredCandidates(request: ScoredSelectionRequest) -> ScoredCandidatePlan:
-    return RankFilteredCandidates(BuildScoredCandidateReferences(FilterCandidateInputs(request)))
+    return RankFilteredCandidates(BuildScoredCandidateReferences(FilterCandidateInputs(request), for_ranking_only=True))
 
 
-def BuildScoredCandidateReferences(source: FilteredCandidateInputs) -> ScoredCandidateReferences:
-    """Build same-board percentile references without ranking or observing a clock."""
+def BuildScoredCandidateReferences(
+    source: FilteredCandidateInputs, *, for_ranking_only: bool = False,
+) -> ScoredCandidateReferences:
+    """Build full board references. Directed ranking alone only needs their distributions."""
     request = source.request
     cross_sections: list[BoardCrossSection] = []
+    population_by_board = _qualified_board_features(source.population)
     for board in _SUPPORTED_BOARDS:
-        population = tuple(
-            item.features
-            for item in source.population.evaluations.values()
-            if _business_ready(item) and item.features.quote.board is board
-        )
+        population = population_by_board[board]
         if not population:
             continue
         fallback = request.fallbacks.get(board)
@@ -522,10 +521,19 @@ def BuildScoredCandidateReferences(source: FilteredCandidateInputs) -> ScoredCan
                 data_version=request.data_version,
                 fallback=fallback.cross_section if fallback is not None else None,
                 fallback_age_sessions=fallback.age_sessions if fallback is not None else None,
-            )
+            ),
+            include_population_features=not for_ranking_only or request.candidate_features is None,
         )
         cross_sections.append(cross_section)
     return ScoredCandidateReferences(source, tuple(cross_sections))
+
+
+def _qualified_board_features(filtered: _FilteredFeatures) -> dict[Board, list[FeatureSnapshot]]:
+    by_board: dict[Board, list[FeatureSnapshot]] = {board: [] for board in _SUPPORTED_BOARDS}
+    for item in filtered.evaluations.values():
+        if _business_ready(item) and item.features.quote.board in by_board:
+            by_board[item.features.quote.board].append(item.features)
+    return by_board
 
 
 def RankFilteredCandidates(references: ScoredCandidateReferences) -> ScoredCandidatePlan:
@@ -540,19 +548,17 @@ def RankFilteredCandidates(references: ScoredCandidateReferences) -> ScoredCandi
     evaluations.update(candidate_evaluations)
     population_versions: dict[Board, str] = {}
     reserves: dict[Board, tuple[str, ...]] = {}
+    candidates_by_board = (
+        _qualified_board_features(candidate_filtered) if request.candidate_features is not None else None
+    )
     for cross_section in references.cross_sections:
         board = cross_section.board
-        candidates = tuple(
-            item.features
-            for item in candidate_evaluations.values()
-            if _business_ready(item) and item.features.quote.board is board
-        )
         population_versions[board] = cross_section.population.population_version
         policy = request.policy.board_policies[board]
         enriched = (
             ApplyBoardPolicy(cross_section, request.policy.strategy, policy)
-            if request.candidate_features is None
-            else ProjectBoardPolicy(cross_section, request.policy.strategy, policy, candidates)
+            if candidates_by_board is None else
+            ProjectBoardPolicy(cross_section, request.policy.strategy, policy, candidates_by_board[board])
         )
         reserves[board] = _rank_board_candidates(
             enriched,

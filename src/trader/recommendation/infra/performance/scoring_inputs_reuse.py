@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+import hashlib
+import json
 import threading
 import time
 from typing import cast
 
 from trader.infra.cache import BoundedLruCache
 from trader.infra.cache_contracts import CacheIdentity, RequestKey
-from trader.infra.serialization.canonical_codec import CanonicalDigest
+from trader.infra.serialization.canonical_codec import EncodeCanonicalValue
 from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
     FilterFeatureCandidates, ScoredSelectionIdentity, ScoredSelectionOptions,
 )
@@ -30,6 +32,13 @@ class ScoringReuseCounts:
     calculations: int
     hits: int
     bypasses: int = 0
+
+
+def _preparation_digest(inputs: object) -> str:
+    # Field iteration order can change the first reported hard-filter reason
+    # and the reduction order of score components under the same policy version.
+    payload = json.dumps(EncodeCanonicalValue(inputs), separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(payload.encode("ascii")).hexdigest()
 
 
 class ScoringInputsReuse:
@@ -67,7 +76,7 @@ class ScoringInputsReuse:
         started = time.monotonic()
         self._count(requests=1)
         try:
-            digest = CanonicalDigest((
+            digest = _preparation_digest((
                 tuple(features), policy, options, identity, execution_gate_reasons, population_qualifications,
             ))
         except ValueError:
@@ -96,7 +105,7 @@ class ScoringInputsReuse:
                 population_qualifications=population_qualifications,
             )
             filtered_at = time.monotonic()
-            prepared = BuildScoredCandidateReferences(qualified)
+            prepared = BuildScoredCandidateReferences(qualified, for_ranking_only=True)
             referenced_at = time.monotonic()
             calculation_seconds = filtered_at - before
             reference_seconds = referenced_at - filtered_at

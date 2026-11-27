@@ -223,23 +223,30 @@ def test_fixed_board_population_keeps_scores_across_request_sizes_and_partitions
         replace(feature, values={**feature.values, "amount_median_20d": float(index + 1) * 1_000_000})
         for index, feature in enumerate(_features(application_feature_factory, 1000, Board.MAIN))
     )
-    section = _build_board_cross_section(
-        features,
+    request = BoardCrossSectionRequest(
+        features=features,
         board=Board.MAIN,
         merge_epoch="fixed",
         trade_date="2026-07-16",
         phase="morning_main",
         data_version="fixed",
     )
+    section = BuildBoardCrossSection(request)
+    reference = BuildBoardCrossSection(request, include_population_features=False)
+    assert reference.population == section.population
+    assert reference.reference_values == section.reference_values
+    assert reference.features == ()
     names = (*_LOCAL_COMPONENT_WEIGHTS[strategy], "entry_quality")
     if strategy is Strategy.TOMORROW:
         names = (*names, "market_state")
     policy = _policy(strategy, Board.MAIN, {name: 1 / len(names) for name in names})
     whole = ApplyBoardPolicy(section, strategy, policy)
     expected = {item.quote.code: item for item in whole}
-    for size in (1, 99, 100, 120, 1000):
+    for size in (0, 1, 99, 100, 120, 1000):
         requested = tuple(reversed(features[:size]))
-        for projected in ProjectBoardPolicy(section, strategy, policy, requested):
+        projected_rows = ProjectBoardPolicy(section, strategy, policy, requested)
+        assert ProjectBoardPolicy(reference, strategy, policy, requested) == projected_rows
+        for projected in projected_rows:
             original = expected[projected.quote.code]
             assert projected.values == original.values
             assert projected.board_population == original.board_population

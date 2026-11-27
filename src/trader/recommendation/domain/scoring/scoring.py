@@ -100,16 +100,15 @@ class _PopulationBasis:
     fallback_age: int | None
 
 
-def BuildBoardCrossSection(request: BoardCrossSectionRequest) -> BoardCrossSection:
-    """Build one isolated board cross-section without reading configuration or I/O."""
+def BuildBoardCrossSection(
+    request: BoardCrossSectionRequest,
+    *,
+    include_population_features: bool = True,
+) -> BoardCrossSection:
+    """Build complete board statistics, optionally retaining enriched population rows."""
 
     _validate_request(request)
-    ordered = tuple(
-        sorted(
-            (item for item in request.features if item.quote.board is request.board),
-            key=lambda item: item.quote.code,
-        )
-    )
+    ordered = _ordered_board_features(request.features, request.board)
     current_distributions = BuildScoringDistributions(ordered)
     current_sample = sum(
         item.optional_value("amount_median_20d") is not None and item.value("amount_median_20d") > 0.0
@@ -117,12 +116,10 @@ def BuildBoardCrossSection(request: BoardCrossSectionRequest) -> BoardCrossSecti
     )
     basis = _population_basis(request, current_distributions, current_sample)
     population = _build_population(request, basis, current_sample, len(ordered))
-    normalized, normalization = NormalizeScoringFeatures(
-        ordered,
-        basis.reference_values,
-        population.population_version,
+    enriched, normalization = (
+        _project_board_features(ordered, population, basis.reference_values, request)
+        if include_population_features else ((), {})
     )
-    enriched = _enrich_features(normalized, population, request)
     return BoardCrossSection(
         board=request.board,
         merge_epoch=request.merge_epoch,
@@ -135,6 +132,10 @@ def BuildBoardCrossSection(request: BoardCrossSectionRequest) -> BoardCrossSecti
         reference_values={name: tuple(values) for name, values in basis.reference_values.items()},
         normalization=normalization,
     )
+
+
+def _ordered_board_features(features: Sequence[FeatureSnapshot], board: Board) -> tuple[FeatureSnapshot, ...]:
+    return tuple(sorted((item for item in features if item.quote.board is board), key=lambda item: item.quote.code))
 
 
 def _validate_request(request: BoardCrossSectionRequest) -> None:
@@ -221,11 +222,13 @@ def _build_population(
     )
 
 
-def _enrich_features(
-    normalized: Sequence[FeatureSnapshot],
+def _project_board_features(
+    ordered: Sequence[FeatureSnapshot],
     population: BoardPopulation,
+    reference_values: Mapping[str, Sequence[float]],
     request: BoardCrossSectionRequest,
-) -> tuple[FeatureSnapshot, ...]:
+) -> tuple[tuple[FeatureSnapshot, ...], Mapping[str, CrossSectionStats]]:
+    normalized, normalization = NormalizeScoringFeatures(ordered, reference_values, population.population_version)
     enriched: list[FeatureSnapshot] = []
     for item in normalized:
         values = dict(item.values)
@@ -265,7 +268,7 @@ def _enrich_features(
                 parameter_status=population.status,
             )
         )
-    return tuple(enriched)
+    return tuple(enriched), normalization
 
 
 def ApplyBoardPolicy(
@@ -308,17 +311,7 @@ def ProjectBoardPolicy(
 
     if policy.strategy is not strategy or policy.board is not cross_section.board:
         raise ValueError("board policy does not match cross-section")
-    ordered = tuple(
-        sorted(
-            (item for item in features if item.quote.board is cross_section.board),
-            key=lambda item: item.quote.code,
-        )
-    )
-    normalized, _normalization = NormalizeScoringFeatures(
-        ordered,
-        cross_section.reference_values,
-        cross_section.population.population_version,
-    )
+    ordered = _ordered_board_features(features, cross_section.board)
     request = BoardCrossSectionRequest(
         features=ordered,
         board=cross_section.board,
@@ -328,7 +321,7 @@ def ProjectBoardPolicy(
         data_version=cross_section.data_version,
 
     )
-    enriched = _enrich_features(normalized, cross_section.population, request)
+    enriched, _ = _project_board_features(ordered, cross_section.population, cross_section.reference_values, request)
     return ApplyBoardPolicy(replace(cross_section, features=enriched), strategy, policy)
 
 

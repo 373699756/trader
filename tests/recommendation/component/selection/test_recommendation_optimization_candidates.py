@@ -9,6 +9,7 @@ import threading
 import pytest
 
 from tests.helpers.recommendation.market_data import _history_bars
+from tests.helpers.download.company.company_score_ledger import _facts
 from tests.helpers.recommendation.runtime.recommendation_boundaries import _features, _runtime_policy
 from tests.helpers.recommendation.publication.tomorrow_projection import EVALUATED_AT, _verified_feature
 from trader.infra.cache import BoundedLruCache
@@ -29,7 +30,10 @@ from trader.recommendation.domain.candidate.filters import QuoteFreshnessBasis
 from trader.recommendation.domain.evidence.review import RiskFact
 from trader.recommendation.domain.market.models import Evidence
 from trader.recommendation.domain.publication.models import ScoredDisposition
-from trader.recommendation.domain.selection.scored_selection import BuildScoredCandidateReferences, PreselectionReplayFeature
+from trader.recommendation.domain.scoring.company import CompanyScoringContext
+from trader.recommendation.domain.selection.scored_selection import (
+    BuildScoredCandidateReferences, PreselectionReplayFeature, RankFilteredCandidates,
+)
 
 
 @pytest.fixture
@@ -40,11 +44,17 @@ def scoring_cache():
     cache.stop()
 
 
-@pytest.mark.parametrize("change", ("none", "risk", "quote", "time", "policy", "model_gate"))
+@pytest.mark.parametrize(
+    "change", ("none", "risk", "quote", "time", "policy", "model_gate", "candidate_company", "candidate_factor"),
+)
 def test_scoring_reuse_tracks_complete_inputs_and_matches_original(scoring_cache, application_feature_factory, change):
     features = _features(application_feature_factory)
     policy = _runtime_policy()
     options = ScoredSelectionOptions(evaluated_at=EVALUATED_AT, max_age_seconds=30.0)
+    directed = features[1]
+    if change in {"candidate_company", "candidate_factor"}:
+        directed = replace(directed, company_context=CompanyScoringContext(_facts((), at=EVALUATED_AT), (), False))
+        options = replace(options, candidate_features=(directed,))
     identity = ScoredSelectionIdentity(EVALUATED_AT.date(), "batch", "epoch")
     candidate = ScoringInputsReuse(scoring_cache)
     first = candidate.select(features, policy, options, identity)
@@ -59,6 +69,13 @@ def test_scoring_reuse_tracks_complete_inputs_and_matches_original(scoring_cache
         policy = replace(policy, strategy_version="changed-policy")
     elif change == "model_gate":
         gates = {features[0].quote.code: "model_net_utility_nonpositive"}
+    elif change == "candidate_company":
+        assert directed.company_context is not None
+        corrected = replace(directed, company_context=replace(directed.company_context, coverage_current=True))
+        options = replace(options, candidate_features=(corrected,))
+    elif change == "candidate_factor":
+        corrected = replace(directed, values={**directed.values, "return_20d": 0.75})
+        options = replace(options, candidate_features=(corrected,))
     second = candidate.select(features, policy, options, identity, execution_gate_reasons=gates)
     expected = RankingSelectionService().select(features, policy, options, identity, execution_gate_reasons=gates)
     assert second.selection == expected.selection
@@ -86,6 +103,40 @@ def test_scoring_reuse_coalesces_and_budget_rejection_keeps_full_result(scoring_
     assert candidate.counts.calculations == 3
 
 
+def test_directed_ranking_matches_for_complete_and_reference_only_sections(application_feature_factory):
+    population = _features(application_feature_factory)[:100]
+    selected = replace(population[2], quote=replace(population[2].quote, speed=1.25))
+    options = ScoredSelectionOptions(evaluated_at=EVALUATED_AT, max_age_seconds=30.0, candidate_features=(selected,))
+    filtered = FilterFeatureCandidates(
+        population, _runtime_policy(), options, ScoredSelectionIdentity(EVALUATED_AT.date(), "batch", "epoch"),
+    )
+    full = BuildScoredCandidateReferences(filtered)
+    compact = BuildScoredCandidateReferences(filtered, for_ranking_only=True)
+    assert len(full.cross_sections[0].features) == 100
+    assert not compact.cross_sections[0].features
+    assert full.cross_sections[0].population == compact.cross_sections[0].population
+    expected = RankFilteredCandidates(full)
+    assert expected == RankFilteredCandidates(compact)
+    assert tuple(code for codes in expected.reserves.values() for code in codes) == (selected.quote.code,)
+    assert next(item for item in expected.evaluations if item.code == selected.quote.code).features.quote.speed == 1.25
+
+
+def test_scoring_reuse_preserves_structured_risk_priority(scoring_cache, application_feature_factory):
+    feature = _features(application_feature_factory)[0]
+    feature = replace(feature, values={**feature.values, "pledge_risk": 2.0, "unlock_risk": 3.0})
+    policy = _runtime_policy()
+    options = ScoredSelectionOptions(evaluated_at=EVALUATED_AT, max_age_seconds=30.0)
+    identity = ScoredSelectionIdentity(EVALUATED_AT.date(), "batch", "epoch")
+    candidate = ScoringInputsReuse(scoring_cache)
+    for fields in (("pledge_risk", "unlock_risk"), ("unlock_risk", "pledge_risk")):
+        hard_filter = replace(policy.hard_filter, structured_risk_thresholds=dict.fromkeys(fields, 0.0))
+        ordered = replace(policy, hard_filter=hard_filter)
+        actual = candidate.select((feature,), ordered, options, identity).selection
+        expected = RankingSelectionService().select((feature,), ordered, options, identity).selection
+        assert actual.population_filter_reason_counts == expected.population_filter_reason_counts == {fields[0]: 1}
+    assert candidate.counts.calculations == 2
+
+
 def test_failed_scoring_preparation_is_never_cached(scoring_cache, application_feature_factory, monkeypatch):
     import trader.recommendation.infra.performance.scoring_inputs_reuse as module
 
@@ -95,7 +146,8 @@ def test_failed_scoring_preparation_is_never_cached(scoring_cache, application_f
     original = module.BuildScoredCandidateReferences
     candidate = ScoringInputsReuse(scoring_cache)
 
-    def fail(_qualified):
+    def fail(_qualified, *, for_ranking_only):
+        assert for_ranking_only
         raise RuntimeError("cancelled")
 
     monkeypatch.setattr(module, "BuildScoredCandidateReferences", fail)
@@ -455,7 +507,7 @@ def test_scoring_reuse_binds_frozen_population_in_cache_and_fallback(
         def reject_identity(_value):
             raise ValueError("unsupported_identity")
 
-        monkeypatch.setattr(module, "CanonicalDigest", reject_identity)
+        monkeypatch.setattr(module, "_preparation_digest", reject_identity)
     actual = candidate.select(
         features, policy, options, identity, population_qualifications=qualifications,
     )

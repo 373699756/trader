@@ -62,12 +62,16 @@ def QuoteFreshnessAgeSeconds(
     if source > observed or source.date() != observed.date():
         return float("inf")
     closing_minute = 900 if observed.hour >= 15 else sessions.afternoon_close
-    if source.hour * 60 + source.minute >= closing_minute:
+    source_minute = source.hour * 60 + source.minute
+    if source_minute >= closing_minute:
         return 0.0
+    elapsed = (observed - source).total_seconds()
+    if observed.hour * 60 + observed.minute < sessions.morning_close or source_minute >= sessions.afternoon_open:
+        return elapsed
     lunch_start = _at_minute(observed, sessions.morning_close)
     lunch_end = _at_minute(observed, sessions.afternoon_open)
     lunch_seconds = max(0.0, (min(observed, lunch_end) - max(source, lunch_start)).total_seconds())
-    return (observed - source).total_seconds() - lunch_seconds
+    return elapsed - lunch_seconds
 
 
 def _at_minute(observed: datetime, minute: int) -> datetime:
