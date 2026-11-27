@@ -1202,7 +1202,7 @@
       state.strategy,
       (code) => window.TraderRender.rememberDiagnostic(diagnostics.runtimeDiagnostics, code),
     );
-    errorDrawer.setIssues(health.visibleIssues);
+    errorDrawer.setIssues(health.visibleIssues, health.snapshotContext);
     return health;
   }
 

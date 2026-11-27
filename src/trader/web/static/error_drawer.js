@@ -1,10 +1,11 @@
 (function () {
   "use strict";
 
-  const { runtimeErrorRows, unassignedIssues } = window.TraderStatusHealth;
+  const { observationSummary } = window.TraderStatusHealth;
 
   function createErrorDrawer(els, beforeOpen, onVisibilityChange) {
     let issues = [];
+    let context = [];
     let returnFocus = null;
     const notify = () => {
       if (typeof onVisibilityChange === "function") onVisibilityChange();
@@ -22,7 +23,7 @@
       if (els.errorDetailsButton.disabled) return;
       if (typeof beforeOpen === "function") beforeOpen();
       returnFocus = document.activeElement;
-      if (els.observationErrorContent) els.observationErrorContent.innerHTML = runtimeErrorRows(unassignedIssues(issues));
+      els.observationErrorContent.innerHTML = observationSummary(issues, context);
       els.observationDrawer.classList.add("is-open");
       els.observationDrawer.setAttribute("aria-hidden", "false");
       els.errorDetailsButton.setAttribute("aria-expanded", "true");
@@ -35,11 +36,11 @@
     return {
       close,
       isOpen: () => els.observationDrawer.classList.contains("is-open"),
-      setIssues: (nextIssues) => {
-        issues = Array.isArray(nextIssues) ? nextIssues : [];
-        if (els.observationErrorCount) els.observationErrorCount.textContent = String(unassignedIssues(issues).filter((issue) => issue.recoveryStatus !== "recovered").length);
+      setIssues: (nextIssues, nextContext) => {
+        issues = nextIssues;
+        context = nextContext;
         if (!els.observationDrawer.classList.contains("is-open")) return;
-        els.observationErrorContent.innerHTML = runtimeErrorRows(unassignedIssues(issues));
+        els.observationErrorContent.innerHTML = observationSummary(issues, context);
       },
     };
   }

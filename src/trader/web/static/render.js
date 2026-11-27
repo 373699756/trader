@@ -126,6 +126,7 @@
     deepseek_pending: "模型复核进行中",
     tomorrow_tail_data_incomplete: "尾盘量价数据不完整",
     d25_structured_research_incomplete: "2至5日结构化研究数据不完整",
+    research_data_degraded: "公司研究资料未满足动作判断所需的覆盖条件",
     corporate_risk_window_unavailable: "近一年公司风险覆盖不足",
     corporate_risk_history_unavailable: "公司风险历史暂不可核验",
     strategy_history_coverage_partial: "候选历史数据覆盖不完整",

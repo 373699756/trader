@@ -2,6 +2,11 @@
   "use strict";
 
   const STRATEGIES = new Set(["tomorrow", "d25", "long"]);
+  const SNAPSHOT_CONTEXT = new Map([
+    ["close_fallback", "收盘补算冻结"],
+    ["official_close", "采用正式收盘价"],
+    ["local_only", "仅本地评分"],
+  ]);
   const STAGE_LABELS = {
     refresh: "数据刷新",
     freeze: "策略构建",
@@ -24,6 +29,9 @@
     "seal:freeze_capacity_rejected": "冻结任务队列已满",
     "settlement:settlement_unavailable": "收盘结算暂时不可用",
     "settlement:settlement_capacity_rejected": "结算任务队列已满",
+    "settlement:settlement_unexpected:FreezeRecordUnavailableError": "收盘结算无法读取所需冻结记录",
+    "settlement:d25_settlement:FreezeRecordUnavailableError": "D25 结算无法读取所需冻结记录",
+    "settlement:tomorrow_settlement:FreezeRecordUnavailableError": "Tomorrow 结算无法读取所需冻结记录",
     runtime_status_unavailable: "运行状态暂时不可用",
   };
 
@@ -32,9 +40,14 @@
     const runtimeIssues = Array.isArray(payload.recent_errors)
       ? payload.recent_errors.map(normalizeRuntimeIssue).filter(Boolean)
       : [];
-    const snapshotIssues = Array.isArray(snapshotReasons)
-      ? snapshotReasons.map((code) => normalizeSnapshotIssue(code, strategy)).filter(Boolean)
-      : [];
+    const snapshotIssues = [];
+    const snapshotContext = new Set();
+    for (const raw of Array.isArray(snapshotReasons) ? snapshotReasons : []) {
+      const issue = normalizeSnapshotIssue(raw, strategy);
+      if (!issue) continue;
+      if (SNAPSHOT_CONTEXT.has(issue.code)) snapshotContext.add(issue.code);
+      else snapshotIssues.push(issue);
+    }
     const degradedIssues = Array.isArray(payload.degraded_reasons)
       ? payload.degraded_reasons.map((code) => normalizeRuntimeIssue(splitStrategyPrefix(cleanString(code), null)))
         .filter(Boolean)
@@ -57,6 +70,7 @@
         : `${level === "error" ? "错误" : "降级"} · ${issueCount}项`,
       primary: unresolvedIssues.length ? presentIssue(unresolvedIssues[0]) : null,
       issues,
+      snapshotContext: [...snapshotContext],
     };
   }
 
@@ -86,6 +100,7 @@
       severity: "degraded",
       strategy: split.strategy,
       stage: "snapshot",
+      fromSnapshot: true,
       occurredAt: null,
       lastOccurredAt: null,
       resolvedAt: null,
@@ -97,7 +112,7 @@
   function deduplicateIssues(values) {
     const result = new Map();
     values.forEach((issue) => {
-      const key = `${issue.strategy || "system"}:${issue.code}`;
+      const key = `${issue.fromSnapshot ? "snapshot" : "runtime"}:${issue.strategy || "system"}:${issue.code}`;
       const previous = result.get(key);
       if (!previous || compareIssues(issue, previous) < 0) result.set(key, issue);
     });
@@ -122,7 +137,7 @@
     return {
       ...issue,
       message: issueLabel(issue.code, issue.stage),
-      meta: `${strategy} · ${stage} · ${time} · ${recovery}`,
+      meta: issue.fromSnapshot ? `${strategy} · 该快照记录的质量提示` : `${strategy} · ${stage} · ${time} · ${recovery}`,
     };
   }
 
@@ -132,12 +147,12 @@
     }
     return issues.map((issue) => {
       const presented = presentIssue(issue);
-      const status = issue.recoveryStatus === "recovered" ? "已恢复" : "活动中";
+      const status = issue.fromSnapshot ? "快照" : issue.recoveryStatus === "recovered" ? "已恢复" : "活动中";
       const statusLevel = issue.recoveryStatus === "recovered" ? "recovered" : issue.severity;
       const count = issue.count > 1 ? ` · 累计 ${issue.count} 次` : "";
       const resolved = issue.resolvedAt ? ` · 恢复于 ${formatDateTime(issue.resolvedAt)}` : "";
       return `<article class="error-detail-item" data-level="${escapeHtml(statusLevel)}">
-        <header><div><span class="error-state-tag">${escapeHtml(status)}</span><strong>${escapeHtml(presented.message)}</strong></div><time>${escapeHtml(formatDateTime(issue.lastOccurredAt))}</time></header>
+        <header><div><span class="error-state-tag">${escapeHtml(status)}</span><strong>${escapeHtml(presented.message)}</strong></div>${issue.fromSnapshot ? "" : `<time>${escapeHtml(formatDateTime(issue.lastOccurredAt))}</time>`}</header>
         <p>${escapeHtml(presented.meta)}${escapeHtml(count)}${escapeHtml(resolved)}</p>
         <div class="error-code-row"><code>${escapeHtml(issue.code)}</code><button type="button" data-copy-code="${escapeHtml(issue.code)}">复制代码</button></div>
       </article>`;
@@ -172,6 +187,7 @@
   }
 
   function splitStrategyPrefix(code, fallbackStrategy) {
+    if (!code) return { code: null, strategy: fallbackStrategy };
     const separator = code.indexOf(":");
     if (separator > 0) {
       const prefix = code.slice(0, separator);
@@ -256,9 +272,18 @@
     return (STAGE_ALIASES[key] || [key]).includes(issue && issue.stage);
   }
 
-  function unassignedIssues(issues) {
-    const keys = Object.keys(STAGE_ALIASES);
-    return (Array.isArray(issues) ? issues : []).filter((issue) => !keys.some((key) => issueBelongsToStage(issue, key)));
+  function observationSummary(issues, context) {
+    const runtime = issues.filter((issue) => !issue.fromSnapshot);
+    const snapshot = issues.filter((issue) => issue.fromSnapshot);
+    const sections = [];
+    if (runtime.length) sections.push(`<h3>当前运行异常 · ${runtime.length}</h3>${runtimeErrorRows(runtime)}`);
+    if (snapshot.length) sections.push(`<h3>所看快照的质量提示 · ${snapshot.length}</h3>${runtimeErrorRows(snapshot)}`);
+    if (!issues.length) sections.push(runtimeErrorRows([]));
+    if (context.length) {
+      const labels = context.map((code) => `<span title="${escapeHtml(code)}">${escapeHtml(SNAPSHOT_CONTEXT.get(code))}</span>`);
+      sections.push(`<p>快照生成方式 · ${labels.join(" · ")}</p>`);
+    }
+    return sections.join("");
   }
 
   window.TraderStatusHealth = Object.freeze({
@@ -267,6 +292,6 @@
     issueSummaryTitle,
     presentIssue,
     runtimeErrorRows,
-    unassignedIssues,
+    observationSummary,
   });
 })();

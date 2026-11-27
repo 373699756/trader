@@ -550,7 +550,7 @@
     els.healthBadge.textContent = !observationAvailable
       ? "观察不适用"
       : alwaysVisible
-      ? (unresolvedIssues.length ? `观察 · ${unresolvedIssues.length}项异常` : "观察")
+      ? (unresolvedIssues.length ? `观察 · ${unresolvedIssues.length}项诊断` : "观察")
       : `${health.level === "error" ? "错误" : "异常"} ${unresolvedIssues.length}`;
     if (els.observationErrorCount) els.observationErrorCount.textContent = String(unresolvedIssues.length);
     if (typeof rememberDiagnostic === "function") {

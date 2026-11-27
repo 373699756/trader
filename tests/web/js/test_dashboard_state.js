@@ -1153,6 +1153,24 @@ assert.strictEqual(runtimeRows.includes("活动中"), true);
 const normalHealth = state.healthView({ health: { level: "normal", issue_count: 0 }, recent_errors: [] }, []);
 assert.strictEqual(normalHealth.badge, "正常 · 无最近错误");
 assert.strictEqual(normalHealth.primary, null);
+const closeContext = ["close_fallback", "official_close", "local_only"];
+const fallbackHealth = state.healthView({recent_errors: [
+  {code: "settlement:d25_settlement:FreezeRecordUnavailableError", stage: "settlement",
+    strategy: "d25", count: 57, last_occurred_at: "2026-11-27T19:30:00+08:00"},
+  {code: "refresh:source_unavailable", stage: "refresh", recovery_status: "recovered"},
+], degraded_reasons: ["d25:settlement:d25_settlement:FreezeRecordUnavailableError"]},
+  [...closeContext, "research_data_degraded", "research_data_degraded"], "d25");
+assert.strictEqual(fallbackHealth.issueCount, 2);
+const drawerSummary = sandbox.window.TraderStatusHealth.observationSummary(
+  fallbackHealth.issues.filter((issue) => issue.recoveryStatus === "active"), fallbackHealth.snapshotContext,
+);
+for (const label of ["当前运行异常 · 1", "所看快照的质量提示 · 1", "D25 结算无法读取所需冻结记录",
+  "累计 57 次", "research_data_degraded", "收盘补算冻结", "采用正式收盘价", "仅本地评分"]) {
+  assert(drawerSummary.includes(label));
+}
+assert(!drawerSummary.includes("refresh:source_unavailable"));
+assert(!drawerSummary.includes("时间待确认"));
+assert.strictEqual(state.healthView({}, closeContext, "d25").issueCount, 0);
 const referenceFailure = state.healthView({
   recent_errors: [{ code: "refresh:static_reference_degraded", stage: "refresh", count: 4 }],
   degraded_reasons: ["refresh:static_reference_degraded"],
